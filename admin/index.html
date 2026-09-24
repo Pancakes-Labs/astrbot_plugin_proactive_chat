@@ -377,7 +377,10 @@
         });
     </script>
 
-    <!-- 以下 JSX 文件按“基础能力 -> 布局组件 -> 页面视图 -> 应用入口”的顺序加载。 -->
+    <!-- 以下 JSX 文件按“基础能力 -> 布局组件 -> 页面视图 -> 应用入口”的顺序加载。
+         注意：源码仓库依赖运行时 Babel 编译，因此这里保持 .jsx 路径且第二个参数为 true；
+         Release 打包会统一把这些引用改写为预编译后的 .js，并将 isBabel 标志置为 false，
+         请勿在源码中手动改写，以免破坏开发态的动态编译。 -->
     <script>
         window.ProactiveLoader.queueScript("js/context/AppContext.jsx", true);
         window.ProactiveLoader.queueScript("js/hooks/useApi.js", true);

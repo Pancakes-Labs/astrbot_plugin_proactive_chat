@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: 设置 Python 环境
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.10'
 
@@ -30,12 +30,15 @@ jobs:
         id: ruff
         # 使用 || true 确保即使有错误也不立即中断，以便后续步骤生成报告
         run: |
+          echo "Using ruff version..."
+          uvx ruff==0.14.2 --version
+
           echo "Running ruff format..."
-          FORMAT_LOG=$(uvx ruff format . 2>&1 || true)
+          FORMAT_LOG=$(uvx ruff==0.14.2 format . 2>&1 || true)
           echo "$FORMAT_LOG"
           
           echo "Running ruff check --fix..."
-          CHECK_LOG=$(uvx ruff check --fix . 2>&1 || true)
+          CHECK_LOG=$(uvx ruff==0.14.2 check --fix . 2>&1 || true)
           echo "$CHECK_LOG"
           
           # 将日志保存到文件供后续脚本读取

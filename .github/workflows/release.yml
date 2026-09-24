@@ -88,8 +88,17 @@ jobs:
           rm -rf admin/js
           mv "${BUILD_JS_DIR}" admin/js
 
-          sed -E -i 's|<script type="text/babel" src="js/([^"]*)\.jsx" defer></script>|<script src="js/\1.js" defer></script>|g' admin/index.html
-          sed -E -i 's|<script type="text/babel" src="js/([^"]*)\.js" defer></script>|<script src="js/\1.js" defer></script>|g' admin/index.html
+          # 发布包中的前端已由 Babel 预编译为 .js，必须让 index.html 的引用与产物保持一致。
+          # 组件通过 ProactiveLoader.queueScript(src, isBabel) 动态加载，
+          # 这些是普通字符串参数而非 HTML 标签，旧的 sed 规则无法匹配，会导致 404 / “Babel is not loaded”。
+          # 1) 所有指向本地 js/ 的 .jsx 引用统一改写为预编译后的 .js。
+          sed -E -i 's|"(js/[^"]*)\.jsx"|"\1.js"|g' admin/index.html
+          # 2) 遗留的 text/babel 静态标签改写为普通脚本标签（源码已预编译，无需运行时编译）。
+          sed -E -i 's|<script type="text/babel" src="([^"]+)" defer></script>|<script src="\1" defer></script>|g' admin/index.html
+          sed -E -i 's|<script type="text/babel" src="([^"]+)"></script>|<script src="\1"></script>|g' admin/index.html
+          # 3) 关闭 queueScript 的 isBabel 标志：产物已是编译后的 JS。
+          sed -E -i 's|(queueScript\("[^"]*")([[:space:]]*,[[:space:]]*)true([[:space:]]*\))|\1\2false\3|g' admin/index.html
+          # 4) 移除 Babel standalone 依赖及其脚本文件。
           sed -E -i '/@babel\/standalone|lib\/babel\.min\.js/d' admin/index.html
           rm -f admin/lib/babel.min.js
 
@@ -100,6 +109,21 @@ jobs:
 
           if grep -q '@babel/standalone' admin/index.html; then
             echo "::error::WebUI 编译后 index.html 仍包含 Babel Standalone 依赖"
+            exit 1
+          fi
+
+          if grep -Eq 'queueScript\("[^"]*\.jsx"' admin/index.html; then
+            echo "::error::WebUI 编译后 index.html 仍存在指向 .jsx 的 queueScript 调用，运行时会 404"
+            exit 1
+          fi
+
+          if grep -Eq 'queueScript\("[^"]*",[[:space:]]*true[[:space:]]*\)' admin/index.html; then
+            echo "::error::WebUI 编译后 index.html 仍存在 isBabel=true 的 queueScript 调用（缺少 Babel standalone 时会中断加载）"
+            exit 1
+          fi
+
+          if grep -q '\.jsx"' admin/index.html; then
+            echo "::error::WebUI 编译后 index.html 仍存在 .jsx 资源引用"
             exit 1
           fi
 
