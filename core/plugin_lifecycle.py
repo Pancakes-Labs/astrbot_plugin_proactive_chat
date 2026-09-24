@@ -67,7 +67,10 @@ class LifecycleMixin:
                 if isinstance(last_time, (int, float)) and last_time > 0:
                     # 仅恢复“本次启动后”的消息时间，避免历史消息误触发逻辑
                     if last_time >= self.plugin_start_time:
-                        self.last_message_times[session_id] = last_time
+                        # last_message_times 全局统一使用规范化键，
+                        # 否则与事件监听侧写入的键不一致时自动触发判定会永远读到 0。
+                        normalized_session_id = self._normalize_session_id(session_id)
+                        self.last_message_times[normalized_session_id] = last_time
                         restored_count += 1
                         logger.debug(
                             f"[主动消息] 已恢复 {self._get_session_log_str(session_id)} 在插件启动后的消息时间喵 -> {last_time}"
@@ -152,8 +155,9 @@ class LifecycleMixin:
     async def terminate(self) -> None:
         """插件被卸载或停用时调用的清理函数。"""
         logger.info("[主动消息] 收到插件终止指令，开始清理资源喵。")
-        # 调度器关闭优先于其它清理：必须最先、且独立 try 执行，
-        # 避免遥测/计时器等任意一步抛异常时跳过 shutdown，导致旧 scheduler 残留在后台继续触发任务。
+        # 调度器关闭优先于其它清理：必须最先执行且独立 try 包裹，
+        # 避免遥测/计时器等任意后续步骤抛异常时跳过 shutdown，
+        # 导致旧 scheduler 残留在事件循环中继续按旧时间点触发任务。
         if getattr(self, "scheduler", None) and self.scheduler.running:
             try:
                 jobs = self.scheduler.get_jobs()
@@ -164,6 +168,7 @@ class LifecycleMixin:
                         logger.debug(f"[主动消息] 已移除调度器任务喵: {job.id}")
                     except Exception as e:
                         logger.warning(f"[主动消息] 移除调度器任务时出错喵: {e}")
+                # wait=False：不阻塞终止流程等待正在执行的任务收尾。
                 self.scheduler.shutdown(wait=False)
                 logger.info("[主动消息] 调度器已关闭喵。")
             except Exception as e:

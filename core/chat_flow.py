@@ -83,7 +83,6 @@ class ProactiveCoreMixin:
             logger.warning("[主动消息] 对话存档失败喵，但会继续执行后续步骤喵。")
 
         # 提前规范化：session_data 写入与 scheduler job 必须使用同一个 key，
-        # 否则 check_and_chat 用 normalized key 读 unanswered_count 时永远得到 0。
         normalized_session_id = self._normalize_session_id(session_id)
         parsed = self._parse_session_id(normalized_session_id)
         is_private_session = parsed and (
@@ -96,9 +95,9 @@ class ProactiveCoreMixin:
             # 更新未回复计数器
             # 每次主动发送成功后，未回复次数 +1
             new_unanswered_count = unanswered_count + 1
-            self.session_data.setdefault(normalized_session_id, {})["unanswered_count"] = (
-                new_unanswered_count
-            )
+            self.session_data.setdefault(normalized_session_id, {})[
+                "unanswered_count"
+            ] = new_unanswered_count
             logger.info(
                 f"[主动消息] {self._get_session_log_str(normalized_session_id)} 的第 {new_unanswered_count} 次主动消息已发送完成，当前未回复次数: {new_unanswered_count} 次喵。"
             )
@@ -121,7 +120,9 @@ class ProactiveCoreMixin:
                 next_trigger_time = scheduled_at + random_interval
                 run_date = datetime.fromtimestamp(next_trigger_time, tz=self.timezone)
 
-                session_payload = self.session_data.setdefault(normalized_session_id, {})
+                session_payload = self.session_data.setdefault(
+                    normalized_session_id, {}
+                )
                 session_payload["next_trigger_time"] = next_trigger_time
                 session_payload["last_scheduled_at"] = scheduled_at
                 session_payload["last_schedule_min_interval_seconds"] = min_interval
@@ -137,6 +138,8 @@ class ProactiveCoreMixin:
             await self._save_data_internal()
 
         if scheduled_job_payload is not None:
+            # 统一走 _add_chat_job：内部完成 normalize + 同目标历史任务清理 + add_job，
+            # 保证 job id / args 与 session_data 键完全一致。
             self._add_chat_job(normalized_session_id, scheduled_job_payload["run_date"])
             logger.info(
                 f"[主动消息] 已为 {self._get_session_log_str(normalized_session_id, scheduled_job_payload['session_config'])} 安排下一次主动消息喵，时间：{scheduled_job_payload['run_date'].strftime('%Y-%m-%d %H:%M:%S')} 喵。"
@@ -173,7 +176,6 @@ class ProactiveCoreMixin:
                 return
 
             schedule_conf = session_config.get("schedule_settings", {})
-
 
             # 未回复次数上限检查
             async with self.data_lock:
@@ -215,8 +217,12 @@ class ProactiveCoreMixin:
             conv_id = request_package["conv_id"]
             history_messages = request_package["history"]
             system_prompt = request_package["system_prompt"]
-            # 可能使用规范化后的会话 ID（由上下文准备阶段返回）
-            session_id = request_package.get("session_id", session_id)
+            # 可能使用规范化后的会话 ID（由上下文准备阶段返回）；
+            # 此处再次规范化，确保 last_message_times / session_data 的读取键全局一致，
+            # 避免新消息检测（has_new_message）因键漂移而误判。
+            session_id = self._normalize_session_id(
+                request_package.get("session_id", session_id)
+            )
 
             # 记录任务开始状态快照
             # 用于检测 LLM 生成窗口内是否出现用户新消息
