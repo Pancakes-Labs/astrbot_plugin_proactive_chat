@@ -32,7 +32,8 @@ class EventsMixin:
         # 缓存 self_id，便于装饰钩子构造事件
         if event.get_self_id():
             async with self.data_lock:
-                self.session_data.setdefault(session_id, {})["self_id"] = (
+                # self_id 与其余会话状态统一写入规范化键，避免 raw/normalized 键漂移。
+                self.session_data.setdefault(normalized_session_id, {})["self_id"] = (
                     event.get_self_id()
                 )
 
@@ -127,7 +128,7 @@ class EventsMixin:
         # 缓存 self_id
         if event.get_self_id():
             async with self.data_lock:
-                self.session_data.setdefault(session_id, {})["self_id"] = (
+                self.session_data.setdefault(normalized_session_id, {})["self_id"] = (
                     event.get_self_id()
                 )
 
@@ -147,9 +148,9 @@ class EventsMixin:
         except Exception as e:
             logger.debug(f"[主动消息] 获取群聊发送者ID失败喵: {e}")
 
-        self_id = event.get_self_id() or self.session_data.get(session_id, {}).get(
-            "self_id"
-        )
+        self_id = event.get_self_id() or self.session_data.get(
+            normalized_session_id, {}
+        ).get("self_id")
         if self_id and sender_id and str(sender_id) == str(self_id):
             logger.debug(
                 f"[主动消息] 检测到 {self._get_session_log_str(session_id)} 的 Bot 自身消息，跳过用户逻辑喵。"
