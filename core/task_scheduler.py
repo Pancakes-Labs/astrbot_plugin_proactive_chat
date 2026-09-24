@@ -513,6 +513,10 @@ class SchedulerMixin:
         self, session_id: str, reset_counter: bool = False
     ) -> None:
         """安排下一次主动聊天并立即将状态持久化到文件。"""
+        # 终止后不再注册任何新任务，避免在已关闭的调度器上留下持久化幽灵任务。
+        if getattr(self, "_terminating", False):
+            return
+
         normalized_session_id = self._normalize_session_id(session_id)
         session_config = self._get_session_config(normalized_session_id)
         if not session_config:
@@ -612,6 +616,10 @@ class SchedulerMixin:
         self, session_id: str, auto_trigger_minutes: int | float
     ) -> None:
         """在异步上下文中处理自动触发回调，避免直接在定时器回调里操作共享状态。"""
+        # 插件已进入终止流程：直接返回，不再创建任何调度任务。
+        if getattr(self, "_terminating", False):
+            return
+
         # 统一键口径：计时器、last_message_times、session_data 与 scheduler job
         # 必须共用规范化键，否则会出现“用户已发言仍自动触发”与计数器读取不到的问题。
         session_id = self._normalize_session_id(session_id)
@@ -680,6 +688,10 @@ class SchedulerMixin:
         self, session_id: str, idle_minutes: int | float
     ) -> None:
         """在异步上下文中处理群聊沉默回调，避免直接在定时器回调里操作共享状态。"""
+        # 插件已进入终止流程：直接返回，避免终止期间再触发一次主动消息调度。
+        if getattr(self, "_terminating", False):
+            return
+
         # 群沉默计时器键同样统一为规范化键，避免历史键残留导致“仍在计时”的误判。
         session_id = self._normalize_session_id(session_id)
         try:

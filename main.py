@@ -94,6 +94,9 @@ class ProactiveChatPlugin(
         # 否则遥测关闭时 terminate 访问该属性会抛 AttributeError，
         # 导致后续清理（含 scheduler.shutdown）被整体跳过，旧调度器残留在后台继续触发任务。
         self._exception_handler_installed = False
+        # 终止标志：terminate 置位后，在途的 check_and_chat 及各回调会在下一个
+        # 检查点尽快退出，避免插件重载期间继续发送消息或注册新的调度任务。
+        self._terminating = False
 
         # 群聊沉默倒计时与自动触发计时器
         self.group_timers: dict[str, asyncio.TimerHandle] = {}

@@ -66,6 +66,11 @@ class ProactiveCoreMixin:
         unanswered_count: int,
     ) -> None:
         """主动消息任务完成后的收尾工作。"""
+        # 终止流程已开始：不再写入计数、安排下一次任务或持久化调度状态。
+        if getattr(self, "_terminating", False):
+            logger.info("[主动消息] 插件正在终止，跳过本次主动消息的收尾与重调度喵。")
+            return
+
         try:
             # 存档对话历史（使用新对话管理 API）
             user_msg_obj = UserMessageSegment(content=[TextPart(text=user_prompt)])
@@ -147,6 +152,11 @@ class ProactiveCoreMixin:
 
     async def check_and_chat(self, session_id: str) -> None:
         """由定时任务触发的核心函数，完成一次完整的主动消息流程。"""
+        # 在途任务在插件终止后应立即退出，避免重载期间发出幽灵主动消息。
+        if getattr(self, "_terminating", False):
+            logger.debug("[主动消息] 插件正在终止，跳过本次 check_and_chat 喵。")
+            return
+
         normalized_session_id = self._normalize_session_id(session_id)
         try:
             # 免打扰与启用状态检查
@@ -264,6 +274,11 @@ class ProactiveCoreMixin:
                 logger.info(
                     "[主动消息] 检测到用户在LLM生成期间发送了新消息，丢弃本次主动消息喵。"
                 )
+                return
+
+            # 发送前再次确认终止状态：LLM 生成耗时较长，期间可能已收到终止指令。
+            if getattr(self, "_terminating", False):
+                logger.info("[主动消息] 插件正在终止，丢弃本次已生成的主动消息喵。")
                 return
 
             # 发送消息与收尾

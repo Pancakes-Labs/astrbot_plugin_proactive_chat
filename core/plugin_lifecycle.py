@@ -34,10 +34,14 @@ class LifecycleMixin:
     _heartbeat_task: asyncio.Task[None] | None
     _original_exception_handler: Any
     _exception_handler_installed: bool
+    _terminating: bool
     _start_time: float
 
     async def initialize(self) -> None:
         """插件的异步初始化函数。"""
+        # 复位终止标志：同一进程重载场景下可能复用旧的终止状态。
+        self._terminating = False
+
         # 初始化共享锁
         self.data_lock = asyncio.Lock()
 
@@ -155,24 +159,41 @@ class LifecycleMixin:
     async def terminate(self) -> None:
         """插件被卸载或停用时调用的清理函数。"""
         logger.info("[主动消息] 收到插件终止指令，开始清理资源喵。")
-        # 调度器关闭优先于其它清理：必须最先执行且独立 try 包裹，
-        # 避免遥测/计时器等任意后续步骤抛异常时跳过 shutdown，
-        # 导致旧 scheduler 残留在事件循环中继续按旧时间点触发任务。
+
+        # 置位终止标志
+        self._terminating = True
+
+        # 调度器关闭与计时器取消必须最先执行，且先于本方法内的任何 await：
         if getattr(self, "scheduler", None) and self.scheduler.running:
             try:
                 jobs = self.scheduler.get_jobs()
-                logger.info(f"[主动消息] 正在清理调度器任务喵，数量: {len(jobs)}")
-                for job in jobs:
-                    try:
-                        self.scheduler.remove_job(job.id)
-                        logger.debug(f"[主动消息] 已移除调度器任务喵: {job.id}")
-                    except Exception as e:
-                        logger.warning(f"[主动消息] 移除调度器任务时出错喵: {e}")
-                # wait=False：不阻塞终止流程等待正在执行的任务收尾。
+                self.scheduler.remove_all_jobs()
+                logger.info(f"[主动消息] 已清理 {len(jobs)} 个调度器任务喵。")
                 self.scheduler.shutdown(wait=False)
                 logger.info("[主动消息] 调度器已关闭喵。")
             except Exception as e:
                 logger.error(f"[主动消息] 关闭调度器时出错喵: {e}")
+
+        # 先于首个 await 取消群聊沉默计时器，避免回调在终止过程中被投递
+        timer_count = len(self.group_timers)
+        for session_id, timer in list(self.group_timers.items()):
+            try:
+                timer.cancel()
+            except Exception as e:
+                logger.warning(f"[主动消息] 取消计时器时出错喵: {e}")
+        self.group_timers.clear()
+        logger.info(f"[主动消息] 已取消 {timer_count} 个正在运行的群聊沉默计时器喵。")
+
+        # 同样先于首个 await 取消自动触发计时器
+        auto_trigger_count = len(self.auto_trigger_timers)
+        for session_id, timer in list(self.auto_trigger_timers.items()):
+            try:
+                timer.cancel()
+            except Exception as e:
+                logger.warning(f"[主动消息] 取消自动触发计时器时出错喵: {e}")
+        self.auto_trigger_timers.clear()
+        logger.info(f"[主动消息] 已取消 {auto_trigger_count} 个自动触发计时器喵。")
+
         try:
             if self._heartbeat_task:
                 self._heartbeat_task.cancel()
@@ -202,36 +223,6 @@ class LifecycleMixin:
                 loop.set_exception_handler(self._original_exception_handler)
                 self._original_exception_handler = None
                 self._exception_handler_installed = False
-            # 取消群聊沉默计时器
-            timer_count = len(self.group_timers)
-            for session_id, timer in self.group_timers.items():
-                try:
-                    timer.cancel()
-                    logger.debug(
-                        f"[主动消息] 已取消 {self._get_session_log_str(session_id)} 的沉默计时器喵。"
-                    )
-                except Exception as e:
-                    logger.warning(f"[主动消息] 取消计时器时出错喵: {e}")
-
-            self.group_timers.clear()
-            logger.info(
-                f"[主动消息] 已取消 {timer_count} 个正在运行的群聊沉默计时器喵。"
-            )
-
-            # 取消自动触发计时器
-            auto_trigger_count = len(self.auto_trigger_timers)
-            for session_id, timer in list(self.auto_trigger_timers.items()):
-                try:
-                    timer.cancel()
-                    logger.debug(
-                        f"[主动消息] 已取消 {self._get_session_log_str(session_id)} 的自动触发计时器喵。"
-                    )
-                except Exception as e:
-                    logger.warning(f"[主动消息] 取消自动触发计时器时出错喵: {e}")
-
-            self.auto_trigger_timers.clear()
-            logger.info(f"[主动消息] 已取消 {auto_trigger_count} 个自动触发计时器喵。")
-
             # 终止前最后一次持久化，尽量保留当前会话状态
             if self.data_lock:
                 try:
