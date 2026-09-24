@@ -29,27 +29,26 @@ class EventsMixin:
         # 统一会话键，避免跨平台前缀变化导致状态分裂
         normalized_session_id = self._normalize_session_id(session_id)
 
-        # 缓存 self_id，便于装饰钩子构造事件
-        if event.get_self_id():
-            async with self.data_lock:
-                # self_id 与其余会话状态统一写入规范化键，避免 raw/normalized 键漂移。
-                self.session_data.setdefault(normalized_session_id, {})["self_id"] = (
-                    event.get_self_id()
-                )
-
         # 更新消息时间（仅插件启动后用于自动触发）
         current_time = time.time()
         self.last_message_times[normalized_session_id] = current_time
 
         async with self.data_lock:
-            # 合并旧键数据
-            # 将旧键数据迁移到规范化键，保持计数与 self_id 连续
+            # 先迁移旧键：raw 键中的历史 self_id 必须先并入规范化键，
+            # 否则会在写入当前 self_id 之后被 update 覆盖为旧值，
+            # 也会导致群聊侧在迁移前读不到 self_id 而误判 Bot 自身消息。
             if normalized_session_id != session_id and session_id in self.session_data:
                 existing_payload = self.session_data.get(session_id, {})
                 self.session_data.setdefault(normalized_session_id, {}).update(
                     existing_payload
                 )
                 del self.session_data[session_id]
+
+            # 迁移完成后再写入当前 self_id，保证不会被历史值覆盖。
+            if event.get_self_id():
+                self.session_data.setdefault(normalized_session_id, {})["self_id"] = (
+                    event.get_self_id()
+                )
 
             if current_time >= self.plugin_start_time:
                 self.session_data.setdefault(normalized_session_id, {})[
@@ -125,12 +124,14 @@ class EventsMixin:
         session_id = event.unified_msg_origin
         normalized_session_id = self._normalize_session_id(session_id)
 
-        # 缓存 self_id
-        if event.get_self_id():
-            async with self.data_lock:
-                self.session_data.setdefault(normalized_session_id, {})["self_id"] = (
-                    event.get_self_id()
+        # 先迁移 raw 键到规范化键，确保后续 self_id 读取与 Bot 消息过滤都命中规范键
+        async with self.data_lock:
+            if normalized_session_id != session_id and session_id in self.session_data:
+                existing_payload = self.session_data.get(session_id, {})
+                self.session_data.setdefault(normalized_session_id, {}).update(
+                    existing_payload
                 )
+                del self.session_data[session_id]
 
         # 过滤 Bot 自身消息，避免把机器人发言误判成“用户活跃”
         sender_id = None
@@ -170,12 +171,11 @@ class EventsMixin:
         self.last_message_times[normalized_session_id] = current_time
 
         async with self.data_lock:
-            if normalized_session_id != session_id and session_id in self.session_data:
-                existing_payload = self.session_data.get(session_id, {})
-                self.session_data.setdefault(normalized_session_id, {}).update(
-                    existing_payload
+            # 迁移已提前完成，此处仅写入当前 self_id 与消息时间。
+            if event.get_self_id():
+                self.session_data.setdefault(normalized_session_id, {})["self_id"] = (
+                    event.get_self_id()
                 )
-                del self.session_data[session_id]
 
             if current_time >= self.plugin_start_time:
                 self.session_data.setdefault(normalized_session_id, {})[
