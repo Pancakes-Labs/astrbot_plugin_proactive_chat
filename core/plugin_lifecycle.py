@@ -34,10 +34,14 @@ class LifecycleMixin:
     _heartbeat_task: asyncio.Task[None] | None
     _original_exception_handler: Any
     _exception_handler_installed: bool
+    _terminating: bool
     _start_time: float
 
     async def initialize(self) -> None:
         """插件的异步初始化函数。"""
+        # 复位终止标志：同一进程重载场景下可能复用旧的终止状态。
+        self._terminating = False
+
         # 初始化共享锁
         self.data_lock = asyncio.Lock()
 
@@ -67,7 +71,10 @@ class LifecycleMixin:
                 if isinstance(last_time, (int, float)) and last_time > 0:
                     # 仅恢复“本次启动后”的消息时间，避免历史消息误触发逻辑
                     if last_time >= self.plugin_start_time:
-                        self.last_message_times[session_id] = last_time
+                        # last_message_times 全局统一使用规范化键，
+                        # 否则与事件监听侧写入的键不一致时自动触发判定会永远读到 0。
+                        normalized_session_id = self._normalize_session_id(session_id)
+                        self.last_message_times[normalized_session_id] = last_time
                         restored_count += 1
                         logger.debug(
                             f"[主动消息] 已恢复 {self._get_session_log_str(session_id)} 在插件启动后的消息时间喵 -> {last_time}"
@@ -152,6 +159,41 @@ class LifecycleMixin:
     async def terminate(self) -> None:
         """插件被卸载或停用时调用的清理函数。"""
         logger.info("[主动消息] 收到插件终止指令，开始清理资源喵。")
+
+        # 置位终止标志
+        self._terminating = True
+
+        # 调度器关闭与计时器取消必须最先执行，且先于本方法内的任何 await：
+        if getattr(self, "scheduler", None) and self.scheduler.running:
+            try:
+                jobs = self.scheduler.get_jobs()
+                self.scheduler.remove_all_jobs()
+                logger.info(f"[主动消息] 已清理 {len(jobs)} 个调度器任务喵。")
+                self.scheduler.shutdown(wait=False)
+                logger.info("[主动消息] 调度器已关闭喵。")
+            except Exception as e:
+                logger.error(f"[主动消息] 关闭调度器时出错喵: {e}")
+
+        # 先于首个 await 取消群聊沉默计时器，避免回调在终止过程中被投递
+        timer_count = len(self.group_timers)
+        for session_id, timer in list(self.group_timers.items()):
+            try:
+                timer.cancel()
+            except Exception as e:
+                logger.warning(f"[主动消息] 取消计时器时出错喵: {e}")
+        self.group_timers.clear()
+        logger.info(f"[主动消息] 已取消 {timer_count} 个正在运行的群聊沉默计时器喵。")
+
+        # 同样先于首个 await 取消自动触发计时器
+        auto_trigger_count = len(self.auto_trigger_timers)
+        for session_id, timer in list(self.auto_trigger_timers.items()):
+            try:
+                timer.cancel()
+            except Exception as e:
+                logger.warning(f"[主动消息] 取消自动触发计时器时出错喵: {e}")
+        self.auto_trigger_timers.clear()
+        logger.info(f"[主动消息] 已取消 {auto_trigger_count} 个自动触发计时器喵。")
+
         try:
             if self._heartbeat_task:
                 self._heartbeat_task.cancel()
@@ -181,53 +223,6 @@ class LifecycleMixin:
                 loop.set_exception_handler(self._original_exception_handler)
                 self._original_exception_handler = None
                 self._exception_handler_installed = False
-            # 取消群聊沉默计时器
-            timer_count = len(self.group_timers)
-            for session_id, timer in self.group_timers.items():
-                try:
-                    timer.cancel()
-                    logger.debug(
-                        f"[主动消息] 已取消 {self._get_session_log_str(session_id)} 的沉默计时器喵。"
-                    )
-                except Exception as e:
-                    logger.warning(f"[主动消息] 取消计时器时出错喵: {e}")
-
-            self.group_timers.clear()
-            logger.info(
-                f"[主动消息] 已取消 {timer_count} 个正在运行的群聊沉默计时器喵。"
-            )
-
-            # 取消自动触发计时器
-            auto_trigger_count = len(self.auto_trigger_timers)
-            for session_id, timer in list(self.auto_trigger_timers.items()):
-                try:
-                    timer.cancel()
-                    logger.debug(
-                        f"[主动消息] 已取消 {self._get_session_log_str(session_id)} 的自动触发计时器喵。"
-                    )
-                except Exception as e:
-                    logger.warning(f"[主动消息] 取消自动触发计时器时出错喵: {e}")
-
-            self.auto_trigger_timers.clear()
-            logger.info(f"[主动消息] 已取消 {auto_trigger_count} 个自动触发计时器喵。")
-
-            # 清理调度器任务（逐个移除后再 shutdown，便于日志定位）
-            if self.scheduler and self.scheduler.running:
-                try:
-                    jobs = self.scheduler.get_jobs()
-                    logger.info(f"[主动消息] 正在清理调度器任务喵，数量: {len(jobs)}")
-                    for job in jobs:
-                        try:
-                            self.scheduler.remove_job(job.id)
-                            logger.debug(f"[主动消息] 已移除调度器任务喵: {job.id}")
-                        except Exception as e:
-                            logger.warning(f"[主动消息] 移除调度器任务时出错喵: {e}")
-
-                    self.scheduler.shutdown()
-                    logger.info("[主动消息] 调度器已关闭喵。")
-                except Exception as e:
-                    logger.error(f"[主动消息] 关闭调度器时出错喵: {e}")
-
             # 终止前最后一次持久化，尽量保留当前会话状态
             if self.data_lock:
                 try:

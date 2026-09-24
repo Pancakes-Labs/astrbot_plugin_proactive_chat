@@ -27,6 +27,8 @@ class SchedulerMixin:
 
     async def _setup_auto_trigger(self, session_id: str, silent: bool = False) -> None:
         """为指定会话设置自动主动消息触发器。"""
+        # 计时器键统一使用规范化键，与 job id / 事件侧 last_message_times 保持一致。
+        session_id = self._normalize_session_id(session_id)
         session_config = self._get_session_config(session_id)
         if not session_config:
             return
@@ -86,24 +88,53 @@ class SchedulerMixin:
         except Exception as e:
             logger.error(f"[主动消息] 设置自动触发计时器失败喵: {e}")
 
+    def _iter_related_auto_trigger_keys(self, session_id: str) -> list[str]:
+        """列出与目标会话相关的自动触发计时器键（含同目标历史键）。"""
+        normalized_session_id = self._normalize_session_id(session_id)
+        parsed = self._parse_session_id(normalized_session_id)
+        target_scope = None
+        if parsed:
+            _, msg_type, target_id = parsed
+            target_scope = (self._is_friend_type(msg_type), target_id)
+
+        matched: list[str] = []
+        for timer_key in list(self.auto_trigger_timers.keys()):
+            # 规范化键直接命中
+            if timer_key == normalized_session_id:
+                matched.append(timer_key)
+                continue
+            if target_scope is None:
+                continue
+            # 兜底：解析历史键并按“同类型 + 同目标”匹配，避免键漂移导致漏取消
+            key_parsed = self._parse_session_id(str(timer_key))
+            if not key_parsed:
+                continue
+            _, key_type, key_target = key_parsed
+            if (
+                self._is_friend_type(key_type) == target_scope[0]
+                and key_target == target_scope[1]
+            ):
+                matched.append(timer_key)
+        return matched
+
     async def _cancel_auto_trigger(self, session_id: str) -> bool:
-        """取消指定会话的自动主动消息触发器。"""
+        """取消指定会话的自动主动消息触发器（含同目标历史键）。"""
         cancelled = False
-        if session_id in self.auto_trigger_timers:
+        for timer_key in self._iter_related_auto_trigger_keys(session_id):
             try:
-                self.auto_trigger_timers[session_id].cancel()
+                self.auto_trigger_timers[timer_key].cancel()
                 cancelled = True
                 logger.info(
-                    f"[主动消息] 已取消 {self._get_session_log_str(session_id)} 的自动触发计时器喵。"
+                    f"[主动消息] 已取消 {self._get_session_log_str(timer_key)} 的自动触发计时器喵。"
                 )
             except Exception as e:
                 logger.warning(f"[主动消息] 取消自动触发计时器时出错喵: {e}")
             finally:
-                del self.auto_trigger_timers[session_id]
+                self.auto_trigger_timers.pop(timer_key, None)
         return cancelled
 
     async def _cancel_all_related_auto_triggers(self, session_id: str) -> bool:
-        """取消指定会话的自动触发器（UMO 直接匹配）。"""
+        """取消指定会话及其同目标历史键的自动触发器。"""
         return await self._cancel_auto_trigger(session_id)
 
     def _is_friend_type(self, msg_type: str) -> bool:
@@ -190,6 +221,24 @@ class SchedulerMixin:
                     self.scheduler.remove_job(job.id)
                 except Exception:
                     pass
+
+    def _add_chat_job(self, run_session_id: str, run_date: datetime) -> None:
+        """规范化 session_id，清理同目标历史任务，并注册一个新的 check_and_chat 定时 job。
+
+        统一 job id / args 使用规范化键，避免与 session_data、事件侧使用的键漂移，
+        从而消除“用户回复无法取消的幽灵任务”与“按错误时间点触发”问题。
+        """
+        normalized = self._normalize_session_id(run_session_id)
+        self._purge_related_jobs(normalized)
+        self.scheduler.add_job(
+            self.check_and_chat,
+            "date",
+            run_date=run_date,
+            args=[normalized],
+            id=normalized,
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
 
     def _has_related_persisted_task(self, session_id: str) -> bool:
         """判断同一目标是否存在仍可恢复的持久化任务（避免重复触发）。"""
@@ -422,22 +471,16 @@ class SchedulerMixin:
 
             try:
                 run_date = datetime.fromtimestamp(next_trigger, tz=self.timezone)
-                existing_job = self.scheduler.get_job(session_id)
+                # 规范化键后再判断任务是否已存在，避免 raw/normalized 键漂移导致误判。
+                normalized_session_id = self._normalize_session_id(session_id)
+                existing_job = self.scheduler.get_job(normalized_session_id)
                 if existing_job:
                     logger.debug(
-                        f"[主动消息] {self._get_session_log_str(session_id, session_config)} 的任务已存在，跳过恢复喵。"
+                        f"[主动消息] {self._get_session_log_str(normalized_session_id, session_config)} 的任务已存在，跳过恢复喵。"
                     )
                     continue
 
-                self.scheduler.add_job(
-                    self.check_and_chat,
-                    "date",
-                    run_date=run_date,
-                    args=[session_id],
-                    id=session_id,
-                    replace_existing=True,
-                    misfire_grace_time=60,
-                )
+                self._add_chat_job(normalized_session_id, run_date)
                 logger.info(
                     f"[主动消息] 已成功从文件恢复任务喵: {self._get_session_log_str(session_id, session_config)}, 执行时间: {run_date} 喵"
                 )
@@ -470,6 +513,10 @@ class SchedulerMixin:
         self, session_id: str, reset_counter: bool = False
     ) -> None:
         """安排下一次主动聊天并立即将状态持久化到文件。"""
+        # 终止后不再注册任何新任务，避免在已关闭的调度器上留下持久化幽灵任务。
+        if getattr(self, "_terminating", False):
+            return
+
         normalized_session_id = self._normalize_session_id(session_id)
         session_config = self._get_session_config(normalized_session_id)
         if not session_config:
@@ -511,16 +558,7 @@ class SchedulerMixin:
 
             # 更新调度器与持久化数据
             # 先清理同目标历史任务，再写入新任务，确保同一目标仅一条生效
-            self._purge_related_jobs(normalized_session_id)
-            self.scheduler.add_job(
-                self.check_and_chat,
-                "date",
-                run_date=run_date,
-                args=[normalized_session_id],
-                id=normalized_session_id,
-                replace_existing=True,
-                misfire_grace_time=60,
-            )
+            self._add_chat_job(normalized_session_id, run_date)
 
             session_payload = self.session_data.setdefault(normalized_session_id, {})
             session_payload["next_trigger_time"] = next_trigger_time
@@ -578,6 +616,13 @@ class SchedulerMixin:
         self, session_id: str, auto_trigger_minutes: int | float
     ) -> None:
         """在异步上下文中处理自动触发回调，避免直接在定时器回调里操作共享状态。"""
+        # 插件已进入终止流程：直接返回，不再创建任何调度任务。
+        if getattr(self, "_terminating", False):
+            return
+
+        # 统一键口径：计时器、last_message_times、session_data 与 scheduler job
+        # 必须共用规范化键，否则会出现“用户已发言仍自动触发”与计数器读取不到的问题。
+        session_id = self._normalize_session_id(session_id)
         try:
             async with self.data_lock:
                 # 计时器已被取消则直接跳过
@@ -627,15 +672,7 @@ class SchedulerMixin:
                     random_interval
                 )
 
-                self.scheduler.add_job(
-                    self.check_and_chat,
-                    "date",
-                    run_date=run_date,
-                    args=[session_id],
-                    id=session_id,
-                    replace_existing=True,
-                    misfire_grace_time=60,
-                )
+                self._add_chat_job(session_id, run_date)
 
                 logger.info(
                     f"[主动消息] {self._get_session_log_str(session_id, current_config)} 满足条件，自动触发任务已创建喵！执行时间 (非持久化): {run_date.strftime('%Y-%m-%d %H:%M:%S')} 喵"
@@ -643,14 +680,20 @@ class SchedulerMixin:
         except Exception as e:
             logger.error(f"[主动消息] 自动触发任务创建失败喵: {e}")
         finally:
-            # 触发一次后移除计时器
-            if session_id in self.auto_trigger_timers:
-                del self.auto_trigger_timers[session_id]
+            # 触发一次后移除计时器（兼容历史非规范化键，避免残留导致重复触发）
+            for timer_key in self._iter_related_auto_trigger_keys(session_id):
+                self.auto_trigger_timers.pop(timer_key, None)
 
     async def _handle_group_silence_callback(
         self, session_id: str, idle_minutes: int | float
     ) -> None:
         """在异步上下文中处理群聊沉默回调，避免直接在定时器回调里操作共享状态。"""
+        # 插件已进入终止流程：直接返回，避免终止期间再触发一次主动消息调度。
+        if getattr(self, "_terminating", False):
+            return
+
+        # 群沉默计时器键同样统一为规范化键，避免历史键残留导致“仍在计时”的误判。
+        session_id = self._normalize_session_id(session_id)
         try:
             async with self.data_lock:
                 # 若计时器已被重置则跳过

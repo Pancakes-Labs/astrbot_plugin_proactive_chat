@@ -66,6 +66,11 @@ class ProactiveCoreMixin:
         unanswered_count: int,
     ) -> None:
         """主动消息任务完成后的收尾工作。"""
+        # 终止流程已开始：不再写入计数、安排下一次任务或持久化调度状态。
+        if getattr(self, "_terminating", False):
+            logger.info("[主动消息] 插件正在终止，跳过本次主动消息的收尾与重调度喵。")
+            return
+
         try:
             # 存档对话历史（使用新对话管理 API）
             user_msg_obj = UserMessageSegment(content=[TextPart(text=user_prompt)])
@@ -82,7 +87,9 @@ class ProactiveCoreMixin:
             logger.error(f"[主动消息] 存档对话历史失败喵: {e}")
             logger.warning("[主动消息] 对话存档失败喵，但会继续执行后续步骤喵。")
 
-        parsed = self._parse_session_id(session_id)
+        # 提前规范化：session_data 写入与 scheduler job 必须使用同一个 key，
+        normalized_session_id = self._normalize_session_id(session_id)
+        parsed = self._parse_session_id(normalized_session_id)
         is_private_session = parsed and (
             "Friend" in parsed[1] or "Private" in parsed[1]
         )
@@ -93,16 +100,16 @@ class ProactiveCoreMixin:
             # 更新未回复计数器
             # 每次主动发送成功后，未回复次数 +1
             new_unanswered_count = unanswered_count + 1
-            self.session_data.setdefault(session_id, {})["unanswered_count"] = (
-                new_unanswered_count
-            )
+            self.session_data.setdefault(normalized_session_id, {})[
+                "unanswered_count"
+            ] = new_unanswered_count
             logger.info(
-                f"[主动消息] {self._get_session_log_str(session_id)} 的第 {new_unanswered_count} 次主动消息已发送完成，当前未回复次数: {new_unanswered_count} 次喵。"
+                f"[主动消息] {self._get_session_log_str(normalized_session_id)} 的第 {new_unanswered_count} 次主动消息已发送完成，当前未回复次数: {new_unanswered_count} 次喵。"
             )
 
             # 私聊任务：锁内仅计算调度参数并写入持久化字段，避免在持锁期间操作调度器。
             if is_private_session:
-                session_config = self._get_session_config(session_id)
+                session_config = self._get_session_config(normalized_session_id)
                 if not session_config:
                     return
 
@@ -118,7 +125,9 @@ class ProactiveCoreMixin:
                 next_trigger_time = scheduled_at + random_interval
                 run_date = datetime.fromtimestamp(next_trigger_time, tz=self.timezone)
 
-                session_payload = self.session_data.setdefault(session_id, {})
+                session_payload = self.session_data.setdefault(
+                    normalized_session_id, {}
+                )
                 session_payload["next_trigger_time"] = next_trigger_time
                 session_payload["last_scheduled_at"] = scheduled_at
                 session_payload["last_schedule_min_interval_seconds"] = min_interval
@@ -134,21 +143,20 @@ class ProactiveCoreMixin:
             await self._save_data_internal()
 
         if scheduled_job_payload is not None:
-            self.scheduler.add_job(
-                self.check_and_chat,
-                "date",
-                run_date=scheduled_job_payload["run_date"],
-                args=[session_id],
-                id=session_id,
-                replace_existing=True,
-                misfire_grace_time=60,
-            )
+            # 统一走 _add_chat_job：内部完成 normalize + 同目标历史任务清理 + add_job，
+            # 保证 job id / args 与 session_data 键完全一致。
+            self._add_chat_job(normalized_session_id, scheduled_job_payload["run_date"])
             logger.info(
-                f"[主动消息] 已为 {self._get_session_log_str(session_id, scheduled_job_payload['session_config'])} 安排下一次主动消息喵，时间：{scheduled_job_payload['run_date'].strftime('%Y-%m-%d %H:%M:%S')} 喵。"
+                f"[主动消息] 已为 {self._get_session_log_str(normalized_session_id, scheduled_job_payload['session_config'])} 安排下一次主动消息喵，时间：{scheduled_job_payload['run_date'].strftime('%Y-%m-%d %H:%M:%S')} 喵。"
             )
 
     async def check_and_chat(self, session_id: str) -> None:
         """由定时任务触发的核心函数，完成一次完整的主动消息流程。"""
+        # 在途任务在插件终止后应立即退出，避免重载期间发出幽灵主动消息。
+        if getattr(self, "_terminating", False):
+            logger.debug("[主动消息] 插件正在终止，跳过本次 check_and_chat 喵。")
+            return
+
         normalized_session_id = self._normalize_session_id(session_id)
         try:
             # 免打扰与启用状态检查
@@ -219,8 +227,12 @@ class ProactiveCoreMixin:
             conv_id = request_package["conv_id"]
             history_messages = request_package["history"]
             system_prompt = request_package["system_prompt"]
-            # 可能使用规范化后的会话 ID（由上下文准备阶段返回）
-            session_id = request_package.get("session_id", session_id)
+            # 可能使用规范化后的会话 ID（由上下文准备阶段返回）；
+            # 此处再次规范化，确保 last_message_times / session_data 的读取键全局一致，
+            # 避免新消息检测（has_new_message）因键漂移而误判。
+            session_id = self._normalize_session_id(
+                request_package.get("session_id", session_id)
+            )
 
             # 记录任务开始状态快照
             # 用于检测 LLM 生成窗口内是否出现用户新消息
@@ -262,6 +274,11 @@ class ProactiveCoreMixin:
                 logger.info(
                     "[主动消息] 检测到用户在LLM生成期间发送了新消息，丢弃本次主动消息喵。"
                 )
+                return
+
+            # 发送前再次确认终止状态：LLM 生成耗时较长，期间可能已收到终止指令。
+            if getattr(self, "_terminating", False):
+                logger.info("[主动消息] 插件正在终止，丢弃本次已生成的主动消息喵。")
                 return
 
             # 发送消息与收尾
