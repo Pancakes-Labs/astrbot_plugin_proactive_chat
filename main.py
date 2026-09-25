@@ -237,6 +237,12 @@ class ProactiveChatPlugin(
         """插件终止入口：委托 LifecycleMixin 清理。"""
         await LifecycleMixin.terminate(self)
 
+    @filter.on_astrbot_loaded()
+    async def on_astrbot_loaded(self) -> None:
+        """AstrBot 加载完成钩子：平台已加载，恢复持久化定时任务。"""
+        # 具体逻辑委托 LifecycleMixin，避免主类承载过多流程代码。
+        await LifecycleMixin._on_astrbot_loaded(self)
+
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=999)
     async def on_friend_message(self, event: AstrMessageEvent) -> None:
         """私聊消息入口：委托 EventsMixin 处理。"""
