@@ -16,6 +16,11 @@ from astrbot.api import logger
 class LifecycleMixin:
     """插件生命周期混入类。"""
 
+    # 等待平台适配器加载的兜底超时与轮询间隔（秒）。
+    # 正常情况下由 on_astrbot_loaded 钩子触发，无需等待到超时。
+    STARTUP_PLATFORM_WAIT_TIMEOUT = 60.0
+    STARTUP_PLATFORM_POLL_INTERVAL = 1.0
+
     context: star.Context
     data_lock: asyncio.Lock
     plugin_start_time: float
@@ -36,11 +41,17 @@ class LifecycleMixin:
     _exception_handler_installed: bool
     _terminating: bool
     _start_time: float
+    # 平台就绪后的启动流程是否已完成（幂等保护），以及延迟启动兜底任务句柄。
+    _startup_finalized: bool
+    _startup_task: asyncio.Task[None] | None
 
     async def initialize(self) -> None:
         """插件的异步初始化函数。"""
         # 复位终止标志：同一进程重载场景下可能复用旧的终止状态。
         self._terminating = False
+        # 复位延迟启动状态：插件重载会创建新实例，需要重新判定平台时序。
+        self._startup_finalized = False
+        self._startup_task = None
 
         # 初始化共享锁
         self.data_lock = asyncio.Lock()
@@ -115,12 +126,18 @@ class LifecycleMixin:
         self.scheduler = AsyncIOScheduler(timezone=self.timezone)
         self.scheduler.start()
 
-        # 先恢复持久化任务，再初始化自动触发器，避免重复调度
-        await self._init_jobs_from_data()
-        logger.info("[主动消息] 调度器已初始化喵。")
-
-        await self._setup_auto_triggers_for_enabled_sessions()
-        logger.info("[主动消息] 自动主动消息触发器初始化完成喵。")
+        # AstrBot 首次启动时插件 initialize() 早于平台初始化，此时推迟到
+        # on_astrbot_loaded 钩子执行；插件热重载时平台已就绪，可立即执行。
+        if self._are_platforms_available():
+            logger.debug("[主动消息] 平台适配器已就绪，立即恢复定时任务喵。")
+            await self._finalize_startup()
+        else:
+            logger.info(
+                "[主动消息] 平台适配器尚未加载，定时任务恢复将推迟至 AstrBot 加载完成后执行喵。"
+            )
+            self._startup_task = asyncio.create_task(
+                self._wait_for_platforms_then_finalize()
+            )
 
         # 启动通知系统
         try:
@@ -156,12 +173,78 @@ class LifecycleMixin:
                     )
                 )
 
+    def _are_platforms_available(self) -> bool:
+        """判断是否已有可用的 IM 平台适配器实例。
+
+        用于区分「AstrBot 首次启动（插件早于平台加载）」与「插件热重载（平台已就绪）」
+        两种场景。webchat 由框架内置，不能作为平台已加载的依据。
+        """
+        try:
+            insts = self.context.platform_manager.get_insts()
+        except Exception:
+            return False
+        return any(p.meta().id and "webchat" not in p.meta().id.lower() for p in insts)
+
+    async def _finalize_startup(self) -> None:
+        """在平台适配器就绪后完成依赖平台的启动流程（幂等）。"""
+        # 终止流程中不再恢复任务，避免残留调度。
+        if self._startup_finalized or getattr(self, "_terminating", False):
+            return
+        self._startup_finalized = True
+
+        # 平台已就绪，再规范化一次会话键：修正历史遗留的 default 前缀等漂移键，
+        # 使此前因启动时序被破坏的持久化数据也能回归真实运行平台。
+        async with self.data_lock:
+            if self._normalize_session_data():
+                await self._save_data_internal()
+
+        # 先恢复持久化任务，再初始化自动触发器，避免重复调度。
+        await self._init_jobs_from_data()
+        logger.info("[主动消息] 调度器已初始化喵。")
+
+        await self._setup_auto_triggers_for_enabled_sessions()
+        logger.info("[主动消息] 自动主动消息触发器初始化完成喵。")
+
+    async def _on_astrbot_loaded(self) -> None:
+        """AstrBot 加载完成回调：平台已加载，恢复持久化定时任务。"""
+        try:
+            await self._finalize_startup()
+        except Exception as e:
+            logger.error(f"[主动消息] AstrBot 加载完成钩子处理失败喵: {e}")
+
+    async def _wait_for_platforms_then_finalize(self) -> None:
+        """兜底等待平台加载后再完成任务恢复。
+
+        正常情况下由 on_astrbot_loaded 钩子触发；插件重载等钩子不会触发的场景，
+        通过轮询 + 超时兜底避免任务恢复被无限推迟。
+        """
+        deadline = time.monotonic() + self.STARTUP_PLATFORM_WAIT_TIMEOUT
+        try:
+            while not self._are_platforms_available():
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "[主动消息] 等待平台适配器加载超时喵，将按当前可用平台恢复定时任务喵。"
+                    )
+                    break
+                await asyncio.sleep(self.STARTUP_PLATFORM_POLL_INTERVAL)
+            await self._finalize_startup()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[主动消息] 延迟恢复定时任务失败喵: {e}")
+
     async def terminate(self) -> None:
         """插件被卸载或停用时调用的清理函数。"""
         logger.info("[主动消息] 收到插件终止指令，开始清理资源喵。")
 
         # 置位终止标志
         self._terminating = True
+
+        # 先同步取消尚未完成的延迟启动任务，避免终止后仍恢复出新的调度任务。
+        startup_task = getattr(self, "_startup_task", None)
+        self._startup_task = None
+        if startup_task and not startup_task.done():
+            startup_task.cancel()
 
         # 调度器关闭与计时器取消必须最先执行，且先于本方法内的任何 await：
         if getattr(self, "scheduler", None) and self.scheduler.running:
@@ -195,6 +278,12 @@ class LifecycleMixin:
         logger.info(f"[主动消息] 已取消 {auto_trigger_count} 个自动触发计时器喵。")
 
         try:
+            if startup_task:
+                try:
+                    await startup_task
+                except asyncio.CancelledError:
+                    pass
+
             if self._heartbeat_task:
                 self._heartbeat_task.cancel()
                 try:

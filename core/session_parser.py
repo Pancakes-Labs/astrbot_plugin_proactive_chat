@@ -145,7 +145,9 @@ class SessionMixin:
         """
         动态解析并验证存活的 UMO。
 
-        优先使用首选平台（若运行中），否则尝试历史平台，再回退到当前运行平台或 default。
+        优先使用首选平台（若运行中或处于启动阶段），否则尝试历史平台，
+        再回退到当前运行平台；最后在确有首选平台信息时保留原平台 ID，
+        避免启动期平台未加载导致持久化会话键漂移到 default。
         """
         type_keyword = (
             "Friend" if "Friend" in msg_type or "Private" in msg_type else "Group"
@@ -176,6 +178,15 @@ class SessionMixin:
                 ):
                     return existing_id
 
+        # 首选平台实例已存在但尚未进入 RUNNING（AstrBot 启动阶段）时，保留原平台 ID，
+        # 避免键漂移；若平台处于 ERROR/STOPPED 则仍回退到其他运行平台以保证可送达。
+        if (
+            preferred_platform
+            and preferred_platform in active_insts
+            and active_insts[preferred_platform].status == PlatformStatus.PENDING
+        ):
+            return f"{preferred_platform}:{msg_type}:{target_id}"
+
         # 再次回退：任取一个当前运行平台
         running_platforms = [
             p for p in active_insts.values() if p.status == PlatformStatus.RUNNING
@@ -183,7 +194,12 @@ class SessionMixin:
         if running_platforms:
             return f"{running_platforms[0].meta().id}:{msg_type}:{target_id}"
 
-        # 最终回退：无运行平台时仅保证 UMO 结构可用
+        # 启动阶段平台适配器可能尚未实例化（active_insts 为空）。
+        # 此时原 UMO 已包含明确的平台 ID，必须原样保留，否则会导致持久化任务被误清理。
+        if preferred_platform:
+            return f"{preferred_platform}:{msg_type}:{target_id}"
+
+        # 最终回退：无任何平台信息时仅保证 UMO 结构可用
         fallback_p_id = list(active_insts.keys())[0] if active_insts else "default"
         return f"{fallback_p_id}:{msg_type}:{target_id}"
 
