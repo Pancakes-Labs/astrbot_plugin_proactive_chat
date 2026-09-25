@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import traceback
 import zoneinfo
 from typing import Any
 
@@ -41,8 +42,9 @@ class LifecycleMixin:
     _exception_handler_installed: bool
     _terminating: bool
     _start_time: float
-    # 平台就绪后的启动流程是否已完成（幂等保护），以及延迟启动兜底任务句柄。
+    # 平台就绪后的启动流程是否已完成（幂等保护）、并发保护锁，以及延迟启动兜底任务句柄。
     _startup_finalized: bool
+    _startup_lock: asyncio.Lock
     _startup_task: asyncio.Task[None] | None
 
     async def initialize(self) -> None:
@@ -51,6 +53,7 @@ class LifecycleMixin:
         self._terminating = False
         # 复位延迟启动状态：插件重载会创建新实例，需要重新判定平台时序。
         self._startup_finalized = False
+        self._startup_lock = asyncio.Lock()
         self._startup_task = None
 
         # 初始化共享锁
@@ -67,38 +70,10 @@ class LifecycleMixin:
         # 加载持久化数据
         async with self.data_lock:
             await self._load_data_internal()
-            # 启动时先做会话键规范化，避免历史数据中的多键并存
-            normalized = self._normalize_session_data()
-            if normalized:
-                # 仅在发生规范化变更时回写，减少无效 IO
-                await self._save_data_internal()
         logger.info("[主动消息] 已成功从文件加载会话数据喵。")
 
-        # 恢复插件启动后的消息时间（用于自动触发判定）
-        restored_count = 0
-        for session_id, session_info in self.session_data.items():
-            if isinstance(session_info, dict) and "last_message_time" in session_info:
-                last_time = session_info["last_message_time"]
-                if isinstance(last_time, (int, float)) and last_time > 0:
-                    # 仅恢复“本次启动后”的消息时间，避免历史消息误触发逻辑
-                    if last_time >= self.plugin_start_time:
-                        # last_message_times 全局统一使用规范化键，
-                        # 否则与事件监听侧写入的键不一致时自动触发判定会永远读到 0。
-                        normalized_session_id = self._normalize_session_id(session_id)
-                        self.last_message_times[normalized_session_id] = last_time
-                        restored_count += 1
-                        logger.debug(
-                            f"[主动消息] 已恢复 {self._get_session_log_str(session_id)} 在插件启动后的消息时间喵 -> {last_time}"
-                        )
-                    else:
-                        logger.debug(
-                            f"[主动消息] 忽略插件启动前的历史消息时间用于自动主动消息任务喵: {self._get_session_log_str(session_id)} -> {last_time}"
-                        )
-
-        if restored_count > 0:
-            logger.info(
-                f"[主动消息] 已从持久化数据恢复 {restored_count} 个会话在插件启动后的消息时间喵。"
-            )
+        # 说明：last_message_times 的恢复同样依赖规范化会话键，而规范化在
+        # 平台加载完成前可能漂移，因此该步骤一并推迟到 _finalize_startup 执行。
 
         # 读取时区设置（失败时回退系统时区）
         try:
@@ -130,7 +105,17 @@ class LifecycleMixin:
         # on_astrbot_loaded 钩子执行；插件热重载时平台已就绪，可立即执行。
         if self._are_platforms_available():
             logger.debug("[主动消息] 平台适配器已就绪，立即恢复定时任务喵。")
-            await self._finalize_startup()
+            try:
+                await self._finalize_startup()
+            except Exception:
+                # 立即恢复失败不应中断插件初始化，转为延迟任务重试。
+                logger.error(
+                    f"[主动消息] 立即恢复定时任务失败喵，将转为延迟重试喵:\n"
+                    f"{traceback.format_exc()}"
+                )
+                self._startup_task = asyncio.create_task(
+                    self._wait_for_platforms_then_finalize()
+                )
         else:
             logger.info(
                 "[主动消息] 平台适配器尚未加载，定时任务恢复将推迟至 AstrBot 加载完成后执行喵。"
@@ -185,32 +170,94 @@ class LifecycleMixin:
             return False
         return any(p.meta().id and "webchat" not in p.meta().id.lower() for p in insts)
 
-    async def _finalize_startup(self) -> None:
-        """在平台适配器就绪后完成依赖平台的启动流程（幂等）。"""
-        # 终止流程中不再恢复任务，避免残留调度。
+    async def _finalize_startup(self, *, allow_retry: bool = False) -> None:
+        """在平台适配器就绪后完成依赖平台的启动流程。
+
+        具备以下保护：
+        - 并发保护：加载完成钩子与延迟轮询任务可能同时触发，用锁保证串行；
+        - 终止保护：每个 await 让出执行权后重新检查，避免已清理调度器与计时器后，
+          本流程又恢复出调度状态；
+        - 失败可重试：仅在所有步骤都成功后才置位，异常时保持「未完成」，后续钩子或轮询仍可重试。
+
+        Args:
+            allow_retry: 为 True 时不置位完成标志（用于平台等待超时的
+                best-effort 恢复），以便平台稍后就绪时仍能补做规范化与恢复。
+        """
         if self._startup_finalized or getattr(self, "_terminating", False):
             return
-        self._startup_finalized = True
 
-        # 平台已就绪，再规范化一次会话键：修正历史遗留的 default 前缀等漂移键，
-        # 使此前因启动时序被破坏的持久化数据也能回归真实运行平台。
-        async with self.data_lock:
-            if self._normalize_session_data():
-                await self._save_data_internal()
+        async with self._startup_lock:
+            # 双重检查：等待锁期间可能已被其他调用完成，或已进入终止流程。
+            if self._startup_finalized or getattr(self, "_terminating", False):
+                return
 
-        # 先恢复持久化任务，再初始化自动触发器，避免重复调度。
-        await self._init_jobs_from_data()
-        logger.info("[主动消息] 调度器已初始化喵。")
+            # 平台已就绪，规范化会话键
+            async with self.data_lock:
+                if self._normalize_session_data():
+                    await self._save_data_internal()
 
-        await self._setup_auto_triggers_for_enabled_sessions()
-        logger.info("[主动消息] 自动主动消息触发器初始化完成喵。")
+            if getattr(self, "_terminating", False):
+                return
+
+            # 恢复插件启动后的消息时间：此时会话键已完成规范化，
+            # 写入的键才能与事件监听侧保持一致。
+            self._restore_last_message_times()
+
+            # 先恢复持久化任务，再初始化自动触发器，避免重复调度。
+            await self._init_jobs_from_data()
+            logger.info("[主动消息] 调度器已初始化喵。")
+
+            if getattr(self, "_terminating", False):
+                return
+
+            await self._setup_auto_triggers_for_enabled_sessions()
+            logger.info("[主动消息] 自动主动消息触发器初始化完成喵。")
+
+            # 仅在全部步骤成功后置位；allow_retry 时保留未完成状态以便补做。
+            if not allow_retry:
+                self._startup_finalized = True
+
+    def _restore_last_message_times(self) -> None:
+        """从持久化数据恢复插件启动后的会话消息时间（用于自动触发判定）。"""
+        restored_count = 0
+        for session_id, session_info in self.session_data.items():
+            if not isinstance(session_info, dict):
+                continue
+            last_time = session_info.get("last_message_time")
+            if not isinstance(last_time, (int, float)) or last_time <= 0:
+                continue
+
+            # 仅恢复“本次启动后”的消息时间，避免历史消息误触发逻辑
+            if last_time < self.plugin_start_time:
+                logger.debug(
+                    f"[主动消息] 忽略插件启动前的历史消息时间用于自动主动消息任务喵: "
+                    f"{self._get_session_log_str(session_id)} -> {last_time}"
+                )
+                continue
+
+            # last_message_times 全局统一使用规范化键，
+            # 否则与事件监听侧写入的键不一致时自动触发判定会永远读到 0。
+            normalized_session_id = self._normalize_session_id(session_id)
+            self.last_message_times[normalized_session_id] = last_time
+            restored_count += 1
+            logger.debug(
+                f"[主动消息] 已恢复 {self._get_session_log_str(session_id)} "
+                f"在插件启动后的消息时间喵 -> {last_time}"
+            )
+
+        if restored_count > 0:
+            logger.info(
+                f"[主动消息] 已从持久化数据恢复 {restored_count} 个会话在插件启动后的消息时间喵。"
+            )
 
     async def _on_astrbot_loaded(self) -> None:
         """AstrBot 加载完成回调：平台已加载，恢复持久化定时任务。"""
         try:
             await self._finalize_startup()
-        except Exception as e:
-            logger.error(f"[主动消息] AstrBot 加载完成钩子处理失败喵: {e}")
+        except Exception:
+            logger.error(
+                f"[主动消息] AstrBot 加载完成钩子处理失败喵:\n{traceback.format_exc()}"
+            )
 
     async def _wait_for_platforms_then_finalize(self) -> None:
         """兜底等待平台加载后再完成任务恢复。
@@ -222,16 +269,21 @@ class LifecycleMixin:
         try:
             while not self._are_platforms_available():
                 if time.monotonic() >= deadline:
+                    # 超时后按当前状态做一次 best-effort 恢复，但不视为最终完成：
+                    # 若目标平台稍后才加载，加载完成钩子仍可再次触发规范化与恢复。
                     logger.warning(
-                        "[主动消息] 等待平台适配器加载超时喵，将按当前可用平台恢复定时任务喵。"
+                        "[主动消息] 等待平台适配器加载超时喵，将按当前可用平台尝试恢复定时任务喵。"
                     )
-                    break
+                    await self._finalize_startup(allow_retry=True)
+                    return
                 await asyncio.sleep(self.STARTUP_PLATFORM_POLL_INTERVAL)
             await self._finalize_startup()
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            logger.error(f"[主动消息] 延迟恢复定时任务失败喵: {e}")
+        except Exception:
+            logger.error(
+                f"[主动消息] 延迟恢复定时任务失败喵:\n{traceback.format_exc()}"
+            )
 
     async def terminate(self) -> None:
         """插件被卸载或停用时调用的清理函数。"""
