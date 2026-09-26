@@ -170,12 +170,23 @@ class EventsMixin:
         # 更新消息时间（仅插件启动后用于自动触发）
         self.last_message_times[normalized_session_id] = current_time
 
+        # 记录最近活跃发送者，供主动消息构造事件时提供合理的发送者占位信息。
+        # 主动消息本身没有真实发送者，依赖 get_sender_id() 的插件需要该回退值。
+        sender_name = ""
+        try:
+            sender_name = str(event.get_sender_name() or "")
+        except Exception:
+            sender_name = ""
+
         async with self.data_lock:
             # 迁移已提前完成，此处仅写入当前 self_id 与消息时间。
+            session_payload = self.session_data.setdefault(normalized_session_id, {})
             if event.get_self_id():
-                self.session_data.setdefault(normalized_session_id, {})["self_id"] = (
-                    event.get_self_id()
-                )
+                session_payload["self_id"] = event.get_self_id()
+            if sender_id:
+                session_payload["last_sender_id"] = str(sender_id)
+            if sender_name:
+                session_payload["last_sender_name"] = sender_name
 
             if current_time >= self.plugin_start_time:
                 self.session_data.setdefault(normalized_session_id, {})[
