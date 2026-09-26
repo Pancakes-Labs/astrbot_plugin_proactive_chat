@@ -20,7 +20,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg" alt="License: AGPL-3.0">
   <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/AstrBot-v4.8.0+-orange.svg" alt="AstrBot v4.8.0+">
+  <img src="https://img.shields.io/badge/AstrBot-v4.24.0+-orange.svg" alt="AstrBot v4.24.0+">
 </p>
 
 <p align="center">
@@ -953,9 +953,10 @@ AstrBot/
          │  ├─ data_storage.py                # セッションデータの読書き、統合、クリーンアップ
          │  ├─ llm_adapter.py                 # 文脈準備と LLM 呼び出しアダプタ層
          │  ├─ message_events.py              # AstrBot メッセージイベント取り込みと監視ロジック
-         │  ├─ message_sender.py              # テキスト / TTS / 分割メッセージ送信
+         │  ├─ message_sender.py              # テキスト / TTS / 分割送信と装飾フック
          │  ├─ notification_center.py         # リモート通知取得、ローカルキャッシュ、既読状態管理
          │  ├─ plugin_lifecycle.py            # プラグイン初期化、復元、ライフサイクル管理
+         │  ├─ proactive_event.py             # 自発メッセージイベントと標準フック配信基盤
          │  ├─ session_config.py              # セッション設定解析と適用ロジック
          │  ├─ session_override_manager.py    # セッション差分設定管理
          │  ├─ session_parser.py              # セッション ID 解析と正規化
