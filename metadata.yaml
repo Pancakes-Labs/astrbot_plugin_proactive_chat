@@ -4,7 +4,7 @@ author: "DBJD-CR"
 version: "v1.2.5"
 desc: "一个能让 Bot 在私聊和群聊中发起主动消息的插件，拥有上下文感知、持久化数据、动态情绪、免打扰时段和 TTS 集成。还有独立 WebUI，可进行个性化配置。"
 repo: "https://github.com/Pancakes-Labs/astrbot_plugin_proactive_chat"
-astrbot_version: ">=4.8.0"
+astrbot_version: ">=4.24.0"
 support_platforms:
   - aiocqhttp
   - qq_official

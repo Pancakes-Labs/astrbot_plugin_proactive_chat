@@ -20,7 +20,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg" alt="License: AGPL-3.0">
   <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/AstrBot-v4.8.0+-orange.svg" alt="AstrBot v4.8.0+">
+  <img src="https://img.shields.io/badge/AstrBot-v4.24.0+-orange.svg" alt="AstrBot v4.24.0+">
 </p>
 
 <p align="center">
@@ -951,9 +951,10 @@ AstrBot/
          │  ├─ data_storage.py                # Session data read/write, merging, and cleanup
          │  ├─ llm_adapter.py                 # Context preparation and LLM adapter layer
          │  ├─ message_events.py              # AstrBot message event integration and listeners
-         │  ├─ message_sender.py              # Text / TTS / segmented message sending
+         │  ├─ message_sender.py              # Text / TTS / segmented sending and decorating hooks
          │  ├─ notification_center.py         # Remote notification fetch, local cache, and read-state maintenance
          │  ├─ plugin_lifecycle.py            # Plugin initialization, restoration, and lifecycle management
+         │  ├─ proactive_event.py             # Proactive event object and standard hook dispatch infrastructure
          │  ├─ session_config.py              # Session configuration parsing and application logic
          │  ├─ session_override_manager.py    # Per-session override management
          │  ├─ session_parser.py              # Session ID parsing and normalization

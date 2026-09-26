@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from datetime import datetime
@@ -57,6 +58,41 @@ class ProactiveCoreMixin:
 
         return True, "allowed"
 
+    async def _verify_message_persisted(
+        self, session_id: str, conv_id: str, assistant_response: str
+    ) -> bool:
+        """回读对话记录，校验本次主动消息是否真正落盘。
+
+        AstrBot 的 add_message_pair 不返回写入结果，且内部为“读出 content ->
+        追加 -> 整体覆盖”的读改写流程，因此这里主动回读对话历史，确认末尾存在
+        本次生成的 assistant 文本，避免“误以为已存档、实则静默失败”。
+        """
+        target = (assistant_response or "").strip()
+        if not target:
+            return False
+        try:
+            conversation = await self.context.conversation_manager.get_conversation(
+                session_id, conv_id
+            )
+            if not conversation or not conversation.history:
+                return False
+            history = conversation.history
+            if isinstance(history, str):
+                history = json.loads(history)
+            if not isinstance(history, list):
+                return False
+            # 仅比对末尾若干条，兼顾性能与写入位置漂移
+            for record in reversed(history[-6:]):
+                if not isinstance(record, dict) or record.get("role") != "assistant":
+                    continue
+                serialized = json.dumps(record.get("content", ""), ensure_ascii=False)
+                if target in serialized:
+                    return True
+        except Exception as e:
+            logger.debug(f"[主动消息] 回读校验对话历史失败喵: {e}")
+            return False
+        return False
+
     async def _finalize_and_reschedule(
         self,
         session_id: str,
@@ -71,21 +107,35 @@ class ProactiveCoreMixin:
             logger.info("[主动消息] 插件正在终止，跳过本次主动消息的收尾与重调度喵。")
             return
 
-        try:
-            # 存档对话历史（使用新对话管理 API）
-            user_msg_obj = UserMessageSegment(content=[TextPart(text=user_prompt)])
-            assistant_msg_obj = AssistantMessageSegment(
-                content=[TextPart(text=assistant_response)]
-            )
-            await self.context.conversation_manager.add_message_pair(
-                cid=conv_id,
-                user_message=user_msg_obj,
-                assistant_message=assistant_msg_obj,
-            )
-            logger.info("[主动消息] 已成功将本次主动消息存档至对话历史喵。")
-        except Exception as e:
-            logger.error(f"[主动消息] 存档对话历史失败喵: {e}")
-            logger.warning("[主动消息] 对话存档失败喵，但会继续执行后续步骤喵。")
+        # 无文本结果（如纯图片回复）不写入对话历史：
+        # 对话历史会作为后续 LLM 上下文，写入空文本会破坏上下文结构，
+        # 也会让回读校验产生误导性告警。
+        if not (assistant_response or "").strip():
+            logger.debug("[主动消息] 本次结果无文本内容，跳过对话历史存档喵。")
+        else:
+            try:
+                # 存档对话历史（使用新对话管理 API）
+                user_msg_obj = UserMessageSegment(content=[TextPart(text=user_prompt)])
+                assistant_msg_obj = AssistantMessageSegment(
+                    content=[TextPart(text=assistant_response)]
+                )
+                await self.context.conversation_manager.add_message_pair(
+                    cid=conv_id,
+                    user_message=user_msg_obj,
+                    assistant_message=assistant_msg_obj,
+                )
+                # add_message_pair 无返回值，写入失败只会抛异常；此处回读确认确实落盘。
+                if await self._verify_message_persisted(
+                    session_id, conv_id, assistant_response
+                ):
+                    logger.info("[主动消息] 已成功将本次主动消息存档至对话历史喵。")
+                else:
+                    logger.warning(
+                        "[主动消息] 本次主动消息已提交存档，但回读校验未命中末尾记录喵，请检查对话历史持久化是否正常喵。"
+                    )
+            except Exception as e:
+                logger.error(f"[主动消息] 存档对话历史失败喵: {e}")
+                logger.warning("[主动消息] 对话存档失败喵，但会继续执行后续步骤喵。")
 
         # 提前规范化：session_data 写入与 scheduler job 必须使用同一个 key，
         normalized_session_id = self._normalize_session_id(session_id)
@@ -218,7 +268,7 @@ class ProactiveCoreMixin:
                     )
                 )
 
-            # 准备上下文与人格
+            # 准备上下文与人格（不绑定事件：上下文准备不需要钩子参与）
             request_package = await self._prepare_llm_request(normalized_session_id)
             if not request_package:
                 await self._schedule_next_chat_and_save(normalized_session_id)
@@ -234,6 +284,9 @@ class ProactiveCoreMixin:
                 request_package.get("session_id", session_id)
             )
 
+            # 在会话标识最终确定后再构造统一事件对象。
+            proactive_event = self._build_proactive_event(session_id)
+
             # 记录任务开始状态快照
             # 用于检测 LLM 生成窗口内是否出现用户新消息
             task_start_state = {
@@ -242,15 +295,26 @@ class ProactiveCoreMixin:
                 "timestamp": time.time(),
             }
 
-            # 调用 LLM
-            response_text, final_user_prompt = await self._generate_llm_response(
+            # 调用 LLM，内部派发钩子
+            llm_response, final_user_prompt = await self._generate_llm_response(
                 session_id,
                 session_config,
                 history_messages,
                 system_prompt,
                 unanswered_count,
+                event=proactive_event,
+                conversation=request_package.get("conversation"),
+                platform_context=request_package.get("platform_context", ""),
             )
-            if not response_text:
+            if not llm_response:
+                await self._schedule_next_chat_and_save(session_id)
+                return
+
+            # 生成结果可能被后置钩子改写（如清理标记、追加图片），
+            # 因此存档与发送都必须使用“钩子处理后”的最终形态。
+            response_text = self._extract_response_text(llm_response)
+            result_chain = self._extract_response_chain(llm_response)
+            if not response_text and not result_chain:
                 await self._schedule_next_chat_and_save(session_id)
                 return
 
@@ -281,9 +345,17 @@ class ProactiveCoreMixin:
                 logger.info("[主动消息] 插件正在终止，丢弃本次已生成的主动消息喵。")
                 return
 
-            # 发送消息与收尾
-            await self._send_proactive_message(session_id, response_text)
+            # 发送消息与收尾。
+            # 传入原始消息链：当文本为空但 Provider 直接返回了组件（如纯图片）时，
+            # 这些组件即为本次主动消息的全部内容，不能丢弃。
+            await self._send_proactive_message(
+                session_id,
+                response_text,
+                event=proactive_event,
+                initial_chain=result_chain,
+            )
 
+            # 存档使用装饰前的原始文本，其语义不适用于对话历史，避免污染后续上下文。
             await self._finalize_and_reschedule(
                 session_id,
                 conv_id,
