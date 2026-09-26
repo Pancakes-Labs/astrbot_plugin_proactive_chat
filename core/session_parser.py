@@ -145,7 +145,12 @@ class SessionMixin:
         """
         动态解析并验证存活的 UMO。
 
-        优先使用首选平台（若运行中），否则尝试历史平台，再回退到当前运行平台或 default。
+        解析顺序遵循「优先保住原平台会话键」原则：
+        1. 首选平台处于 RUNNING 或启动阶段 PENDING 时直接复用；
+        2. 仅当首选平台确实不可用（ERROR/STOPPED 或尚未实例化）时，
+           才回退到历史平台 / 当前运行平台；
+        3. 仍未命中时，只要原 UMO 带有明确平台 ID 就原样保留，
+           避免启动期平台未加载导致持久化会话键漂移到 default。
         """
         type_keyword = (
             "Friend" if "Friend" in msg_type or "Private" in msg_type else "Group"
@@ -166,6 +171,14 @@ class SessionMixin:
         ):
             return f"{preferred_platform}:{msg_type}:{target_id}"
 
+        # 这里只覆盖 PENDING；ERROR/STOPPED 仍走后续回退以保证可送达。
+        if (
+            preferred_platform
+            and preferred_platform in active_insts
+            and active_insts[preferred_platform].status == PlatformStatus.PENDING
+        ):
+            return f"{preferred_platform}:{msg_type}:{target_id}"
+
         # 次选：从历史 session_data 中寻找同目标且在线的平台
         for existing_id in self.session_data.keys():
             if type_keyword in existing_id and existing_id.endswith(f":{target_id}"):
@@ -183,7 +196,12 @@ class SessionMixin:
         if running_platforms:
             return f"{running_platforms[0].meta().id}:{msg_type}:{target_id}"
 
-        # 最终回退：无运行平台时仅保证 UMO 结构可用
+        # 启动阶段平台适配器可能尚未实例化（active_insts 为空）。
+        # 此时原 UMO 已包含明确的平台 ID，必须原样保留，否则会导致持久化任务被误清理。
+        if preferred_platform:
+            return f"{preferred_platform}:{msg_type}:{target_id}"
+
+        # 最终回退：无任何平台信息时仅保证 UMO 结构可用
         fallback_p_id = list(active_insts.keys())[0] if active_insts else "default"
         return f"{fallback_p_id}:{msg_type}:{target_id}"
 
