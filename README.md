@@ -877,8 +877,8 @@ PS: 由于我个人本地的测试环境有限，我们非常欢迎分享你在�
 从 v1.2.0 版本开始，插件已经重构为 **前端控制台 + 模块化后端核心** 的结构；在后续迭代中，又继续加入了 **通知系统、遥测系统** 与更完善的文档组织：
 
 - **前端 (`admin/`)**：提供独立 Web 管理端，负责运行状态展示、任务管理、通知中心、文档浏览、配置编辑与实时同步。
-- **后端核心 (`core/`)**：拆分为多个职责明确的模块，分别处理会话配置、调度、消息发送、上下文构建、持久化、通知同步、遥测与 Web 管理服务。
-- **工具模块 (`utils/`)**：放置跨模块复用的通用工具，例如时间处理与版本读取。
+- **后端核心 (`core/`)**：全部后端子包统一收纳在 `core/` 之下，并按职责划分为 `adapters`（框架适配）、`console`（Web 控制台）、`domain`（领域模型）、`features`（功能装配）、`pipeline`（流水线）、`remote`（遥测与通知）、`services`（服务）与 `store`（持久化）。
+- **工具模块 (`utils/`)**：位于根目录，放置跨模块复用的通用工具，例如时间处理与版本读取。
 - **根目录**：保留插件入口、配置结构、依赖声明与项目说明文档等关键文件。
 
 当前目录结构示例：
@@ -950,22 +950,20 @@ AstrBot/
          │  ├─ StarRank.svg
          │  └─ ShitMountain.svg
          │
-         ├─ core/                             # 模块化后端核心实现
+         ├─ core/                             # 模块化后端核心实现（全部后端子包统一收纳于此）
          │  ├─ __init__.py
-         │  ├─ chat_flow.py                   # 主动消息执行流与主任务编排
-         │  ├─ data_storage.py                # 会话数据读写、合并与清理
-         │  ├─ llm_adapter.py                 # 上下文准备与 LLM 调用适配层
-         │  ├─ message_events.py              # AstrBot 消息事件接入与监听逻辑
-         │  ├─ message_sender.py              # 文本 / TTS / 分段消息发送与装饰钩子
-         │  ├─ notification_center.py         # 远端通知拉取、本地缓存与已读状态维护
-         │  ├─ plugin_lifecycle.py            # 插件初始化、恢复与生命周期管理
-         │  ├─ proactive_event.py             # 主动消息事件对象与标准钩子派发基础设施
-         │  ├─ session_config.py              # 会话配置解析与生效逻辑
-         │  ├─ session_override_manager.py    # 会话差异配置管理
-         │  ├─ session_parser.py              # 会话 ID 解析与规范化
-         │  ├─ task_scheduler.py              # 定时任务与触发调度逻辑
-         │  ├─ telemetry_manager.py           # 匿名遥测上报、配置快照过滤与错误脱敏
-         │  └─ web_admin_server.py            # Web 管理端服务与通知接口桥接
+         │  ├─ adapters/                      # 框架适配层：事件接入、平台解析、对话与 Provider 适配
+         │  ├─ console/                       # Web 控制台：服务器、路由、状态构建与实时推送
+         │  ├─ domain/                        # 领域层：值对象与数据模型（不依赖框架）
+         │  ├─ features/                      # 功能装配：默认功能与可插拔扩展点
+         │  │  ├─ context/                    # 上下文来源功能
+         │  │  ├─ deliver/                    # 消息发送功能
+         │  │  ├─ prompt/                     # 提示词功能
+         │  │  └─ record/                     # 存档与重调度功能
+         │  ├─ pipeline/                      # 流水线引擎：Stage 协议、钩子注册表与执行器
+         │  ├─ remote/                        # 远端服务：遥测管理器与通知中心
+         │  ├─ services/                      # 服务层：会话、配置、调度、发送、上下文与 LLM
+         │  └─ store/                         # 本地持久化：会话数据与差异配置存储
          │
          ├─ docs/                             # 补充文档目录
          │  └─ notification-api-spec.md       # 通知接口与开发规范文档
@@ -973,7 +971,7 @@ AstrBot/
          └─ utils/
             ├─ __init__.py
             ├─ time_utils.py                  # 通用时间工具函数
-            └─ version.py                     # 插件版本 / AstrBot 版本统一读取工具
+            └─ version_utils.py               # 插件版本 / AstrBot 版本统一读取工具
 ```
 
 插件会在 `AstrBot/data/plugin_data/astrbot_plugin_proactive_chat/` 下创建自己的数据文件夹，用于保存运行时状态与缓存文件。
