@@ -76,9 +76,9 @@ class WebConsoleServer:
         self.server_task: asyncio.Task | None = None
         # 实时推送通道与鉴权组件。
         self.realtime = RealtimeChannel(plugin)
-        # 配置了密码才启用令牌鉴权。
+        # 令牌鉴权：以回调动态读取当前密码配置，改密码后无需重启即生效。
         self.token_auth = TokenAuth(
-            bool(self.config.get("web_admin", {}).get("password", ""))
+            lambda: bool(self.config.get("web_admin", {}).get("password", ""))
         )
         # 状态载荷构建器，连接计数实时取自推送通道。
         self.state_builder = StateBuilder(
