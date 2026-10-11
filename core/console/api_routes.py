@@ -188,7 +188,21 @@ class ApiRoutes:
                 else:
                     self.config[key] = payload[key]
 
-            plugin.config.save_config()
+            try:
+                plugin.config.save_config()
+            except Exception as e:
+                # 内存已更新但落盘失败：仍广播以保持前端与内存一致，并明确报错。
+                logger.error(f"[主动消息] 保存配置失败喵: {e}")
+                await _broadcast_web_update("config")
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "配置已应用到内存，但保存到磁盘失败",
+                        "message": str(e),
+                    },
+                    status_code=500,
+                )
+
             await _broadcast_web_update("config")
             return {"ok": True}
 
@@ -482,7 +496,8 @@ class ApiRoutes:
                 )
 
             plugin.manual_trigger_sessions.add(normalized)
-            asyncio.create_task(plugin.check_and_chat(normalized))
+            # 纳入统一任务登记，插件终止时可被一并取消，避免游离后台任务。
+            plugin._track_task(asyncio.create_task(plugin.check_and_chat(normalized)))
             await _broadcast_web_update("jobs")
             return {
                 "ok": True,
