@@ -186,7 +186,7 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                                 transitionDuration: '300ms',
                                 '&.Mui-checked': {
                                     transform: 'translateX(20px)',
-                                    color: '#fff',
+                                    color: 'var(--md-sys-color-on-primary)',
                                     '& + .MuiSwitch-track': {
                                         backgroundColor: 'primary.main',
                                         opacity: 1,
@@ -198,11 +198,11 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                                 boxSizing: 'border-box',
                                 width: 24,
                                 height: 24,
-                                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.2)',
+                                boxShadow: 'var(--md-switch-thumb-shadow)',
                             },
                             '& .MuiSwitch-track': {
                                 borderRadius: 16,
-                                backgroundColor: 'rgba(0, 0, 0, 0.12)',
+                                backgroundColor: 'var(--md-switch-track)',
                                 opacity: 1,
                                 transition: 'background-color 300ms',
                             },
@@ -370,7 +370,7 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                                     sx: {
                                         borderRadius: 1.5,
                                         mt: 0.5,
-                                        boxShadow: '0 4px 16px rgba(0,0,0,0.1)'
+                                        boxShadow: 'var(--md-menu-shadow)'
                                     }
                                 }
                             }

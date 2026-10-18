@@ -67,7 +67,12 @@
             const cached = localStorage.getItem(getExpandedKey(currentMode, currentSession));
             if (!cached) return window.ConfigShared.getAllExpandablePaths(schema || {});
             try {
-                return JSON.parse(cached);
+                const parsed = JSON.parse(cached);
+                // 缓存可能是旧版本写入的非数组结构，直接使用会让 includes 调用崩溃。
+                if (!Array.isArray(parsed)) {
+                    return window.ConfigShared.getAllExpandablePaths(schema || {});
+                }
+                return parsed.filter((item) => typeof item === 'string');
             } catch (e) {
                 console.error('解析展开状态失败', e);
                 return [];
