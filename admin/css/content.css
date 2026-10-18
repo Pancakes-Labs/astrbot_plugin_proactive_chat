@@ -1,0 +1,1178 @@
+﻿/* 文件职责：任务页、通知中心与 Markdown 阅读区的组件样式。
+ *
+ * 注意：task-* 与 notification-* 规则在此文件内存在有意的交错顺序。
+ * NotificationsView 的通知卡片同时带有 task-card-enhanced / task-next-run-panel 类，
+ * notification-feed-* 依赖靠后的声明覆盖任务卡片的尺寸与内边距，
+ * 因此调整规则顺序前必须先确认这些复用类的层叠结果。
+ */
+ 
+.tasks-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.tasks-header-subtitle {
+    opacity: 0.72;
+}
+
+.tasks-empty-card {
+    text-align: center;
+    padding: 48px 24px;
+}
+
+.tasks-empty-icon {
+    font-size: 34px;
+    margin-bottom: 12px;
+}
+
+.notifications-view {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.notifications-hero-card {
+    padding: 18px 24px;
+    background:
+        linear-gradient(135deg, rgb(var(--md-primary-rgb) / 0.08), rgb(var(--md-primary-rgb) / 0.025) 48%, rgba(255, 255, 255, 0.72) 100%),
+        var(--md-sys-color-surface);
+    position: relative;
+    overflow: hidden;
+}
+
+.notifications-hero-card::after {
+    content: '';
+    position: absolute;
+    inset: auto -40px -56px auto;
+    width: 180px;
+    height: 180px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgb(var(--md-primary-rgb) / 0.14), transparent 68%);
+    pointer-events: none;
+}
+
+.notifications-header-row {
+    margin-bottom: 0;
+    align-items: flex-start;
+    position: relative;
+    z-index: 1;
+}
+
+.notifications-header-main {
+    min-width: 0;
+    flex: 1;
+}
+
+.notifications-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 14px 18px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.notifications-inline-meta {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+    margin-top: 0;
+    max-width: none;
+}
+
+.notifications-inline-meta-item {
+    min-width: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    border: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+.notifications-inline-meta-item.is-pill {
+    min-height: 34px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.58);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.12);
+    box-shadow: none;
+}
+
+.notifications-inline-meta-item strong {
+    font-size: 12px;
+    line-height: 1.2;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface);
+    word-break: break-word;
+}
+
+.notifications-inline-meta-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
+    white-space: nowrap;
+}
+
+.notifications-actions-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    padding-left: 12px;
+    padding-top: 2px;
+}
+
+.notifications-actions-row .MuiButton-root {
+    min-height: 52px;
+    padding: 0 22px;
+    border-radius: 18px;
+    font-weight: 700;
+    box-shadow: none;
+    border-width: 1px;
+}
+
+.notifications-empty-card {
+    padding: 56px 28px;
+}
+
+.notifications-feed-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.markdown-docs-shell {
+    display: grid;
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
+}
+
+.markdown-docs-aside-column {
+    min-width: 0;
+}
+
+.markdown-docs-aside-sticky {
+    position: sticky;
+    top: calc(var(--top-bar-height) + 16px);
+}
+
+.markdown-docs-sidebar-card,
+.markdown-docs-content-card {
+    min-height: 520px;
+}
+
+.markdown-docs-sidebar-card {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    height: calc(100vh - var(--top-bar-height) - 32px);
+    max-height: 880px;
+    overflow: hidden;
+}
+
+.markdown-docs-sidebar-head {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.markdown-docs-file-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.markdown-docs-content-column {
+    min-width: 0;
+}
+
+.markdown-docs-file-item {
+    width: 100%;
+    text-align: left;
+    padding: 14px 16px;
+    border-radius: 16px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.12);
+    background: rgba(255, 255, 255, 0.56);
+    color: var(--md-sys-color-on-surface);
+    cursor: pointer;
+    transition:
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        transform var(--interactive-transition-duration) var(--theme-transition-easing),
+        box-shadow var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.markdown-docs-file-item:hover {
+    transform: translateY(-2px);
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    border-color: rgb(var(--md-primary-rgb) / 0.18);
+    box-shadow: 0 8px 22px rgb(var(--md-primary-rgb) / 0.08);
+}
+
+.markdown-docs-file-item.is-active {
+    background: var(--md-sys-color-primary-container);
+    color: var(--md-sys-color-on-primary-container);
+    border-color: rgb(var(--md-primary-rgb) / 0.22);
+}
+
+.markdown-docs-file-item-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+
+.markdown-docs-file-icon {
+    flex-shrink: 0;
+}
+
+.markdown-docs-file-title {
+    font-size: 14px;
+    font-weight: 800;
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.markdown-docs-file-path {
+    opacity: 0.72;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.markdown-docs-content-card {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.markdown-docs-article-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.markdown-docs-article {
+    min-height: 380px;
+}
+
+.markdown-docs-empty-card,
+.markdown-docs-empty-side-card {
+    min-height: 240px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.tasks-grid-enhanced {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    gap: 18px;
+}
+
+.task-card-enhanced {
+    /* 任务卡片与状态页卡片风格保持一致，但更强调执行时间与操作按钮区域。 */
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-height: 320px;
+    position: relative;
+    overflow: hidden;
+}
+
+.notification-feed-card {
+    min-height: auto;
+    padding: 18px 20px 16px;
+    gap: 12px;
+    border-radius: 20px;
+    background:
+        linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.06), rgb(var(--md-primary-rgb) / 0.02) 34%, rgba(255, 255, 255, 0.78) 100%),
+        var(--md-sys-color-surface);
+    box-shadow: 0 8px 24px rgb(var(--md-primary-rgb) / 0.08);
+}
+
+.notification-feed-card::after {
+    width: 140px;
+    height: 140px;
+    inset: auto -34px -46px auto;
+    background: radial-gradient(circle, rgb(var(--md-primary-rgb) / 0.12), transparent 70%);
+}
+
+.notification-feed-card.is-read {
+    border-color: rgb(var(--md-primary-rgb) / 0.10);
+}
+
+.notification-feed-card-top {
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding-bottom: 2px;
+}
+
+.notification-feed-heading-group {
+    min-width: 0;
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: nowrap;
+}
+
+.notification-feed-title-block {
+    gap: 6px;
+}
+
+.notification-feed-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.notification-feed-time {
+    opacity: 0.78;
+    font-size: 11.5px !important;
+}
+
+.notification-feed-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    font-size: 1.22rem !important;
+    line-height: 1.35 !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.notification-feed-side {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    padding-top: 1px;
+}
+
+.notification-feed-meta-inline {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    padding-left: 12px;
+}
+
+.notification-feed-heading-group .MuiChip-root,
+.notification-feed-type-chip {
+    height: 30px;
+    border-radius: 999px;
+    font-weight: 700;
+    flex-shrink: 0;
+    margin-left: 0;
+}
+
+/* 通知页顶部的未读汇总胶囊，按未读数量切换暖色 / 绿色。 */
+.notification-unread-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    line-height: 1;
+    border: 1px solid transparent;
+}
+
+.notification-unread-pill.is-unread {
+    color: var(--md-sys-color-warning);
+    background: rgb(var(--md-warning-rgb) / 0.12);
+    border-color: rgb(var(--md-warning-rgb) / 0.28);
+}
+
+.notification-unread-pill.is-clear {
+    color: var(--md-sys-color-success);
+    background: rgb(var(--md-success-rgb) / 0.08);
+    border-color: rgb(var(--md-success-rgb) / 0.18);
+}
+
+/* 任务卡来源模式标记，跟随主色主题自动切换。 */
+.task-source-mode-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.18);
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    color: var(--md-sys-color-primary);
+    line-height: 1.2;
+}
+
+.task-meta-grid {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.task-meta-cell {
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.12);
+    background: rgb(var(--md-primary-rgb) / 0.04);
+    min-width: 0;
+}
+
+.notification-feed-status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    padding: 0 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.notification-feed-status-pill.is-read {
+    color: #5B6472;
+    background: rgba(91, 100, 114, 0.10);
+    border-color: rgba(91, 100, 114, 0.14);
+}
+
+.notification-feed-status-pill.is-unread {
+    color: #B45309;
+    background: rgba(245, 158, 11, 0.14);
+    border-color: rgba(245, 158, 11, 0.22);
+}
+
+
+.task-card-enhanced.is-urgent {
+    border-color: rgba(245, 158, 11, 0.35);
+}
+
+.task-card-enhanced.is-expired {
+    border-color: rgba(244, 67, 54, 0.28);
+}
+
+.task-card-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.task-card-title-block {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.task-card-kicker {
+    display: block !important;
+    margin-bottom: 4px !important;
+    opacity: 0.6;
+}
+
+.task-card-session {
+    font-weight: 700 !important;
+    word-break: break-all;
+    font-size: 13px !important;
+    line-height: 1.4;
+}
+
+.task-card-session.is-primary {
+    font-size: 28px !important;
+    letter-spacing: -0.2px;
+    line-height: 1.25;
+}
+
+.task-card-session-sub {
+    display: block !important;
+    max-width: none;
+    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
+    opacity: 0.72;
+    font-size: 12px !important;
+}
+
+.task-next-run-panel {
+    background: var(--md-sys-color-surface-variant);
+    padding: 16px;
+    border-radius: 16px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.notification-feed-content-panel {
+    position: relative;
+    padding: 16px 16px 56px;
+    background: linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.08), rgb(var(--md-primary-rgb) / 0.035));
+    border-color: rgb(var(--md-primary-rgb) / 0.09);
+    border-radius: 16px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.notification-feed-content-text {
+    color: var(--md-sys-color-on-surface);
+}
+
+.notification-feed-content-text-plain {
+    white-space: pre-wrap;
+}
+
+.notification-md {
+    color: var(--md-sys-color-on-surface);
+    line-height: 1.82;
+    font-size: 0.97rem;
+    word-break: break-word;
+}
+
+.notification-md > :first-child {
+    margin-top: 0;
+}
+
+.notification-md > :last-child {
+    margin-bottom: 0;
+}
+
+.notification-md p,
+.notification-md ul,
+.notification-md ol,
+.notification-md blockquote,
+.notification-md pre,
+.notification-md .notification-md-table-wrap,
+.notification-md .notification-md-details,
+.notification-md .notification-md-mermaid-block {
+    margin: 0 0 0.95rem;
+}
+
+.notification-md h1,
+.notification-md h2,
+.notification-md h3,
+.notification-md h4,
+.notification-md h5,
+.notification-md h6 {
+    margin: 1.2rem 0 0.72rem;
+    color: var(--md-sys-color-on-surface);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.32;
+}
+
+.notification-md h1 {
+    font-size: 1.32rem;
+    padding-bottom: 0.46rem;
+    border-bottom: 1px solid rgb(var(--md-primary-rgb) / 0.16);
+}
+
+.notification-md h2 {
+    font-size: 1.18rem;
+    padding-left: 0.72rem;
+    border-left: 4px solid var(--md-sys-color-primary);
+}
+
+.notification-md h3 {
+    font-size: 1.05rem;
+    color: var(--md-sys-color-primary);
+}
+
+.notification-md h4,
+.notification-md h5,
+.notification-md h6 {
+    font-size: 0.98rem;
+}
+
+.notification-md p {
+    color: var(--md-sys-color-on-surface);
+}
+
+.notification-md strong {
+    color: var(--md-sys-color-on-surface);
+    font-weight: 800;
+}
+
+.notification-md em,
+.notification-md del {
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.notification-md a {
+    color: var(--md-sys-color-primary);
+    text-decoration: none;
+    font-weight: 700;
+    border-bottom: 1px solid rgb(var(--md-primary-rgb) / 0.22);
+    transition:
+        color var(--interactive-transition-duration) var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        opacity var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.notification-md a:hover {
+    opacity: 0.88;
+    border-bottom-color: rgb(var(--md-primary-rgb) / 0.42);
+}
+
+.notification-md ul,
+.notification-md ol {
+    padding-left: 1.35rem;
+}
+
+.notification-md li + li {
+    margin-top: 0.34rem;
+}
+
+.notification-md li::marker {
+    color: var(--md-sys-color-primary);
+    font-weight: 700;
+}
+
+.notification-md hr {
+    border: 0;
+    height: 1px;
+    margin: 1rem 0;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgb(var(--md-primary-rgb) / 0.24),
+        transparent
+    );
+}
+
+.notification-md blockquote {
+    margin-left: 0;
+    margin-right: 0;
+    padding: 0.9rem 1rem;
+    border-left: 4px solid var(--md-sys-color-primary);
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    background: linear-gradient(135deg, rgb(var(--md-primary-rgb) / 0.12), rgb(var(--md-primary-rgb) / 0.05));
+    color: var(--md-sys-color-on-surface);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.notification-md blockquote p {
+    margin: 0;
+}
+
+.notification-md .notification-md-callout {
+    position: relative;
+    padding: 1rem 1.1rem 1rem 1.15rem;
+    border-left-width: 5px;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    background: linear-gradient(135deg, rgb(var(--md-primary-rgb) / 0.08), rgb(var(--md-primary-rgb) / 0.03));
+}
+
+.notification-md .notification-md-callout-header {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin-bottom: 0.72rem;
+    font-weight: 800;
+    line-height: 1.2;
+}
+
+.notification-md .notification-md-callout-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.2rem;
+    height: 1.2rem;
+    font-size: 0.95rem;
+}
+
+.notification-md .notification-md-callout-title {
+    font-size: 1rem;
+    letter-spacing: -0.01em;
+}
+
+.notification-md .notification-md-callout.is-note {
+    border-left-color: #2563EB;
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(37, 99, 235, 0.04));
+}
+
+.notification-md .notification-md-callout.is-note .notification-md-callout-header {
+    color: #2563EB;
+}
+
+.notification-md .notification-md-callout.is-tip {
+    border-left-color: #0F9D58;
+    background: linear-gradient(135deg, rgba(15, 157, 88, 0.12), rgba(15, 157, 88, 0.04));
+}
+
+.notification-md .notification-md-callout.is-tip .notification-md-callout-header {
+    color: #0F9D58;
+}
+
+.notification-md .notification-md-callout.is-important {
+    border-left-color: #7C3AED;
+    background: linear-gradient(135deg, rgba(124, 58, 237, 0.14), rgba(124, 58, 237, 0.05));
+}
+
+.notification-md .notification-md-callout.is-important .notification-md-callout-header {
+    color: #7C3AED;
+}
+
+.notification-md .notification-md-callout.is-warning {
+    border-left-color: #D97706;
+    background: linear-gradient(135deg, rgba(217, 119, 6, 0.14), rgba(217, 119, 6, 0.05));
+}
+
+.notification-md .notification-md-callout.is-warning .notification-md-callout-header {
+    color: #D97706;
+}
+
+.notification-md .notification-md-callout.is-caution {
+    border-left-color: #DC2626;
+    background: linear-gradient(135deg, rgba(220, 38, 38, 0.14), rgba(220, 38, 38, 0.05));
+}
+
+.notification-md .notification-md-callout.is-caution .notification-md-callout-header {
+    color: #DC2626;
+}
+
+.notification-md .notification-md-callout > :last-child {
+    margin-bottom: 0;
+}
+
+.notification-md :not(pre) > code {
+    display: inline-block;
+    padding: 0.14rem 0.48rem;
+    margin: 0 0.1rem;
+    border-radius: 999px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.16);
+    background: rgb(var(--md-primary-rgb) / 0.10);
+    color: var(--md-sys-color-primary);
+    font-family: "Consolas", "SFMono-Regular", monospace;
+    font-size: 0.9em;
+    font-weight: 700;
+    line-height: 1.45;
+}
+
+.notification-md-code-block,
+.notification-md-mermaid-block {
+    margin: 0 0 0.95rem;
+    overflow: hidden;
+    border-radius: 18px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.18);
+    background:
+        linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.18), rgb(var(--md-primary-rgb) / 0.05) 18%, rgba(255, 255, 255, 0.94) 100%),
+        rgba(255, 255, 255, 0.92);
+    box-shadow:
+        0 10px 28px rgb(var(--md-primary-rgb) / 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.notification-md-code-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 42px;
+    padding: 0 14px;
+    border-bottom: 1px solid rgb(var(--md-primary-rgb) / 0.10);
+    background: linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.12), rgb(var(--md-primary-rgb) / 0.06));
+}
+
+.notification-md-code-lang {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.58);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.14);
+    color: var(--md-sys-color-primary);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.notification-md pre {
+    overflow-x: auto;
+    margin: 0;
+    padding: 1rem 1.05rem 1.05rem;
+    border: none;
+    border-radius: 0 0 18px 18px;
+    background:
+        radial-gradient(circle at top right, rgb(var(--md-primary-rgb) / 0.08), transparent 34%),
+        linear-gradient(180deg, rgba(248, 245, 255, 0.96), rgba(241, 236, 251, 0.96));
+    box-shadow: none;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--md-primary-rgb) / 0.28) transparent;
+}
+
+.notification-md pre code {
+    display: block;
+    min-width: max-content;
+    color: var(--md-sys-color-on-surface);
+    font-family: "Consolas", "SFMono-Regular", monospace;
+    font-size: 0.92rem;
+    line-height: 1.72;
+    background: transparent;
+}
+
+.notification-md pre code .token {
+    font-weight: 600;
+}
+
+.notification-md pre code .token-key,
+.notification-md pre code .token-property {
+    color: var(--md-code-token-key);
+}
+
+.notification-md pre code .token-string {
+    color: var(--md-code-token-string);
+}
+
+.notification-md pre code .token-number {
+    color: var(--md-code-token-number);
+}
+
+.notification-md pre code .token-boolean {
+    color: var(--md-code-token-boolean);
+}
+
+.notification-md pre code .token-keyword {
+    color: var(--md-code-token-keyword);
+}
+
+.notification-md pre code .token-function {
+    color: var(--md-code-token-function);
+}
+
+.notification-md pre code .token-command {
+    color: var(--md-code-token-command);
+    font-weight: 800;
+}
+
+.notification-md pre code .token-flag {
+    color: var(--md-code-token-flag);
+}
+
+.notification-md pre code .token-punctuation {
+    color: var(--md-code-token-punctuation);
+}
+
+.notification-md .notification-md-table-wrap {
+    overflow-x: auto;
+    border-radius: 16px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.12);
+    background: rgba(255, 255, 255, 0.34);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.notification-md .notification-md-details {
+    overflow: hidden;
+    border-radius: 16px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.16);
+    background: linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.08), rgb(var(--md-primary-rgb) / 0.03));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.notification-md .notification-md-summary {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.88rem 1rem;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    font-weight: 800;
+    color: var(--md-sys-color-on-surface);
+}
+
+.notification-md .notification-md-summary::-webkit-details-marker {
+    display: none;
+}
+
+.notification-md .notification-md-summary::before {
+    content: '▸';
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--md-sys-color-primary);
+    font-size: 0.92rem;
+    line-height: 1;
+    transform: rotate(0deg);
+    transition: transform var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.notification-md .notification-md-details[open] > .notification-md-summary::before {
+    transform: rotate(90deg);
+}
+
+.notification-md .notification-md-details > :not(summary) {
+    margin-left: 1rem;
+    margin-right: 1rem;
+}
+
+.notification-md .notification-md-details > :not(summary):last-child {
+    margin-bottom: 1rem;
+}
+
+.notification-md .notification-md-details > .notification-md-summary + * {
+    margin-top: 0.1rem;
+}
+
+.notification-md-mermaid {
+    overflow: hidden;
+    padding: 1rem;
+    background:
+        radial-gradient(circle at top right, rgb(var(--md-primary-rgb) / 0.08), transparent 34%),
+        linear-gradient(180deg, rgba(248, 245, 255, 0.96), rgba(241, 236, 251, 0.96));
+    text-align: center;
+}
+
+.notification-md-mermaid-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding: 0.7rem 0.9rem 0;
+}
+
+.notification-md-mermaid-tool-btn {
+    min-width: 2rem;
+    height: 2rem;
+    padding: 0 0.65rem;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.16);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.7);
+    color: var(--md-sys-color-primary);
+    font-size: 0.9rem;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        transform var(--interactive-transition-duration) var(--theme-transition-easing),
+        box-shadow var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.notification-md-mermaid-tool-btn:hover {
+    background: rgb(var(--md-primary-rgb) / 0.12);
+    border-color: rgb(var(--md-primary-rgb) / 0.24);
+    transform: translateY(-1px);
+}
+
+.notification-md-mermaid-viewport {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    min-height: 240px;
+    border-radius: 14px;
+    cursor: default;
+    touch-action: none;
+}
+
+.notification-md-mermaid-viewport.is-pannable {
+    cursor: grab;
+}
+
+.notification-md-mermaid-viewport.is-dragging {
+    cursor: grabbing;
+}
+
+.notification-md-mermaid-canvas {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 100%;
+    min-height: 240px;
+    transform-origin: center center;
+    will-change: transform;
+}
+
+.notification-md-mermaid svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+    user-select: none;
+    pointer-events: none;
+}
+
+.notification-md-mermaid.is-error {
+    text-align: left;
+    color: #B3261E;
+    white-space: pre-wrap;
+    font-family: "Consolas", "SFMono-Regular", monospace;
+    font-size: 0.9rem;
+    line-height: 1.7;
+}
+
+.notification-md table {
+    width: 100%;
+    min-width: 420px;
+    border-collapse: collapse;
+}
+
+.notification-md th,
+.notification-md td {
+    padding: 0.72rem 0.85rem;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid rgb(var(--md-primary-rgb) / 0.10);
+}
+
+.notification-md th {
+    background: rgb(var(--md-primary-rgb) / 0.10);
+    color: var(--md-sys-color-primary);
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.notification-md td {
+    color: var(--md-sys-color-on-surface);
+}
+
+.notification-md tr:last-child td {
+    border-bottom: none;
+}
+
+.notification-feed-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding-top: 0;
+}
+
+.notification-feed-actions .MuiButton-root {
+    min-height: 40px;
+    padding: 0 16px;
+    border-radius: 18px;
+    border-width: 1px;
+    font-weight: 700;
+    background: rgba(255, 255, 255, 0.62);
+    box-shadow: none;
+}
+
+.notification-feed-actions .MuiButton-root.Mui-disabled {
+    background: rgba(255, 255, 255, 0.34);
+    border-color: rgb(var(--md-primary-rgb) / 0.10);
+}
+
+.notification-feed-actions-inside {
+    position: absolute;
+    right: 14px;
+    bottom: 12px;
+    justify-content: flex-end;
+}
+
+.task-next-run-primary-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.task-next-run-label {
+    display: block !important;
+    margin-bottom: 4px !important;
+    opacity: 0.68;
+}
+
+.task-next-run-time {
+    font-weight: 800 !important;
+    color: var(--md-sys-color-primary);
+}
+
+.task-countdown-text {
+    opacity: 0.82;
+}
+
+.task-status-pill {
+    /* 用统一的状态 pill 表达 future / soon / urgent / expired 等时序语义。 */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.task-status-pill.is-future {
+    background: rgb(var(--md-primary-rgb) / 0.14);
+    color: var(--md-sys-color-primary);
+}
+
+.task-status-pill.is-soon {
+    background: rgba(59, 130, 246, 0.12);
+    color: #2563EB;
+}
+
+.task-status-pill.is-urgent {
+    background: rgba(245, 158, 11, 0.16);
+    color: #B45309;
+}
+
+.task-status-pill.is-expired,
+.task-status-pill.is-unknown {
+    background: rgba(244, 67, 54, 0.14);
+    color: #C62828;
+}
+
+.task-progress-track {
+    /* 任务与计时器共用同一套进度条视觉语言，降低界面认知成本。 */
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    background: rgb(var(--md-primary-rgb) / 0.12);
+    overflow: hidden;
+}
+
+.task-progress-bar {
+    height: 100%;
+    border-radius: inherit;
+    /* 进度值由视图通过 --progress-width 注入，默认 0% 保证无值时也不异常。 */
+    width: var(--progress-width, 0%);
+    background: linear-gradient(90deg, var(--md-sys-color-primary), #8B5CF6);
+    transition: width var(--theme-transition-duration) var(--theme-transition-easing);
+}
+
+.task-progress-bar.is-soon {
+    background: linear-gradient(90deg, #3B82F6, #60A5FA);
+}
+
+.task-progress-bar.is-urgent {
+    background: linear-gradient(90deg, #F59E0B, #F97316);
+}
+
+.task-progress-bar.is-expired,
+.task-progress-bar.is-unknown {
+    background: linear-gradient(90deg, #EF4444, #F87171);
+}
+
