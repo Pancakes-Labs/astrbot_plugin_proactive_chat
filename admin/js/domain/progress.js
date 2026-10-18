@@ -143,7 +143,7 @@
     }
 
     // 任务页卡片：推导下一次执行时间、倒计时、状态与进度。
-    function resolveTaskProgress(job, nowMs) {
+    function resolveTaskProgress(job, nowMs, displayTimezone) {
         const nextRun = window.TimeDomain.toDate(job.next_run_time);
         const nextTrigger = window.TimeDomain.toDate(job.next_trigger_time);
         const scheduledAtMs = window.TimeDomain.toEpochMs(job.last_scheduled_at);
@@ -167,7 +167,8 @@
         }
 
         const remainingSeconds = Math.max(0, Math.ceil((nextRun.getTime() - nowMs) / 1000));
-        const friendlyText = window.formatFriendlyTime(nextRun, 'Asia/Shanghai');
+        // 展示时区必须由调用方传入，避免此处写死东八区导致跨时区显示不一致。
+        const friendlyText = window.formatFriendlyTime(nextRun, displayTimezone || 'Asia/Shanghai');
         const remainingText = remainingSeconds > 0
             ? window.formatDuration(remainingSeconds, { compact: true, maxUnits: 3 })
             : '已到触发时间';
