@@ -2,47 +2,8 @@
 /**
  * 文件职责：状态页视图，负责服务状态、计时器可视化与手动刷新交互展示。
  */
- 
+
  const { Box, Typography, Chip } = MaterialUI;
-
-function dedupeStatusTimerCards(cards) {
-    const priorityMap = {
-        // 同一会话若同时命中多类计时器，群沉默卡优先级更高，避免信息重复。
-        group_silence: 3,
-        auto_trigger: 2,
-    };
-    const merged = new Map();
-
-    cards.forEach((card) => {
-        const key = String(card.session_id || '');
-        if (!key) return;
-
-        const existing = merged.get(key);
-        if (!existing) {
-            merged.set(key, card);
-            return;
-        }
-
-        const currentPriority = priorityMap[card.timer_kind] ?? 0;
-        const existingPriority = priorityMap[existing.timer_kind] ?? 0;
-
-        if (currentPriority > existingPriority) {
-            merged.set(key, card);
-            return;
-        }
-
-        if (currentPriority === existingPriority) {
-            // 若类型优先级相同，则保留“更快触发”的那张卡，突出最紧迫状态。
-            const currentRemaining = Number(card.remaining_seconds ?? Number.MAX_SAFE_INTEGER);
-            const existingRemaining = Number(existing.remaining_seconds ?? Number.MAX_SAFE_INTEGER);
-            if (currentRemaining < existingRemaining) {
-                merged.set(key, card);
-            }
-        }
-    });
-
-    return Array.from(merged.values());
-}
 
 function StatusMetricRow({ label, value, emphasize = false, status = '' }) {
     return (
@@ -60,86 +21,15 @@ function StatusMetricRow({ label, value, emphasize = false, status = '' }) {
     );
 }
 
-
-function resolveStatusTimerCard(timer, nowMs, displayTimezone) {
-    // 后端 target_time / started_at 以秒级时间戳返回，这里统一转为 Date 便于格式化和比较。
-    const targetTime = parseDateish(timer.target_time ? Number(timer.target_time) * 1000 : null);
-    const startedAt = parseDateish(timer.started_at ? Number(timer.started_at) * 1000 : null);
-    const remainingSeconds = Number.isFinite(Number(timer.remaining_seconds))
-        ? Math.max(0, Number(timer.remaining_seconds))
-        : (targetTime ? Math.max(0, Math.ceil((targetTime.getTime() - nowMs) / 1000)) : 0);
-    const windowSeconds = Math.max(0, Number(timer.window_seconds ?? 0));
-    // 若后端未给出 progress_percent，则前端基于总窗口时长与剩余秒数推导一个近似值。
-    const fallbackProgress = windowSeconds > 0
-        ? Math.max(0, Math.min(100, Math.round(((windowSeconds - remainingSeconds) / windowSeconds) * 100)))
-        : 0;
-    const progressPercent = Math.max(0, Math.min(100, Math.round(Number(timer.progress_percent ?? fallbackProgress) || 0)));
-
-    // 根据剩余时间给卡片打上状态标签，供颜色、文案和动画统一使用。
-    let status = 'future';
-    let statusLabel = '稳定运行';
-    if (!targetTime) {
-        status = 'unknown';
-        statusLabel = '待确认';
-    } else if (remainingSeconds <= 0) {
-        status = 'expired';
-        statusLabel = '待刷新';
-    } else if (remainingSeconds <= 300) {
-        status = 'urgent';
-        statusLabel = '即将结束';
-    } else if (remainingSeconds <= 1800) {
-        status = 'soon';
-        statusLabel = '正常计时';
-    }
-
-    const isGroupSession = timer.session_category === 'group';
-    const isGroupSilence = timer.timer_kind === 'group_silence';
-    const categoryLabel = isGroupSession ? '群会话' : '私聊会话';
-    const sectionKey = isGroupSilence ? 'group_silence' : 'auto_trigger';
-    const sectionTitle = isGroupSilence ? '群沉默倒计时' : '自动触发检测';
-    const accentClass = isGroupSilence
-        ? 'accent-group-silence'
-        : (isGroupSession ? 'accent-auto-group' : 'accent-auto-friend');
-    const kindBadgeLabel = isGroupSilence
-        ? '沉默重置型'
-        : (isGroupSession ? '群自动触发' : '私聊自动触发');
-    const sourceModeLabel = resolveSourceModeLabel(timer.source_mode);
-    const countdownText = targetTime
-        ? (remainingSeconds > 0 ? `${formatDuration(remainingSeconds, { compact: true, maxUnits: 3 })} 后到期` : '等待下一轮刷新确认')
-        : '暂无有效目标时间';
-    const sessionIdText = String(timer.session_id || '');
-    const sessionDisplayName = String(timer.session_display_name || timer.session_name || sessionIdText || '--');
-    const hasAlias = Boolean(sessionDisplayName && sessionIdText && sessionDisplayName !== sessionIdText);
-    const sessionSubText = hasAlias ? sessionIdText : '';
-
-    return {
-        ...timer,
-        startedAt,
-        targetTime,
-        remainingSeconds,
-        progressPercent,
-        status,
-        statusLabel,
-        categoryLabel,
-        // 这些派生文案与样式字段统一在这里计算，减少渲染层的模板噪声。
-        sectionKey,
-        sectionTitle,
-        accentClass,
-        kindBadgeLabel,
-        sourceModeLabel,
-        unansweredLabel: formatUnansweredLabel(timer.unanswered_count, timer.max_unanswered_times),
-        countdownText,
-        sessionDisplayName,
-        sessionSubText,
-        hasAlias,
-        targetText: targetTime ? formatDateTime(targetTime, displayTimezone, { includeYear: true, includeSeconds: true }) : '--',
-    };
-}
-
 function StatusTimerCard({ timer, displayTimezone, nowMs, resetHint }) {
-    const meta = resolveStatusTimerCard(timer, nowMs, displayTimezone);
+    // 派生信息统一交给领域函数计算，视图只负责结构。
+    const meta = React.useMemo(
+        () => window.ProgressDomain.resolveStatusTimerCard(timer, nowMs, displayTimezone),
+        [timer, nowMs, displayTimezone]
+    );
     // 未回复次数大于 0 时用 warning 色，帮助管理员快速定位“机器人已被晾着”的会话。
-    const chipColor = Number(meta.unanswered_count ?? 0) > 0 ? 'warning' : 'default';
+    const unansweredCount = Number(meta.unanswered_count !== undefined ? meta.unanswered_count : 0);
+    const chipColor = unansweredCount > 0 ? 'warning' : 'default';
 
     return (
         <div className={`card status-timer-card ${meta.accentClass} ${meta.status === 'urgent' ? 'is-urgent' : ''} ${meta.status === 'expired' ? 'is-expired' : ''} ${resetHint ? 'is-resetting' : ''}`}>
@@ -167,7 +57,7 @@ function StatusTimerCard({ timer, displayTimezone, nowMs, resetHint }) {
                         label={meta.unansweredLabel}
                         size="small"
                         color={chipColor}
-                        variant={Number(meta.unanswered_count ?? 0) > 0 ? 'filled' : 'outlined'}
+                        variant={unansweredCount > 0 ? 'filled' : 'outlined'}
                     />
                 </div>
             </div>
@@ -198,7 +88,8 @@ function StatusTimerCard({ timer, displayTimezone, nowMs, resetHint }) {
                     <div className="status-timer-progress-value">{meta.progressPercent}%</div>
                 </div>
                 <div className="task-progress-track">
-                    <div className={`task-progress-bar is-${meta.status}`} style={{ width: `${meta.progressPercent}%` }}></div>
+                    {/* 宽度通过自定义属性传递，样式表统一声明 width，避免内联样式散落。 */}
+                    <div className={`task-progress-bar is-${meta.status}`} style={{ '--progress-width': `${meta.progressPercent}%` }}></div>
                 </div>
             </div>
 
@@ -227,8 +118,8 @@ function StatusTimerCard({ timer, displayTimezone, nowMs, resetHint }) {
 function StatusView({ onRefresh }) {
     const { state } = useAppContext();
     const status = state.status || {};
-    // nowMs 每秒更新一次，用于驱动倒计时与相对时间文本实时刷新。
-    const [nowMs, setNowMs] = React.useState(Date.now());
+    // 全局共享时钟，避免每个视图各起一个每秒 interval。
+    const nowMs = useNow();
     // resetHintMap 记录哪些群沉默卡片当前需要显示“刚刚被重置”的短暂提示。
     const [resetHintMap, setResetHintMap] = React.useState({});
     // 手动刷新按钮的视觉反馈状态机：idle -> loading -> success / error。
@@ -236,13 +127,6 @@ function StatusView({ onRefresh }) {
     const previousTimerSnapshotRef = React.useRef({});
     const resetHintTimersRef = React.useRef({});
     const displayTimezone = state.config?.displayTimezone || 'Asia/Shanghai';
-
-    React.useEffect(() => {
-        const timer = setInterval(() => {
-            setNowMs(Date.now());
-        }, 1000);
-        return () => clearInterval(timer);
-    }, []);
 
     React.useEffect(() => {
         return () => {
@@ -254,43 +138,58 @@ function StatusView({ onRefresh }) {
     }, []);
 
     // 统一把后端状态字段规整为前端友好的基础数字类型。
-    const uptimeSeconds = Number(status.uptime_seconds ?? 0);
-    const jobsCount = Number(status.jobs_count ?? 0);
-    const sessionsCount = Number(status.sessions_count ?? 0);
-    const autoTriggerTimers = Number(status.auto_trigger_timers ?? 0);
-    const groupTimers = Number(status.group_timers ?? 0);
+    const uptimeSeconds = Number(status.uptime_seconds !== undefined ? status.uptime_seconds : 0);
+    const jobsCount = Number(status.jobs_count !== undefined ? status.jobs_count : 0);
+    const sessionsCount = Number(status.sessions_count !== undefined ? status.sessions_count : 0);
+    const autoTriggerTimers = Number(status.auto_trigger_timers !== undefined ? status.auto_trigger_timers : 0);
+    const groupTimers = Number(status.group_timers !== undefined ? status.group_timers : 0);
     const schedulerRunning = Boolean(status.scheduler_running);
     const pluginRunning = Boolean(status.running);
-    const autoTriggerCards = Array.isArray(status.auto_trigger_cards) ? status.auto_trigger_cards : [];
-    const groupTimerCards = Array.isArray(status.group_timer_cards) ? status.group_timer_cards : [];
     // 合并并去重所有会话计时器，保证一个会话最多出现一张最关键卡片。
-    const timerCards = dedupeStatusTimerCards([...groupTimerCards, ...autoTriggerCards]);
-    const timerSections = [
-        {
-            key: 'group_silence',
-            title: '群沉默计时器',
-            description: '群内一旦有新消息就会重新计时，适合观察沉默窗口是否被活跃消息重置。',
-            emptyText: '当前没有正在运行的群沉默计时器。',
-            cards: timerCards.filter((timer) => timer.timer_kind === 'group_silence'),
-        },
-        {
-            key: 'auto_trigger',
-            title: '自动触发计时器',
-            description: '用于观察会话的自动触发状况，并按群聊 / 私聊显示不同标签。通常情况下，插件运行一段时间后，这里将不会出现新的卡片。',
-            emptyText: '当前没有正在运行的自动触发计时器。',
-            cards: timerCards.filter((timer) => timer.timer_kind === 'auto_trigger'),
-        },
-    ];
+    // 依赖状态对象上的原始数组字段，缺失时也不会因空数组字面量导致每次重算。
+    const timerCards = React.useMemo(
+        () => window.ProgressDomain.dedupeTimerCards([
+            ...(Array.isArray(status.group_timer_cards) ? status.group_timer_cards : []),
+            ...(Array.isArray(status.auto_trigger_cards) ? status.auto_trigger_cards : []),
+        ]),
+        [status.group_timer_cards, status.auto_trigger_cards]
+    );
+
+    const timerSections = React.useMemo(
+        () => [
+            {
+                key: 'group_silence',
+                title: '群沉默计时器',
+                description: '群内一旦有新消息就会重新计时，适合观察沉默窗口是否被活跃消息重置。',
+                emptyText: '当前没有正在运行的群沉默计时器。',
+                cards: timerCards.filter((timer) => timer.timer_kind === 'group_silence'),
+            },
+            {
+                key: 'auto_trigger',
+                title: '自动触发计时器',
+                description: '用于观察会话的自动触发状况，并按群聊 / 私聊显示不同标签。通常情况下，插件运行一段时间后，这里将不会出现新的卡片。',
+                emptyText: '当前没有正在运行的自动触发计时器。',
+                cards: timerCards.filter((timer) => timer.timer_kind === 'auto_trigger'),
+            },
+        ],
+        [timerCards]
+    );
+
+    // 依赖计时器原始字段摘要，值不变时不会重复执行状态写入。
+    const timerSnapshotKey = timerCards
+        .map((timer) => `${timer.timer_kind}-${timer.session_id}-${timer.remaining_seconds}-${timer.target_time}`)
+        .join('|');
 
     React.useEffect(() => {
         const nextSnapshot = {};
         const nextHints = {};
         const activeKeys = new Set();
+        let hintChanged = false;
 
         timerCards.forEach((timer) => {
             const key = `${timer.timer_kind}-${timer.session_id}`;
-            const currentRemaining = Math.max(0, Number(timer.remaining_seconds ?? 0));
-            const currentTarget = Number(timer.target_time ?? 0);
+            const currentRemaining = Math.max(0, Number(timer.remaining_seconds !== undefined ? timer.remaining_seconds : 0));
+            const currentTarget = Number(timer.target_time !== undefined ? timer.target_time : 0);
             const currentStatus = String(timer.status || '');
             const previous = previousTimerSnapshotRef.current[key] || null;
 
@@ -306,16 +205,18 @@ function StatusView({ onRefresh }) {
                 && previous
                 && currentStatus !== 'expired'
                 && currentStatus !== 'unknown'
-                && currentRemaining - Number(previous.remainingSeconds ?? 0) > 3;
+                && currentRemaining - Number(previous.remainingSeconds !== undefined ? previous.remainingSeconds : 0) > 3;
 
             if (isGroupReset) {
                 nextHints[key] = true;
+                hintChanged = true;
                 if (resetHintTimersRef.current[key]) {
                     clearTimeout(resetHintTimersRef.current[key]);
                 }
                 resetHintTimersRef.current[key] = setTimeout(() => {
                     setResetHintMap((current) => {
-                        const updated = { ...current };
+                        if (!current[key]) return current;
+                        const updated = Object.assign({}, current);
                         delete updated[key];
                         return updated;
                     });
@@ -332,13 +233,20 @@ function StatusView({ onRefresh }) {
         });
 
         previousTimerSnapshotRef.current = nextSnapshot;
+
+        // 只有提示集合确实需要变化时才 setState，避免“渲染 -> effect -> setState”自激循环。
         setResetHintMap((current) => {
-            const filtered = Object.fromEntries(
-                Object.entries(current).filter(([key]) => activeKeys.has(key))
-            );
-            return Object.keys(nextHints).length > 0 ? { ...filtered, ...nextHints } : filtered;
+            const filteredEntries = Object.entries(current).filter(([key]) => activeKeys.has(key));
+            const filtered = Object.fromEntries(filteredEntries);
+            if (!hintChanged) {
+                if (filteredEntries.length === Object.keys(current).length) {
+                    return current;
+                }
+                return filtered;
+            }
+            return Object.assign({}, filtered, nextHints);
         });
-    }, [timerCards]);
+    }, [timerSnapshotKey]);
 
     const handleManualRefresh = async () => {
         if (manualRefreshState.phase === 'loading') return;
@@ -391,7 +299,7 @@ function StatusView({ onRefresh }) {
                                 value={formatDuration(uptimeSeconds, { compact: true, maxUnits: 4 })}
                                 emphasize
                             />
-                            <StatusMetricRow label="已连接 WebSocket" value={`${Number(status.ws_connections ?? 0)} 个`} />
+                            <StatusMetricRow label="已连接 WebSocket" value={`${Number(status.ws_connections !== undefined ? status.ws_connections : 0)} 个`} />
                         </div>
                     </div>
                 </div>
@@ -429,16 +337,13 @@ function StatusView({ onRefresh }) {
                         <div className="status-actions-list">
                             <div className="status-action-tooltip-wrap">
                                 <button
-                                    className="btn btn-action"
+                                    type="button"
+                                    className={`btn btn-action${manualRefreshState.phase === 'loading' ? ' is-busy' : ''}`}
                                     onClick={handleManualRefresh}
                                     disabled={manualRefreshState.phase === 'loading'}
                                     aria-describedby="status-refresh-tooltip"
-                                    style={{
-                                        opacity: manualRefreshState.phase === 'loading' ? 0.82 : 1,
-                                        cursor: manualRefreshState.phase === 'loading' ? 'wait' : 'pointer',
-                                    }}
                                 >
-                                    <span style={{ fontSize: '18px' }}>
+                                    <span className="status-action-icon">
                                         {manualRefreshState.phase === 'loading' ? '⏳' : manualRefreshState.phase === 'success' ? '✅' : manualRefreshState.phase === 'error' ? '⚠️' : '🔄'}
                                     </span>
                                     {refreshButtonLabel}
@@ -529,4 +434,3 @@ function StatusView({ onRefresh }) {
 // 暴露为全局视图组件，供应用入口按当前路由态切换展示。
 window.StatusView = StatusView;
 })();
-
