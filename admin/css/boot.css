@@ -1,0 +1,246 @@
+﻿/* 文件职责：基础重置、全局交互层与首屏启动骨架。 */
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+/* 仅在主题切换瞬间开启统一过渡，避免常驻 transition 拖慢滚动与重绘。
+   使用通配选择器自动覆盖所有元素，新增组件无需再维护白名单。 */
+html.theme-transitioning *,
+html.theme-transitioning *::before,
+html.theme-transitioning *::after {
+    transition:
+        background-color var(--theme-transition-duration) var(--theme-transition-easing),
+        color var(--theme-transition-duration) var(--theme-transition-easing),
+        border-color var(--theme-transition-duration) var(--theme-transition-easing),
+        fill var(--theme-transition-duration) var(--theme-transition-easing),
+        stroke var(--theme-transition-duration) var(--theme-transition-easing);
+}
+
+
+/* 移动端触摸优化 */
+html {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    touch-action: manipulation;
+}
+
+body {
+    /* 背景使用多层径向渐变，营造轻量的 MD3 柔和氛围，而不是纯色平铺。 */
+    background-color: var(--md-sys-color-background);
+    background-image:
+        radial-gradient(at 0% 0%, rgb(var(--md-primary-rgb) / 0.08) 0, transparent 40%),
+        radial-gradient(at 50% 0%, rgba(236, 72, 153, 0.05) 0, transparent 40%),
+        radial-gradient(at 100% 0%, rgb(var(--md-primary-rgb) / 0.08) 0, transparent 40%);
+    background-attachment: fixed;
+    color: var(--md-sys-color-on-surface);
+    font-family: 'Outfit', "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Heiti SC", "WenQuanYi Micro Hei", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* ===== 首屏启动层 ===== */
+/* 首屏加载页 */
+.boot-loader {
+    /* 启动层覆盖整个视口，在 React 尚未挂载时承担品牌露出与状态提示职责。 */
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #1C1B1F;
+    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background:
+        radial-gradient(ellipse at 20% 15%, rgb(var(--md-primary-rgb) / 0.14), transparent 52%),
+        radial-gradient(ellipse at 80% 85%, rgb(var(--md-primary-rgb) / 0.09), transparent 52%),
+        #FEF7FF;
+    opacity: 1;
+    transform: translateZ(0);
+    will-change: opacity, transform;
+}
+
+html.theme-dark .boot-loader {
+    color: #E6E1E5;
+    background:
+        radial-gradient(ellipse at 20% 15%, rgb(var(--md-primary-rgb) / 0.13), transparent 52%),
+        radial-gradient(ellipse at 80% 85%, rgb(var(--md-primary-rgb) / 0.18), transparent 52%),
+        #141218;
+}
+
+#loading-skeleton.is-exiting {
+    opacity: 0;
+    transform: scale(0.985);
+    transition: opacity 0.3s ease-out, transform 0.3s ease-out;
+}
+
+.boot-loader__logo {
+    /* Logo 外壳带轻微浮动动画，用于缓解静态等待时的“卡住感”。 */
+    width: 80px;
+    height: 80px;
+    border-radius: 20px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.18);
+    box-shadow: 0 4px 24px rgb(var(--md-primary-rgb) / 0.12);
+    overflow: hidden;
+    animation: boot-loader-float 2.4s ease-in-out infinite;
+    will-change: transform;
+}
+
+.boot-loader__logo img {
+    width: 56px;
+    height: 56px;
+    object-fit: contain;
+    border-radius: 8px;
+}
+
+/* 背景色由变量自动跟随主题，这里只覆写需要变化的边框与阴影。 */
+html.theme-dark .boot-loader__logo {
+    border-color: rgb(var(--md-primary-rgb) / 0.15);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+}
+
+.boot-loader__title {
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    letter-spacing: 0.01em;
+    color: #1C1B1F;
+}
+
+html.theme-dark .boot-loader__title {
+    color: #E6E1E5;
+}
+
+.boot-loader__subtitle {
+    font-size: 13px;
+    color: #49454F;
+    margin-bottom: 28px;
+}
+
+html.theme-dark .boot-loader__subtitle {
+    color: #CAC4D0;
+}
+
+.boot-loader__progress {
+    /* 进度条不反映真实百分比，只承担“系统仍在工作”的感知反馈。 */
+    width: min(260px, 68vw);
+    height: 3px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgb(var(--md-primary-rgb) / 0.12);
+    contain: paint;
+}
+
+
+.boot-loader__progress-bar {
+    height: 100%;
+    width: 42%;
+    border-radius: 999px;
+    background: linear-gradient(90deg,
+        rgb(var(--md-primary-rgb) / 0.25) 0%,
+        rgb(var(--md-primary-rgb) / 0.85) 50%,
+        rgb(var(--md-primary-rgb) / 0.25) 100%);
+    animation: boot-loader-progress 1.45s ease-in-out infinite;
+    will-change: transform;
+    transform: translate3d(-110%, 0, 0) scaleX(0.35);
+}
+
+html.theme-dark .boot-loader__progress-bar {
+    background: linear-gradient(90deg,
+        rgb(var(--md-primary-rgb) / 0.2) 0%,
+        rgb(var(--md-primary-rgb) / 0.9) 50%,
+        rgb(var(--md-primary-rgb) / 0.2) 100%);
+}
+
+/* 首屏 logo 呼吸浮动动画。 */
+@keyframes boot-loader-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-7px); }
+}
+
+/* 首屏进度条往返扫光动画。 */
+@keyframes boot-loader-progress {
+    0% { transform: translate3d(-110%, 0, 0) scaleX(0.35); }
+    50% { transform: translate3d(40%, 0, 0) scaleX(0.85); }
+    100% { transform: translate3d(220%, 0, 0) scaleX(0.35); }
+}
+
+.boot-login {
+    display: none;
+    width: min(360px, calc(100vw - 48px));
+    margin: 16px auto 0;
+    text-align: left;
+}
+
+.boot-login__label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: #625B71;
+}
+
+.boot-login__input {
+    width: 100%;
+    box-sizing: border-box;
+    height: 44px;
+    padding: 0 14px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.22);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.88);
+    color: #1C1B1F;
+    outline: none;
+    font-size: 14px;
+    box-shadow: 0 8px 24px rgb(var(--md-primary-rgb) / 0.08);
+}
+
+.boot-login__input:focus {
+    border-color: rgb(var(--md-primary-rgb) / 0.5);
+    box-shadow: 0 0 0 3px rgb(var(--md-primary-rgb) / 0.12), 0 8px 24px rgb(var(--md-primary-rgb) / 0.08);
+}
+
+.boot-login__button {
+    width: 100%;
+    margin-top: 12px;
+    height: 44px;
+    border: none;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #7F67BE 0%, #6750A4 100%);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 10px 24px rgb(var(--md-primary-rgb) / 0.22);
+}
+
+.boot-login__button:disabled {
+    cursor: not-allowed;
+}
+
+html.theme-dark .boot-login__label {
+    color: #CAC4D0;
+}
+
+html.theme-dark .boot-login__input {
+    background: rgba(28, 27, 31, 0.88);
+    color: #E6E1E5;
+    border-color: rgb(var(--md-primary-rgb) / 0.22);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+}
+
+html.theme-dark .boot-login__input:focus {
+    border-color: rgb(var(--md-primary-rgb) / 0.48);
+    box-shadow: 0 0 0 3px rgb(var(--md-primary-rgb) / 0.16), 0 8px 24px rgba(0, 0, 0, 0.24);
+}
+
+html.theme-dark .boot-login__button {
+    background: linear-gradient(135deg, #A58CFF 0%, #7F67BE 100%);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+}
