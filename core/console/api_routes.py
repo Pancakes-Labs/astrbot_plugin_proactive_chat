@@ -149,6 +149,7 @@ class ApiRoutes:
                 for k, v in self.config.get("web_admin", {}).items()
                 if k != "password"
             }
+            # 返回所有可编辑分组，保证前端渲染的字段与服务端保存范围一致。
             return {
                 "friend_settings": dict(self.config.get("friend_settings", {})),
                 "group_settings": dict(self.config.get("group_settings", {})),
@@ -156,6 +157,7 @@ class ApiRoutes:
                 "notification_settings": dict(
                     self.config.get("notification_settings", {})
                 ),
+                "telemetry_config": dict(self.config.get("telemetry_config", {})),
             }
 
         # 返回 _conf_schema.json 内容，供前端渲染配置表单。
@@ -172,10 +174,16 @@ class ApiRoutes:
                     logger.error(f"[主动消息] 读取 Schema 失败喵: {e}")
             return {}
 
-        # 更新配置：仅接受 friend_settings / group_settings / web_admin 三组。
+        # 更新配置：接受 Schema 中全部可编辑分组，避免前端保存后字段被静默丢弃。
         @app.post("/api/config")
         async def update_config(payload: dict[str, Any]):
-            allowed_keys = {"friend_settings", "group_settings", "web_admin"}
+            allowed_keys = {
+                "friend_settings",
+                "group_settings",
+                "web_admin",
+                "notification_settings",
+                "telemetry_config",
+            }
             for key in allowed_keys:
                 if key not in payload:
                     continue
