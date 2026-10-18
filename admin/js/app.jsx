@@ -2,17 +2,55 @@
  * 文件职责：前端应用入口，负责首屏数据加载、实时同步、视图装配与根节点挂载。
  */
 
+// 视图级错误边界：单个页面崩溃时只影响自身区域，避免整站白屏。
+class ViewErrorBoundary extends React.Component {
+    constructor(props) {
+        super(props);
+        this.state = { error: null };
+    }
+
+    static getDerivedStateFromError(error) {
+        return { error: error };
+    }
+
+    componentDidCatch(error, info) {
+        // 保留完整堆栈到控制台，便于定位具体组件。
+        console.error('视图渲染失败', this.props.view, error, info && info.componentStack);
+    }
+
+    componentDidUpdate(prevProps) {
+        // 切换视图时清除上一页的错误，避免错误状态跨页残留。
+        if (prevProps.view !== this.props.view && this.state.error) {
+            this.setState({ error: null });
+        }
+    }
+
+    render() {
+        if (this.state.error) {
+            const err = this.state.error;
+            return (
+                <div className="card app-error-card" style={{ whiteSpace: 'pre-wrap' }}>
+                    <div style={{ fontWeight: 800, marginBottom: 8 }}>
+                        该页面渲染失败，其余页面仍可正常使用
+                    </div>
+                    <div style={{ marginBottom: 8 }}>{String(err && err.message ? err.message : err)}</div>
+                    <div className="mono" style={{ opacity: 0.75, fontSize: '12px' }}>
+                        {String((err && err.stack) || '').split('\n').slice(0, 8).join('\n')}
+                    </div>
+                </div>
+            );
+        }
+        return this.props.children;
+    }
+}
+
 function App() {
     const { state, dispatch } = useAppContext();
     const api = useApi();
     const themeInitializedRef = React.useRef(false);
     const mainContentRef = React.useRef(null);
-    const isRestoringRef = React.useRef(false);
-
-    const getScrollKey = React.useCallback(
-        (view = state.currentView) => `astrbot_scroll_${view}`,
-        [state.currentView]
-    );
+    // WebSocket 连接状态在回调中读取，避免把 effect 依赖拖成每秒重建。
+    const wsConnectedRef = React.useRef(false);
 
     const loadAll = React.useCallback(async () => {
         // 首次进入页面或手动全量刷新时，统一拉取首页所需的全部关键数据。
@@ -28,7 +66,7 @@ function App() {
                 api.getNotifications(),
             ]);
             dispatch({ type: 'SET_STATUS', payload: statusRes });
-            dispatch({ type: 'SET_SESSIONS', payload: sessionsRes.sessions || [] });
+            dispatch({ type: 'SET_SESSIONS', payload: window.SessionDomain.normalizeSessionList(sessionsRes.sessions) });
             dispatch({ type: 'SET_CONFIG', payload: configRes || null });
             dispatch({ type: 'SET_JOBS', payload: jobsRes.jobs || [] });
             dispatch({ type: 'SET_NOTIFICATIONS', payload: notificationsRes.items || [] });
@@ -43,7 +81,7 @@ function App() {
 
     const loadRealtime = React.useCallback(async () => {
         try {
-            // 轻量轮询只更新变化频率最高的状态与任务列表，避免每秒都重载完整配置。
+            // 兜底轮询只更新变化频率最高的状态与任务列表，避免重载完整配置。
             const [statusRes, jobsRes] = await Promise.all([
                 api.getStatus(),
                 api.listJobs(),
@@ -65,49 +103,58 @@ function App() {
         loadAll();
     }, [loadAll]);
 
-    useWebSocket(
-        React.useCallback(
-            (data) => {
-                // WebSocket 推送只负责把增量/全量快照写回全局状态，不在这里做业务判断。
-                if (data.status) dispatch({ type: 'SET_STATUS', payload: data.status });
-                if (Array.isArray(data.jobs)) dispatch({ type: 'SET_JOBS', payload: data.jobs });
-                if (data.notifications) {
-                    dispatch({ type: 'SET_NOTIFICATIONS', payload: data.notifications.items || [] });
-                    dispatch({ type: 'SET_NOTIFICATIONS_META', payload: data.notifications.meta || null });
-                }
-                if (data.notificationsMeta) {
-                    dispatch({ type: 'SET_NOTIFICATIONS_META', payload: data.notificationsMeta || null });
-                }
-                if (Array.isArray(data.sessions)) {
-                    // 后端可能返回字符串数组，也可能返回对象数组，这里统一标准化结构。
-                    const mapped = data.sessions.map((s) =>
-                        typeof s === 'string' ? { session: s, has_override: false } : s
-                    );
-                    dispatch({ type: 'SET_SESSIONS', payload: mapped });
-                }
-            },
-            [dispatch]
-        )
+    const handleRealtimeData = React.useCallback(
+        (data) => {
+            // WebSocket 推送只负责把增量/全量快照写回全局状态，不在这里做业务判断。
+            if (data.status) dispatch({ type: 'SET_STATUS', payload: data.status });
+            if (Array.isArray(data.jobs)) dispatch({ type: 'SET_JOBS', payload: data.jobs });
+            if (data.notifications) {
+                dispatch({ type: 'SET_NOTIFICATIONS', payload: data.notifications.items || [] });
+                dispatch({ type: 'SET_NOTIFICATIONS_META', payload: data.notifications.meta || null });
+            }
+            if (data.notificationsMeta) {
+                dispatch({ type: 'SET_NOTIFICATIONS_META', payload: data.notificationsMeta || null });
+            }
+            if (Array.isArray(data.sessions)) {
+                // 后端可能返回字符串数组，也可能返回对象数组，统一标准化结构。
+                dispatch({ type: 'SET_SESSIONS', payload: window.SessionDomain.normalizeSessionList(data.sessions) });
+            }
+        },
+        [dispatch]
     );
 
+    const wsConnected = useWebSocket(handleRealtimeData);
+
     React.useEffect(() => {
+        wsConnectedRef.current = Boolean(wsConnected);
+    }, [wsConnected]);
+
+    React.useEffect(() => {
+        // 实时数据以 WebSocket 为主通道；仅在断线时用较高频率兜底。
         if (window.__PROACTIVE_AUTH_PENDING) return;
 
         let disposed = false;
-        const tick = async () => {
+        let timer = null;
+
+        const schedule = () => {
             if (disposed) return;
-            // 页面隐藏时暂停轮询，减少后台标签页的无意义请求。
-            if (document.visibilityState === 'hidden') return;
-            await loadRealtime();
+            const interval = wsConnectedRef.current ? 30000 : 3000;
+            timer = window.setTimeout(async () => {
+                if (disposed) return;
+                // 页面隐藏时跳过本轮请求，减少后台标签页的无意义流量。
+                if (document.visibilityState !== 'hidden') {
+                    await loadRealtime();
+                }
+                schedule();
+            }, interval);
         };
 
-        // 每秒一次兜底轮询；即便 WebSocket 短暂断开，界面也能维持基本新鲜度。
-        const timer = setInterval(tick, 1000);
+        schedule();
         return () => {
             disposed = true;
-            clearInterval(timer);
+            window.clearTimeout(timer);
         };
-    }, [loadRealtime]);
+    }, [loadRealtime, wsConnected]);
 
     React.useEffect(() => {
         if (window.__PROACTIVE_AUTH_PENDING) return;
@@ -116,84 +163,13 @@ function App() {
         if (boot) boot.style.display = 'none';
     }, [state.status]);
 
-    // 切换主视图时恢复对应滚动位置。
-    React.useLayoutEffect(() => {
-        const el = mainContentRef.current;
-        if (!el) return;
-
-        const key = getScrollKey();
-        const savedPos = parseInt(localStorage.getItem(key) || '0', 10);
-
-        if (savedPos > 0) {
-            isRestoringRef.current = true;
-            const applyRestore = () => {
-                if (!mainContentRef.current) return;
-                const maxScrollTop = Math.max(mainContentRef.current.scrollHeight - mainContentRef.current.clientHeight, 0);
-                mainContentRef.current.scrollTop = Math.min(savedPos, maxScrollTop);
-            };
-
-            applyRestore();
-            requestAnimationFrame(() => {
-                if (!isRestoringRef.current) return;
-                applyRestore();
-            });
-
-            const timer = window.setTimeout(() => {
-                isRestoringRef.current = false;
-            }, 320);
-
-            return () => {
-                window.clearTimeout(timer);
-                isRestoringRef.current = false;
-            };
-        }
-
-        el.scrollTop = 0;
-        isRestoringRef.current = false;
-    }, [state.currentView]);
-
-    // 记录主内容区滚动位置，并在用户主动交互时终止恢复锁。
-    React.useEffect(() => {
-        const el = mainContentRef.current;
-        if (!el) return;
-
-        const stopRestoring = () => {
-            isRestoringRef.current = false;
-        };
-
-        let timeout = 0;
-        const handleScroll = () => {
-            if (isRestoringRef.current) {
-                const key = getScrollKey();
-                const savedPos = parseInt(localStorage.getItem(key) || '0', 10);
-                if (savedPos > 0 && Math.abs(el.scrollTop - savedPos) > 100) {
-                    isRestoringRef.current = false;
-                }
-            }
-
-            window.clearTimeout(timeout);
-            timeout = window.setTimeout(() => {
-                const key = getScrollKey();
-                localStorage.setItem(key, String(el.scrollTop));
-            }, 120);
-        };
-
-        el.addEventListener('scroll', handleScroll);
-        el.addEventListener('wheel', stopRestoring, { passive: true });
-        el.addEventListener('touchstart', stopRestoring, { passive: true });
-        el.addEventListener('mousedown', stopRestoring);
-
-        return () => {
-            el.removeEventListener('scroll', handleScroll);
-            el.removeEventListener('wheel', stopRestoring);
-            el.removeEventListener('touchstart', stopRestoring);
-            el.removeEventListener('mousedown', stopRestoring);
-            window.clearTimeout(timeout);
-        };
-    }, [getScrollKey, state.currentView]);
+    // 主内容区滚动位置：与配置页共用同一套恢复实现与键规则。
+    useScrollRestore(mainContentRef, window.ScrollDomain.buildScrollKey(`view_${state.currentView}`), {
+        enabled: !window.__PROACTIVE_AUTH_PENDING,
+    });
 
     const renderView = () => {
-        // 当前仅暴露三个主视图；未识别视图时回退到状态页，避免出现空白主区域。
+        // 未识别视图时回退到状态页，避免出现空白主区域。
         switch (state.currentView) {
             case 'status':
                 return <StatusView onRefresh={loadAll} />;
@@ -211,22 +187,18 @@ function App() {
     };
 
     React.useEffect(() => {
-        // 将暗色模式类名直接挂载到 html / body，便于纯 CSS 全局变量一起切换。
+        // 暗色模式变量只在 html.theme-dark 上定义，body 类名仅用于组件级覆盖规则。
         const root = document.documentElement;
         const body = document.body;
+        const isDark = state.theme === 'dark';
 
-        if (state.theme === 'dark') {
-            root.classList.add('theme-dark');
-            body.classList.add('dark-theme');
-        } else {
-            root.classList.remove('theme-dark');
-            body.classList.remove('dark-theme');
-        }
+        root.classList.toggle('theme-dark', isDark);
+        body.classList.toggle('dark-theme', isDark);
 
         // 首次挂载不加过渡，避免首屏闪动；后续主题切换时才短暂打开统一过渡。
         if (!themeInitializedRef.current) {
             themeInitializedRef.current = true;
-            return;
+            return undefined;
         }
 
         root.classList.add('theme-transitioning');
@@ -272,11 +244,14 @@ function App() {
                 onChange={(view) => dispatch({ type: 'SET_VIEW', payload: view })}
             />
             <div className="main-wrapper">
-                <Header currentView={state.currentView} />
-                <div className="main-content" ref={mainContentRef}>
+                <Header currentView={state.currentView} wsConnected={wsConnected} />
+                <div className={`main-content ${state.currentView === 'config' ? 'is-config-view' : ''}`} ref={mainContentRef}>
                     {/* 顶部错误条统一展示最近一次加载 / 操作失败的消息。 */}
-                    {state.error ? <div className="card" style={{marginBottom: 16, color: '#B3261E', background: 'rgba(179, 38, 30, 0.08)'}}>错误：{state.error}</div> : null}
-                    {renderView()}
+                    {state.error ? <div className="card app-error-card">错误：{state.error}</div> : null}
+                    {/* 错误边界包住视图本体，单页异常只会替换这一块内容。 */}
+                    <ViewErrorBoundary view={state.currentView}>
+                        {renderView()}
+                    </ViewErrorBoundary>
                 </div>
             </div>
         </div>
@@ -286,51 +261,12 @@ function App() {
 function ThemedAppShell() {
     const { state } = useAppContext();
 
+    // 色板统一由 ThemeTokens 维护；令牌文件缺失时回退到最小主题，避免整页崩溃。
     const muiTheme = React.useMemo(() => {
-        const isDark = state.theme === 'dark';
-
-        return MaterialUI.createTheme({
-            palette: isDark
-                ? {
-                    mode: 'dark',
-                    primary: {
-                        main: '#D0BCFF',
-                    },
-                    secondary: {
-                        main: '#CCC2DC',
-                    },
-                    background: {
-                        default: '#141218',
-                        paper: '#1C1B1F',
-                    },
-                    text: {
-                        primary: '#E6E1E5',
-                        secondary: '#CAC4D0',
-                    },
-                    divider: 'rgba(208, 188, 255, 0.16)',
-                }
-                : {
-                    mode: 'light',
-                    primary: {
-                        main: '#6750A4',
-                    },
-                    secondary: {
-                        main: '#625B71',
-                    },
-                    background: {
-                        default: '#FEF7FF',
-                        paper: '#FFFFFF',
-                    },
-                    text: {
-                        primary: '#1C1B1F',
-                        secondary: '#49454F',
-                    },
-                    divider: 'rgba(103, 80, 164, 0.16)',
-                },
-            typography: {
-                fontFamily: '"Roboto", "Noto Sans SC", "Helvetica", "Arial", sans-serif',
-            }
-        });
+        if (window.ThemeTokens && typeof window.ThemeTokens.buildMuiTheme === 'function') {
+            return window.ThemeTokens.buildMuiTheme(MaterialUI, state.theme === 'dark');
+        }
+        return MaterialUI.createTheme({ palette: { mode: state.theme === 'dark' ? 'dark' : 'light' } });
     }, [state.theme]);
 
     return (
@@ -345,7 +281,7 @@ function AuthWrapper() {
     const [ready, setReady] = React.useState(() => !window.__PROACTIVE_AUTH_PENDING);
 
     React.useEffect(() => {
-        if (ready) return;
+        if (ready) return undefined;
         // 等待入口页完成鉴权预检查后，再真正挂载 React 应用。
         const onReady = () => setReady(true);
         window.addEventListener('auth-ready', onReady);
@@ -356,7 +292,10 @@ function AuthWrapper() {
 
     return (
         <AppProvider>
-            <ThemedAppShell />
+            {/* 根级错误边界：即使整个应用初始化失败，也要把错误画到界面上。 */}
+            <ViewErrorBoundary view="app">
+                <ThemedAppShell />
+            </ViewErrorBoundary>
         </AppProvider>
     );
 }
@@ -367,4 +306,3 @@ if (!window.__PROACTIVE_WEBUI_INITIALIZED) {
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<AuthWrapper />);
 }
-

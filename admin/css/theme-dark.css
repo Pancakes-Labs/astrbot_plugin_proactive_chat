@@ -1,0 +1,257 @@
+﻿/* 文件职责：暗色模式下无法由变量自动切换的组件级覆盖。
+ *
+ * 颜色变量本身已在 tokens.css 的 html.theme-dark body 中覆写，
+ * 这里只保留需要不同透明度、渐变或固定色值的规则。
+ */
+ 
+body.dark-theme .sidebar-notification-badge {
+    border-color: rgba(28, 27, 31, 0.42);
+    box-shadow: 0 10px 22px rgba(255, 107, 107, 0.18);
+}
+
+body.dark-theme .sidebar-github-author {
+    color: var(--md-sys-color-on-surface);
+}
+
+body.dark-theme .sidebar-github-meta {
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.9;
+}
+
+body.dark-theme .notifications-hero-card {
+    background:
+        linear-gradient(135deg, rgb(var(--md-primary-rgb) / 0.10), rgba(79, 55, 139, 0.10) 50%, rgba(28, 27, 31, 0.78) 100%),
+        var(--md-sys-color-surface);
+}
+
+
+body.dark-theme .notification-feed-card {
+    background:
+        linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.09), rgb(var(--md-primary-rgb) / 0.025) 34%, rgba(28, 27, 31, 0.88) 100%),
+        var(--md-sys-color-surface);
+    border-color: rgb(var(--md-primary-rgb) / 0.10);
+}
+
+body.dark-theme .markdown-docs-file-item {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgb(var(--md-primary-rgb) / 0.12);
+}
+
+body.dark-theme .markdown-docs-file-item:hover {
+    background: rgb(var(--md-primary-rgb) / 0.12);
+    border-color: rgb(var(--md-primary-rgb) / 0.20);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+}
+
+body.dark-theme .markdown-docs-file-item.is-active {
+    background: rgb(var(--md-primary-rgb) / 0.18);
+    color: var(--md-sys-color-on-surface);
+    border-color: rgb(var(--md-primary-rgb) / 0.24);
+}
+
+body.dark-theme .notifications-inline-meta-item.is-pill {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgb(var(--md-primary-rgb) / 0.12);
+    box-shadow: none;
+}
+
+body.dark-theme .notification-feed-status-pill.is-read {
+    color: #C7CFD9;
+    background: rgba(199, 207, 217, 0.12);
+    border-color: rgba(199, 207, 217, 0.18);
+}
+
+body.dark-theme .notification-feed-status-pill.is-unread {
+    color: #FBC02D;
+    background: rgba(251, 192, 45, 0.14);
+    border-color: rgba(251, 192, 45, 0.22);
+}
+
+body.dark-theme .notification-feed-content-panel {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.03));
+    border-color: rgb(var(--md-primary-rgb) / 0.10);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+body.dark-theme .notification-md h1 {
+    border-bottom-color: rgb(var(--md-primary-rgb) / 0.18);
+}
+
+body.dark-theme .notification-md a {
+    border-bottom-color: rgb(var(--md-primary-rgb) / 0.26);
+}
+
+body.dark-theme .notification-md a:hover {
+    border-bottom-color: rgb(var(--md-primary-rgb) / 0.42);
+}
+
+body.dark-theme .notification-md hr {
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgb(var(--md-primary-rgb) / 0.26),
+        transparent
+    );
+}
+
+body.dark-theme .notification-md blockquote {
+    background: linear-gradient(135deg, rgb(var(--md-primary-rgb) / 0.14), rgba(79, 55, 139, 0.18));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+body.dark-theme .notification-md .notification-md-callout {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-note {
+    background: linear-gradient(135deg, rgba(96, 165, 250, 0.16), rgba(30, 64, 175, 0.18));
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-note .notification-md-callout-header {
+    color: #93C5FD;
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-tip {
+    background: linear-gradient(135deg, rgba(74, 222, 128, 0.16), rgba(21, 128, 61, 0.18));
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-tip .notification-md-callout-header {
+    color: #86EFAC;
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-important {
+    background: linear-gradient(135deg, rgba(196, 181, 253, 0.18), rgba(91, 33, 182, 0.20));
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-important .notification-md-callout-header {
+    color: #D8B4FE;
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-warning {
+    background: linear-gradient(135deg, rgba(251, 191, 36, 0.18), rgba(180, 83, 9, 0.18));
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-warning .notification-md-callout-header {
+    color: #FCD34D;
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-caution {
+    background: linear-gradient(135deg, rgba(248, 113, 113, 0.18), rgba(153, 27, 27, 0.18));
+}
+
+body.dark-theme .notification-md .notification-md-callout.is-caution .notification-md-callout-header {
+    color: #FCA5A5;
+}
+
+body.dark-theme .notification-md :not(pre) > code {
+    background: rgb(var(--md-primary-rgb) / 0.12);
+    border-color: rgb(var(--md-primary-rgb) / 0.18);
+}
+
+body.dark-theme .notification-md-code-block,
+body.dark-theme .notification-md-mermaid-block {
+    border-color: rgb(var(--md-primary-rgb) / 0.18);
+    background:
+        linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.12), rgba(79, 55, 139, 0.08) 16%, rgba(23, 20, 29, 0.96) 100%),
+        rgba(23, 20, 29, 0.96);
+    box-shadow:
+        0 12px 28px rgba(0, 0, 0, 0.28),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+body.dark-theme .notification-md-code-header {
+    border-bottom-color: rgb(var(--md-primary-rgb) / 0.12);
+    background: linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.14), rgba(79, 55, 139, 0.20));
+}
+
+body.dark-theme .notification-md-code-lang {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgb(var(--md-primary-rgb) / 0.18);
+}
+
+body.dark-theme .notification-md pre {
+    background:
+        radial-gradient(circle at top right, rgb(var(--md-primary-rgb) / 0.08), transparent 34%),
+        linear-gradient(180deg, rgba(30, 27, 38, 0.98), rgba(20, 18, 24, 0.98));
+}
+
+body.dark-theme .notification-md pre code {
+    color: #ECE7F6;
+}
+
+body.dark-theme .notification-md .notification-md-table-wrap {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgb(var(--md-primary-rgb) / 0.14);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+body.dark-theme .notification-md .notification-md-details {
+    background: linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.12), rgba(79, 55, 139, 0.10));
+    border-color: rgb(var(--md-primary-rgb) / 0.18);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+body.dark-theme .notification-md-mermaid {
+    background:
+        radial-gradient(circle at top right, rgb(var(--md-primary-rgb) / 0.08), transparent 34%),
+        linear-gradient(180deg, rgba(30, 27, 38, 0.98), rgba(20, 18, 24, 0.98));
+}
+
+body.dark-theme .notification-md-mermaid-tool-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgb(var(--md-primary-rgb) / 0.18);
+    color: var(--md-sys-color-primary);
+}
+
+body.dark-theme .notification-md-mermaid-tool-btn:hover {
+    background: rgb(var(--md-primary-rgb) / 0.14);
+    border-color: rgb(var(--md-primary-rgb) / 0.24);
+}
+
+body.dark-theme .notification-md-mermaid.is-error {
+    color: #F2B8B5;
+}
+
+body.dark-theme .notification-md th,
+body.dark-theme .notification-md td {
+    border-bottom-color: rgb(var(--md-primary-rgb) / 0.10);
+}
+
+body.dark-theme .notification-md th {
+    background: rgb(var(--md-primary-rgb) / 0.10);
+}
+
+body.dark-theme .notification-feed-actions .MuiButton-root {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgb(var(--md-primary-rgb) / 0.18);
+    box-shadow: none;
+}
+
+body.dark-theme .notification-feed-actions .MuiButton-root.Mui-disabled {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgb(var(--md-primary-rgb) / 0.10);
+}
+
+body.dark-theme .status-metric-label,
+body.dark-theme .status-timer-section-desc,
+body.dark-theme .status-timer-kicker,
+body.dark-theme .status-timer-session-sub,
+body.dark-theme .task-card-kicker,
+body.dark-theme .task-card-session-sub,
+body.dark-theme .task-next-run-label,
+body.dark-theme .status-timer-label,
+body.dark-theme .status-timer-info-label,
+body.dark-theme .tasks-header-subtitle,
+body.dark-theme .task-countdown-text,
+body.dark-theme .notifications-inline-meta-label,
+body.dark-theme .notification-feed-time {
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.95;
+}
+
+body.dark-theme .status-timer-section-count,
+body.dark-theme .status-timers-summary-pill,
+body.dark-theme .header-clock-chip,
+body.dark-theme .connection-chip {
+    color: var(--md-sys-color-on-surface);
+}

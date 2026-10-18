@@ -1,0 +1,500 @@
+﻿/* 文件职责：响应式断点、入场动画与减少动态效果偏好。 */
+
+/* 平板设备：缩窄侧边栏、把 12 栏压缩为 6 栏，兼顾内容密度与可读性。 */
+@media (max-width: 1024px) {
+    .sidebar {
+        width: 240px;
+    }
+
+    .top-bar {
+        padding: 0 24px;
+    }
+
+    .main-content {
+        padding: calc(var(--top-bar-height) + 16px) 24px 24px;
+    }
+
+    .dashboard-grid {
+        gap: 16px;
+        grid-template-columns: repeat(6, 1fr);
+    }
+    
+    .span-4 { grid-column: span 3; }
+    .span-8 { grid-column: span 6; }
+    .span-12 { grid-column: span 6; }
+
+    .card {
+        padding: 20px;
+    }
+}
+
+/* 移动设备：整体从左右分栏切换为上下堆叠，导航改为横向可滚动。 */
+@media (max-width: 768px) {
+    .app {
+        flex-direction: column;
+        height: auto;
+        min-height: 100vh;
+    }
+
+    .sidebar {
+        width: 100%;
+        height: auto;
+        padding: 12px 16px;
+        border-right: none;
+        border-bottom: 1px solid var(--glass-border);
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .sidebar-header {
+        padding: 0;
+        flex-direction: row;
+        justify-content: space-between;
+        width: 100%;
+    }
+
+    .sidebar-logo-img {
+        width: 40px;
+        height: 40px;
+    }
+
+    .sidebar-menu {
+        display: flex;
+        flex-direction: row;
+        gap: 8px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        margin: 0 !important;
+        padding-bottom: 4px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+    }
+
+    .nav-item {
+        white-space: nowrap;
+        padding: 10px 16px;
+        margin-bottom: 0;
+        flex-shrink: 0;
+        font-size: 14px;
+    }
+
+    .sidebar-footer {
+        display: none;
+    }
+
+    .top-bar {
+        position: relative;
+        top: auto;
+        left: auto;
+        right: auto;
+        height: auto;
+        min-height: calc(var(--top-bar-height) * 0.75);
+        padding: 12px 16px;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .top-bar::before {
+        display: none;
+    }
+
+    .top-bar > h5 {
+        font-size: 1.25rem;
+    }
+
+    .main-wrapper {
+        flex: 1;
+        overflow: visible;
+    }
+
+    .main-content {
+        padding: 16px;
+        overflow-y: visible;
+        height: auto;
+    }
+
+    /* 移动端不使用内部滚动：配置页跟随页面整体滚动，避免 flex 高度塌陷。 */
+    .main-content.is-config-view {
+        display: block;
+        overflow: visible;
+    }
+
+    .main-content.is-config-view > .config-view-shell {
+        display: block;
+        height: auto;
+    }
+
+    .config-card {
+        height: auto;
+    }
+
+    .config-editor-scroll {
+        overflow: visible;
+        padding: 12px;
+    }
+
+    .config-action-bar {
+        position: sticky;
+        bottom: 0;
+        padding: 12px;
+    }
+
+    .dashboard-grid {
+        grid-template-columns: 1fr !important;
+        gap: 12px;
+    }
+
+    .span-4, .span-8, .span-12 {
+        grid-column: span 1 !important;
+    }
+
+    .card {
+        padding: 16px;
+        border-radius: var(--radius-md);
+    }
+
+    .card:hover {
+        transform: none;
+    }
+
+    .top-bar > div {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .tasks-header-row,
+    .status-timer-section-head {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .notifications-actions-row {
+        width: 100%;
+        justify-content: flex-start;
+        padding-left: 0;
+    }
+
+    .notifications-title-row {
+        align-items: flex-start;
+    }
+
+    .notifications-inline-meta {
+        width: 100%;
+        gap: 8px 10px;
+    }
+
+    .status-timer-info-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .status-panel-card {
+        min-height: auto;
+    }
+
+    .tasks-grid-enhanced {
+        grid-template-columns: 1fr;
+    }
+
+    .markdown-docs-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .markdown-docs-aside-sticky {
+        position: static;
+    }
+
+    .markdown-docs-sidebar-card {
+        min-height: auto;
+        height: auto;
+        max-height: none;
+        overflow: visible;
+    }
+
+    .markdown-docs-content-card {
+        min-height: auto;
+    }
+
+    .markdown-docs-file-list {
+        min-height: auto;
+        flex: initial;
+        overflow: visible;
+        padding-right: 0;
+    }
+}
+
+/* 小屏手机：进一步压缩边距与卡片留白，保证信息仍能在窄屏完整呈现。 */
+@media (max-width: 480px) {
+    .notification-md {
+        font-size: 0.94rem;
+    }
+
+    .notification-md h1 {
+        font-size: 1.18rem;
+    }
+
+    .notification-md h2 {
+        font-size: 1.08rem;
+    }
+
+    .notification-md h3,
+    .notification-md h4,
+    .notification-md h5,
+    .notification-md h6 {
+        font-size: 0.98rem;
+    }
+
+    .notification-md-code-header {
+        min-height: 38px;
+        padding: 0 12px;
+    }
+
+    .notification-md-code-lang {
+        min-height: 22px;
+        padding: 0 9px;
+        font-size: 10px;
+    }
+
+    .notification-md pre {
+        padding: 0.85rem 0.9rem 0.95rem;
+        border-radius: 0 0 14px 14px;
+    }
+
+    .notification-md .notification-md-table-wrap {
+        margin-left: -2px;
+        margin-right: -2px;
+    }
+
+    .notification-md .notification-md-summary {
+        padding: 0.78rem 0.88rem;
+    }
+
+    .notification-md .notification-md-callout {
+        padding: 0.9rem 0.92rem 0.9rem 0.98rem;
+    }
+
+    .notification-md .notification-md-callout-header {
+        margin-bottom: 0.6rem;
+    }
+
+    .notification-md-mermaid {
+        padding: 0.85rem;
+    }
+    .sidebar {
+        padding: 10px 12px;
+    }
+
+    .sidebar-header {
+        gap: 8px;
+    }
+
+    .sidebar-logo-img {
+        width: 36px;
+        height: 36px;
+    }
+
+    .nav-item {
+        padding: 8px 14px;
+        font-size: 13px;
+    }
+
+    .top-bar {
+        padding: 10px 12px;
+        min-height: 56px;
+    }
+
+    .main-content {
+        padding: 12px;
+    }
+
+    .card {
+        padding: 14px;
+    }
+
+    .header-clock-chip,
+    .connection-chip {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .task-next-run-primary-row,
+    .task-card-top,
+    .status-timer-primary-row {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .notification-feed-side,
+    .notification-feed-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .notification-feed-card-top {
+        align-items: flex-start;
+    }
+
+    .notification-feed-heading-group {
+        width: 100%;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .notification-feed-title {
+        width: 100%;
+        white-space: normal;
+    }
+
+    .notification-feed-meta-inline {
+        padding-left: 0;
+        gap: 8px;
+    }
+
+    .notification-feed-content-panel {
+        padding: 14px 15px 54px;
+    }
+
+    .notification-feed-actions-inside {
+        right: 12px;
+        bottom: 10px;
+    }
+
+    .status-timer-card-top {
+        grid-template-columns: 1fr;
+    }
+
+    .status-timer-chip-stack {
+        justify-content: flex-start;
+        max-width: none;
+    }
+
+    .status-action-tooltip-bubble {
+        left: 0;
+        transform: translateX(0) translateY(6px);
+        width: 100%;
+        max-width: none;
+        text-align: left;
+    }
+
+    .status-action-tooltip-bubble::after {
+        left: 22px;
+        transform: none;
+    }
+
+    .status-action-tooltip-wrap:hover .status-action-tooltip-bubble,
+    .status-action-tooltip-wrap:focus-within .status-action-tooltip-bubble {
+        transform: translateX(0) translateY(0);
+    }
+}
+
+/* 超小屏幕：针对极窄设备继续缩小导航与容器 padding。 */
+@media (max-width: 360px) {
+    .sidebar {
+        padding: 8px 10px;
+    }
+
+    .sidebar-logo-img {
+        width: 32px;
+        height: 32px;
+    }
+
+    .nav-item {
+        padding: 7px 12px;
+        font-size: 12px;
+    }
+
+    .top-bar {
+        padding: 8px 10px;
+    }
+
+    .main-content {
+        padding: 10px;
+    }
+
+    .card {
+        padding: 12px;
+    }
+}
+
+/* ===== 动画、骨架屏与低动态偏好兼容 ===== */
+/* ========== 骨架屏动画 ========== */
+@keyframes card-fade-up {
+    0% {
+        opacity: 0;
+        transform: translateY(10px) scale(0.985);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* 群沉默重置提示中的小圆点脉冲动画。 */
+@keyframes status-reset-dot-pulse {
+    0% {
+        transform: scale(0.9);
+        box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.34);
+    }
+    70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+    }
+    100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+    }
+}
+
+/* 群沉默重置提示条的淡入停留淡出动画。 */
+@keyframes status-reset-hint-fade {
+    0% {
+        opacity: 0;
+        transform: translateY(-6px) scale(0.98);
+    }
+    10% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+    82% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.985);
+    }
+}
+
+/* 尊重系统“减少动态效果”偏好，关闭高频动画，提升无障碍体验。 */
+@media (prefers-reduced-motion: reduce) {
+    .boot-loader__logo,
+    .boot-loader__progress-bar,
+    .status-timer-reset-dot,
+    .status-timer-reset-hint,
+    .status-panel-card,
+    .task-card-enhanced,
+    .status-timer-card,
+    .status-timer-section-block,
+    .tasks-empty-card,
+    .status-timers-empty-card,
+    .notifications-hero-card,
+    .notifications-empty-card,
+    .markdown-docs-sidebar-card,
+    .markdown-docs-content-card,
+    .markdown-docs-empty-card,
+    .markdown-docs-empty-side-card,
+    .config-card,
+    .config-header,
+    .notifications-inline-meta-item,
+    .markdown-docs-file-item {
+        animation: none !important;
+    }
+
+    #loading-skeleton.is-exiting {
+        transition: opacity 0.15s linear !important;
+        transform: none !important;
+    }
+
+    .boot-loader__progress-bar {
+        transform: translate3d(0, 0, 0) scaleX(1);
+    }
+}

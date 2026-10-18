@@ -1,21 +1,45 @@
 ﻿/**
- * 文件职责：WebSocket Hook，负责全局单例连接管理与实时消息分发。
+ * 文件职责：WebSocket Hook，负责全局单例连接管理、心跳与实时消息分发。
  */
 
 // 管理端全局只维护一个 WebSocket 连接，避免多个组件重复建立相同连接。
 let __globalWs = null;
 // 所有订阅实时数据的回调统一挂到一个监听集合中，由单连接分发。
 let __wsListeners = new Set();
+// 连接状态订阅者，用于让上层感知实时通道是否可用。
+let __wsStateListeners = new Set();
+let __wsConnected = false;
 // 重连定时器与退避参数：插件重载期间避免高频重连打满日志。
 let __reconnectTimer = null;
+let __heartbeatTimer = null;
 const WS_RECONNECT_BASE_DELAY_MS = 1000;
 const WS_RECONNECT_MAX_DELAY_MS = 10000;
+// 后端会响应 ping 并回 pong，用短心跳及时发现半开连接。
+const WS_HEARTBEAT_INTERVAL_MS = 25000;
 let __nextReconnectDelayMs = WS_RECONNECT_BASE_DELAY_MS;
+
+function setConnected(value) {
+    if (__wsConnected === value) return;
+    __wsConnected = value;
+    __wsStateListeners.forEach((listener) => {
+        try {
+            listener(value);
+        } catch (e) {
+            // 单个订阅者异常不影响其它组件。
+        }
+    });
+}
 
 function clearReconnectTimer() {
     if (!__reconnectTimer) return;
     clearTimeout(__reconnectTimer);
     __reconnectTimer = null;
+}
+
+function clearHeartbeatTimer() {
+    if (!__heartbeatTimer) return;
+    clearInterval(__heartbeatTimer);
+    __heartbeatTimer = null;
 }
 
 function resetReconnectBackoff() {
@@ -53,15 +77,28 @@ function ensureGlobalWs() {
     __globalWs = ws;
 
     ws.onopen = function () {
+        if (__globalWs !== ws) return;
+        setConnected(true);
         // 连接恢复后重置退避，后续若再次断开可从短延迟开始。
-        if (__globalWs === ws) {
-            resetReconnectBackoff();
-        }
+        resetReconnectBackoff();
+        clearHeartbeatTimer();
+        // 心跳失败不主动断开，交给浏览器超时与重连逻辑处理。
+        __heartbeatTimer = setInterval(() => {
+            if (!__globalWs || __globalWs.readyState !== WebSocket.OPEN) return;
+            try {
+                __globalWs.send(JSON.stringify({ type: 'ping' }));
+            } catch (e) {
+                // 发送失败说明连接可能已异常，触发一次主动探测重连。
+                scheduleReconnect();
+            }
+        }, WS_HEARTBEAT_INTERVAL_MS);
     };
 
     ws.onmessage = function (event) {
         try {
             const msg = JSON.parse(event.data);
+            // pong 仅用于维持连接，不参与业务数据分发。
+            if (msg.type === 'pong') return;
             // 仅处理后端定义的两类数据推送消息，其余消息类型忽略。
             if (msg.type === 'full_update' || msg.type === 'update') {
                 const data = msg.data || {};
@@ -94,16 +131,21 @@ function ensureGlobalWs() {
             return;
         }
         __globalWs = null;
+        clearHeartbeatTimer();
+        setConnected(false);
         // 连接关闭后自动尝试重连，覆盖插件重载等短暂不可用场景。
         scheduleReconnect();
     };
 }
 
 function useWebSocket(onData) {
+    const [connected, setConnectedState] = React.useState(__wsConnected);
+
     React.useEffect(() => {
         if (typeof onData === 'function') {
             __wsListeners.add(onData);
         }
+        __wsStateListeners.add(setConnectedState);
 
         // 只要有任意一个订阅者存在，就确保全局连接已建立。
         ensureGlobalWs();
@@ -112,9 +154,11 @@ function useWebSocket(onData) {
             if (typeof onData === 'function') {
                 __wsListeners.delete(onData);
             }
+            __wsStateListeners.delete(setConnectedState);
             // 最后一个订阅者离开时主动关闭连接，减少空闲资源占用。
             if (__wsListeners.size === 0) {
                 clearReconnectTimer();
+                clearHeartbeatTimer();
                 __nextReconnectDelayMs = WS_RECONNECT_BASE_DELAY_MS;
                 if (__globalWs) {
                     try {
@@ -124,11 +168,13 @@ function useWebSocket(onData) {
                     }
                 }
                 __globalWs = null;
+                setConnected(false);
             }
         };
     }, [onData]);
+
+    return connected;
 }
 
 // 暴露为全局 Hook，供入口应用与各页面脚本直接调用。
 window.useWebSocket = useWebSocket;
-

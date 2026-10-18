@@ -128,7 +128,7 @@ class WebConsoleServer:
         @self.app.middleware("http")
         async def auth_middleware(request: Request, call_next):
             if not self.token_auth.enabled:
-                return await call_next(request)
+                return await self._with_static_cache_policy(request, call_next)
 
             path = request.url.path
             # 登录相关接口与静态资源无需令牌。
@@ -136,7 +136,7 @@ class WebConsoleServer:
                 return await call_next(request)
 
             if not path.startswith("/api"):
-                return await call_next(request)
+                return await self._with_static_cache_policy(request, call_next)
 
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
@@ -158,6 +158,23 @@ class WebConsoleServer:
         )
         routes.register(self.app)
         self._mount_static_files()
+
+    async def _with_static_cache_policy(self, request: Request, call_next):
+        """给静态响应按类型附加缓存策略。
+
+        只有入口 index.html 需要每次验证（no-cache），确保前端资源引用改动后
+        能立刻生效；其余 js/css/字体/图片继续依赖 ETag + Last-Modified 做 304 复用，
+        避免无谓的性能损失。
+        """
+        response = await call_next(request)
+
+        path = request.url.path
+        if path in {"", "/"} or path.endswith("/index.html") or path.endswith(".html"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+
+        return response
 
     def _mount_static_files(self) -> None:
         """把前端构建产物目录挂载为根路径静态资源。"""
