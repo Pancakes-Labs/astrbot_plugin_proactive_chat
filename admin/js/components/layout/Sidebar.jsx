@@ -5,11 +5,11 @@
  
  const { Box, Typography } = MaterialUI;
 
-function SidebarActionButton({ icon, label, onClick, iconStyle }) {
+function SidebarActionButton({ icon, label, onClick, variant }) {
     return (
         <button className="btn sidebar-action-btn" onClick={onClick}>
-            {/* 允许不同按钮覆盖图标样式，避免个别 emoji 视觉重心不一致。 */}
-            <span style={iconStyle || { fontSize: '16px', marginLeft: '-6px' }}>{icon}</span>
+            {/* 图标变体交给 CSS 控制，避免在 JSX 里散落偏移量。 */}
+            <span className={`sidebar-action-icon${variant ? ` is-${variant}` : ''}`}>{icon}</span>
             {label}
         </button>
     );
@@ -100,18 +100,20 @@ function Sidebar({ currentView, onChange }) {
                 </div>
             </div>
 
-            <Box sx={{ flex: 1, mt: 4 }}>
+            <Box sx={{ flex: 1, mt: 4 }} className="sidebar-menu">
                 {menus.map((item) => {
                     const showUnreadBadge = item.key === 'notifications' && unreadNotificationCount > 0;
                     const unreadBadgeText = unreadNotificationCount > 99 ? '99+' : String(unreadNotificationCount);
                     return (
-                        <div
+                        <button
                             key={item.key}
+                            type="button"
                             className={`nav-item ${currentView === item.key ? 'active' : ''}`}
+                            aria-current={currentView === item.key ? 'page' : undefined}
                             // 导航只上抛目标视图 key，具体状态更新由父组件统一处理。
                             onClick={() => onChange(item.key)}
                         >
-                            <span style={{ fontSize: '18px' }}>{item.icon}</span>
+                            <span className="sidebar-menu-icon">{item.icon}</span>
                             <Typography variant="body2" sx={{ fontWeight: 500 }}>
                                 {item.label}
                             </Typography>
@@ -120,12 +122,12 @@ function Sidebar({ currentView, onChange }) {
                                     {unreadBadgeText}
                                 </span>
                             ) : null}
-                        </div>
+                        </button>
                     );
                 })}
             </Box>
 
-            <Box sx={{ px: 2, pt: 0, pb: 0 }}>
+            <Box sx={{ px: 2, pt: 0, pb: 0 }} className="sidebar-footer">
                 <div className="sidebar-actions-panel">
                     <SidebarActionButton
                         icon="📂"
@@ -136,7 +138,7 @@ function Sidebar({ currentView, onChange }) {
                         icon="🗃️"
                         label="打开插件数据目录"
                         onClick={() => openDirectory('data')}
-                        iconStyle={{ fontSize: '16px', marginLeft: '-4px' }}
+                        variant="data"
                     />
                 </div>
 
@@ -145,16 +147,14 @@ function Sidebar({ currentView, onChange }) {
                     target="_blank"
                     rel="noopener noreferrer"
                     className="github-btn sidebar-github-card"
-                    style={{ textDecoration: 'none' }}
+                    aria-label="打开项目 GitHub 仓库"
                 >
                     <div className="sidebar-github-inner">
                         <svg
                             height="28"
                             width="28"
                             viewBox="0 0 16 16"
-                            // GitHub 图标颜色随当前主题切换，保证深浅色模式下都具备良好对比度。
-                            fill={state.theme === 'dark' ? '#E6E1E5' : '#000000'}
-                            style={{ flexShrink: 0 }}
+                            className="sidebar-github-icon"
                         >
                             <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
                         </svg>
