@@ -48,12 +48,13 @@
         React.useEffect(() => {
             if (!active) return undefined;
 
-            listeners.add(setNow);
+            // 订阅集合里必须放真正的 state setter，否则 notify 时会整体报错。
+            listeners.add(setNowMs);
             setNowMs(Date.now());
             startTimer();
 
             return () => {
-                listeners.delete(setNow);
+                listeners.delete(setNowMs);
                 stopTimerIfIdle();
             };
         }, [active]);
