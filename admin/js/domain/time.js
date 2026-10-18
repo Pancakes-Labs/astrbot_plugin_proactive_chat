@@ -33,8 +33,10 @@
             return Number.isFinite(ms) ? ms : null;
         }
 
-        const parsed = window.parseDateish ? window.parseDateish(raw) : new Date(raw);
-        return parsed ? parsed.getTime() : null;
+        // 兼容 "YYYY-MM-DD HH:mm:ss" 这类非标准 ISO 文本，统一替换为 T 分隔。
+        const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+        const parsed = new Date(normalized);
+        return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();
     }
 
     function toDate(value) {
