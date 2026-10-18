@@ -1,0 +1,108 @@
+﻿/* Material Design 3 - 主动消息主题 */
+:root {
+    /* 整个管理端的设计令牌入口：亮色模式下所有组件都从这里读取颜色变量。 */
+    /* --- MD3 颜色令牌 (紫色种子) --- */
+    --md-sys-color-primary: #6750A4;
+    --md-sys-color-on-primary: #FFFFFF;
+    --md-sys-color-primary-container: #EADDFF;
+    --md-sys-color-on-primary-container: #21005D;
+
+    --md-sys-color-secondary: #625B71;
+    --md-sys-color-on-secondary: #FFFFFF;
+    --md-sys-color-secondary-container: #E8DEF8;
+    --md-sys-color-on-secondary-container: #1D192B;
+
+    --md-sys-color-surface: rgba(255, 255, 255, 0.8);
+    --md-sys-color-on-surface: #1C1B1F;
+    --md-sys-color-on-surface-variant: #49454F;
+    --md-sys-color-surface-variant: #E7E0EC;
+
+    --md-sys-color-background: #FEF7FF;
+    --md-sys-color-outline-variant: rgb(var(--md-primary-rgb) / 0.1);
+    --md-sys-color-error: #B3261E;
+    --md-sys-color-success: #2E7D32;
+    --md-sys-color-warning: #B45309;
+
+    /* 主色/语义色的 RGB 拆分，供需要任意透明度的场景使用；暗色模式只需覆写这几个变量。 */
+    --md-primary-rgb: 103 80 164;
+    --md-error-rgb: 179 38 30;
+    --md-success-rgb: 46 125 50;
+    --md-warning-rgb: 180 83 9;
+
+    --glass-bg: rgba(255, 255, 255, 0.65);
+    --glass-border: rgb(var(--md-primary-rgb) / 0.15);
+    --glass-shadow: 0 4px 20px 0 rgb(var(--md-primary-rgb) / 0.08);
+
+    /* 控件级阴影与轨道色，避免在 JSX 的 sx 中散落硬编码色值。 */
+    --md-switch-track: rgba(0, 0, 0, 0.12);
+    --md-switch-thumb-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    --md-menu-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+    --md-elevation-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+
+    /* Markdown 代码高亮颜色令牌，供亮暗主题统一覆写。 */
+    --md-code-token-key: #7C3AED;
+    --md-code-token-string: #047857;
+    --md-code-token-number: #B45309;
+    --md-code-token-boolean: #C026D3;
+    --md-code-token-keyword: #2563EB;
+    --md-code-token-function: #7C2D12;
+    --md-code-token-command: #4338CA;
+    --md-code-token-flag: #0F766E;
+    --md-code-token-punctuation: rgba(28, 27, 31, 0.52);
+
+    --theme-transition-duration: 220ms;
+    --interactive-transition-duration: 180ms;
+    --theme-transition-easing: cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* --- 形状 --- */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 20px;
+    --radius-xl: 28px;
+
+    /* --- 顶栏 --- */
+    --top-bar-height: 80px;
+}
+
+/* 暗色主题统一挂在 html.theme-dark 上，运行时与首屏共用同一份变量定义。 */
+html.theme-dark body {
+    --md-sys-color-primary: #D0BCFF;
+    --md-sys-color-on-primary: #381E72;
+    --md-sys-color-primary-container: #4F378B;
+    --md-sys-color-on-primary-container: #EADDFF;
+
+    --md-sys-color-surface: rgba(28, 27, 31, 0.8);
+    --md-sys-color-on-surface: #E6E1E5;
+    --md-sys-color-on-surface-variant: #CAC4D0;
+    --md-sys-color-surface-variant: #49454F;
+
+    --md-sys-color-background: #141218;
+    --md-sys-color-outline-variant: rgb(var(--md-primary-rgb) / 0.1);
+
+    --glass-bg: rgba(28, 27, 31, 0.7);
+    --glass-border: rgb(var(--md-primary-rgb) / 0.1);
+    --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+
+    /* 暗色下开关轨道需要更亮的底色，保证与背景有足够对比。 */
+    --md-switch-track: rgba(255, 255, 255, 0.12);
+    --md-menu-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    --md-elevation-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+
+    --md-primary-rgb: 208 188 255;
+    --md-error-rgb: 242 184 181;
+    --md-success-rgb: 168 218 181;
+    --md-warning-rgb: 251 192 45;
+    --md-sys-color-error: #F2B8B5;
+    --md-sys-color-success: #A8DAB5;
+    --md-sys-color-warning: #FBC02D;
+
+    --md-code-token-key: #C4B5FD;
+    --md-code-token-string: #6EE7B7;
+    --md-code-token-number: #FBBF24;
+    --md-code-token-boolean: #F0ABFC;
+    --md-code-token-keyword: #93C5FD;
+    --md-code-token-function: #FDBA74;
+    --md-code-token-command: #A5B4FC;
+    --md-code-token-flag: #5EEAD4;
+    --md-code-token-punctuation: rgba(236, 231, 246, 0.56);
+}
