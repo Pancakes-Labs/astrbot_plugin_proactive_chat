@@ -156,23 +156,24 @@ class ApiRoutes:
                 "content_format": "markdown",
             }
 
+        def _config_group(key: str) -> dict[str, Any]:
+            """读取配置分组并保证返回对象，避免历史脏数据（如 null）让配置页整体不可用。"""
+            value = self.config.get(key)
+            return dict(value) if isinstance(value, dict) else {}
+
         # 读取配置（web_admin 分组会剔除 password 字段）。
         @app.get("/api/config")
         async def get_config():
             web_admin = {
-                k: v
-                for k, v in self.config.get("web_admin", {}).items()
-                if k != "password"
+                k: v for k, v in _config_group("web_admin").items() if k != "password"
             }
             # 返回所有可编辑分组，保证前端渲染的字段与服务端保存范围一致。
             return {
-                "friend_settings": dict(self.config.get("friend_settings", {})),
-                "group_settings": dict(self.config.get("group_settings", {})),
+                "friend_settings": _config_group("friend_settings"),
+                "group_settings": _config_group("group_settings"),
                 "web_admin": web_admin,
-                "notification_settings": dict(
-                    self.config.get("notification_settings", {})
-                ),
-                "telemetry_config": dict(self.config.get("telemetry_config", {})),
+                "notification_settings": _config_group("notification_settings"),
+                "telemetry_config": _config_group("telemetry_config"),
             }
 
         # 返回 _conf_schema.json 内容，供前端渲染配置表单。
@@ -199,6 +200,22 @@ class ApiRoutes:
                 "notification_settings",
                 "telemetry_config",
             }
+            # 分组必须是对象：若写入 null，后续 GET /api/config 的 dict(...) 会抛错，
+            # 配置编辑器将无法重新加载，只能手动改配置文件才能恢复。
+            invalid_keys = [
+                key
+                for key in sorted(allowed_keys)
+                if key in payload and not isinstance(payload[key], dict)
+            ]
+            if invalid_keys:
+                return JSONResponse(
+                    {
+                        "error": "配置分组必须是对象",
+                        "invalid_keys": invalid_keys,
+                    },
+                    status_code=400,
+                )
+
             for key in allowed_keys:
                 if key not in payload:
                     continue
