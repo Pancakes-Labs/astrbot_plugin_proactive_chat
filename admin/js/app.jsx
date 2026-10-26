@@ -165,7 +165,7 @@ function App() {
 
     // 主内容区滚动位置：与配置页共用同一套恢复实现与键规则。
     useScrollRestore(mainContentRef, window.ScrollDomain.buildScrollKey(`view_${state.currentView}`), {
-        enabled: !window.__PROACTIVE_AUTH_PENDING,
+        enabled: !window.__PROACTIVE_AUTH_PENDING && state.currentView !== 'config',
     });
 
     const renderView = () => {
