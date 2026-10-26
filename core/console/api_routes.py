@@ -56,6 +56,21 @@ class ApiRoutes:
         # 注入 Docker 探测函数，便于测试替换。
         self._is_running_in_docker = is_docker_fn
 
+    def _sync_telemetry_config(self) -> None:
+        """把内存中的最新配置同步给遥测管理器。
+
+        TelemetryManager 在实例化时缓存了 enabled 开关，配置保存后不同步的话，
+        Web 面板里关闭遥测会看起来成功但事件仍在继续上报。
+        """
+        telemetry = getattr(self.plugin, "telemetry", None)
+        apply_config = getattr(telemetry, "apply_config", None)
+        if not callable(apply_config):
+            return
+        try:
+            apply_config(dict(self.config))
+        except Exception as e:
+            logger.debug(f"[主动消息] 同步遥测开关失败喵: {e}")
+
     def register(self, app) -> None:
         """把所有路由挂载到 FastAPI 应用上。
 
@@ -195,6 +210,9 @@ class ApiRoutes:
                     self.config["web_admin"] = old
                 else:
                     self.config[key] = payload[key]
+
+            # 遥测开关是运行期缓存的，必须在内存配置更新后同步，否则要重启才生效。
+            self._sync_telemetry_config()
 
             try:
                 plugin.config.save_config()

@@ -98,6 +98,39 @@ class TelemetryManager:
         """是否启用遥测。"""
         return self._enabled
 
+    def apply_config(self, config: dict[str, Any]) -> None:
+        """同步最新配置中的遥测开关，使 Web 面板的修改无需重启即可生效。
+
+        构造时缓存的 _enabled 不会随插件配置变化自动刷新，因此保存配置后
+        必须由调用方把最新配置传进来，否则关闭遥测仍会继续上报。
+        """
+        if not isinstance(config, dict):
+            return
+
+        self._config = config
+        telemetry_config = config.get("telemetry_config", {})
+        if not isinstance(telemetry_config, dict):
+            telemetry_config = {}
+        enabled = bool(telemetry_config.get("enabled", True))
+
+        if enabled == self._enabled:
+            return
+
+        self._enabled = enabled
+        if enabled:
+            logger.debug("[主动消息] 遥测已启用喵。")
+            return
+
+        # 关闭遥测要立刻停手：取消待触发的 flush、正在跑的 drain，并清空积压事件，
+        # 避免用户明确关闭后仍有事件被补发出去。
+        self._cancel_flush_timer()
+        self._feature_buffer.clear()
+        self._backlog.clear()
+        if self._drain_task and not self._drain_task.done():
+            self._drain_task.cancel()
+            self._drain_task = None
+        logger.debug("[主动消息] 遥测已关闭喵。")
+
     def _get_or_create_instance_id(self) -> str:
         """获取或创建实例 ID。"""
         try:
@@ -161,6 +194,9 @@ class TelemetryManager:
         """
         if not events:
             return True
+        # 兜底：配置在请求排队期间被关闭时，丢弃这一批而不是继续上报。
+        if not self._enabled:
+            return False
 
         now = time.monotonic()
         # 再次检查熔断状态（可能在 end_flow 调用时已经进入熔断）。
@@ -278,6 +314,9 @@ class TelemetryManager:
         """
         if not self._backlog:
             return
+        # 用户关闭遥测后不再自动补发任何积压事件。
+        if not self._enabled:
+            return
         if self._drain_task is not None and not self._drain_task.done():
             return
         self._drain_task = asyncio.create_task(self._drain_backlog())
@@ -309,7 +348,10 @@ class TelemetryManager:
         except Exception as e:
             logger.debug(f"[主动消息] 遥测积压同步异常喵: {e}")
         finally:
-            self._drain_task = None
+            # 只清理自身引用：任务可能已被 apply_config 取消并放入新任务，
+            # 无条件置空会把新任务的引用抹掉，导致并发 drain。
+            if self._drain_task is asyncio.current_task():
+                self._drain_task = None
 
     # ─── 公共上报接口 ─────────────────────────────────────────────────
 
