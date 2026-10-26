@@ -76,7 +76,7 @@ def build_provider_request(
 
 
 def supported_provider_kwargs(provider: Any) -> set[str] | None:
-    """探测 Provider.text_chat 支持的参数名。
+    """探测 Provider.text_chat 支持的关键字参数名。
 
     签名含 **kwargs 时返回 None，表示“全部参数均可传入”。
     """
@@ -88,7 +88,12 @@ def supported_provider_kwargs(provider: Any) -> set[str] | None:
     params = signature.parameters
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
         return None
-    return set(params.keys())
+    return {
+        name
+        for name, param in params.items()
+        if param.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
 
 
 async def invoke_provider(provider: Any, req: Any) -> Any:
@@ -108,6 +113,10 @@ async def invoke_provider(provider: Any, req: Any) -> Any:
     model = getattr(req, "model", None)
     if model:
         call_kwargs["model"] = model
+
+    conversation_id = getattr(getattr(req, "conversation", None), "cid", None)
+    if conversation_id:
+        call_kwargs["conversation_id"] = conversation_id
 
     supported = supported_provider_kwargs(provider)
     if supported is not None:
