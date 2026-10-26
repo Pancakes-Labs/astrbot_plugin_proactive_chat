@@ -236,8 +236,17 @@
             }
             // 捕获脚本执行期错误，附带文件与行号，便于快速定位。
             window.addEventListener('error', function (event) {
-                if (event && event.target && event.target.tagName === 'SCRIPT') {
-                    report('脚本加载失败', event.target.src || '(unknown)');
+                var target = event && event.target;
+                // 资源加载失败（IMG / LINK 等）在捕获阶段也会到达 window，但不是运行错误。
+                var isElementTarget = !!target
+                    && target !== window
+                    && target !== document
+                    && !!target.tagName;
+                if (isElementTarget) {
+                    if (target.tagName === 'SCRIPT') {
+                        report('脚本加载失败', target.src || '(unknown)');
+                    }
+                    // 其它资源缺失属于可降级的局部问题，不弹整块错误面板。
                     return;
                 }
                 var err = event && event.error;
