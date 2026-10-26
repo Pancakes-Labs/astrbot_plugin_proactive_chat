@@ -162,17 +162,21 @@ class WebConsoleServer:
     async def _with_static_cache_policy(self, request: Request, call_next):
         """给静态响应按类型附加缓存策略。
 
-        只有入口 index.html 需要每次验证（no-cache），确保前端资源引用改动后
-        能立刻生效；其余 js/css/字体/图片继续依赖 ETag + Last-Modified 做 304 复用，
-        避免无谓的性能损失。
+        入口 index.html 与脚本 / 样式都必须每次重新验证，否则浏览器会按启发式
+        新鲜期直接复用本地副本（约文件年龄的 10%），插件升级后就可能出现
+        index.html 已更新、js/css 仍是旧版的新旧混用。no-cache 只是强制验证，
+        文件未变更时依旧由 ETag + Last-Modified 返回 304，性能开销可忽略。
+        字体 / 图片体积大且很少变化，继续沿用启发式缓存。
         """
         response = await call_next(request)
 
-        path = request.url.path
-        if path in {"", "/"} or path.endswith("/index.html") or path.endswith(".html"):
+        path = request.url.path.lower()
+        if path in {"", "/"} or path.endswith(".html"):
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
+        elif path.endswith((".js", ".css")):
+            response.headers["Cache-Control"] = "no-cache"
 
         return response
 
