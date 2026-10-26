@@ -34,6 +34,8 @@
         flex-direction: column;
         height: auto;
         min-height: 100vh;
+        /* 移动端没有内部滚动区，放开裁剪才能让子元素相对页面滚动容器做 sticky。 */
+        overflow: visible;
     }
 
     .sidebar {
@@ -126,6 +128,8 @@
 
     .config-card {
         height: auto;
+        /* overflow: hidden 会让卡片成为不滚动的滚动容器，sticky 操作栏就失去参照。 */
+        overflow: visible;
     }
 
     .config-editor-scroll {
@@ -487,6 +491,13 @@
     .notifications-inline-meta-item,
     .markdown-docs-file-item {
         animation: none !important;
+    }
+
+    /* 提示条本身靠 status-reset-hint-fade 淡入，关掉动画后必须补上静态可见状态。 */
+    .status-timer-reset-hint {
+        animation: none !important;
+        opacity: 1;
+        transform: none;
     }
 
     #loading-skeleton.is-exiting {
