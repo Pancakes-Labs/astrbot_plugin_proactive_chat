@@ -52,6 +52,10 @@
                     setSessionLoading(true);
                     const sessionData = await api.getSessionConfig(currentSession);
                     const hasBaseConfig = Boolean(sessionData && sessionData.base);
+                    configData = (sessionData && (sessionData.effective || sessionData.override)) || {};
+                    // 会话状态必须在序号检查之后再写：否则迟到的旧会话响应会覆盖新会话的
+                    // baseAvailable，把新会话的保存按钮错误地置为不可用。
+                    if (requestSeq !== loadConfigSeqRef.current) return false;
                     setSessionConfigState(
                         hasBaseConfig
                             ? { baseAvailable: true, message: '' }
@@ -60,7 +64,6 @@
                                 message: '该会话尚未命中对应类型的全局 session_list，因此暂时无法保存会话差异配置。请先在对应的全局配置中加入该会话。',
                             }
                     );
-                    configData = (sessionData && (sessionData.effective || sessionData.override)) || {};
                 } else {
                     setSessionConfigState({ baseAvailable: true, message: '' });
                     configData = await api.getConfig();
