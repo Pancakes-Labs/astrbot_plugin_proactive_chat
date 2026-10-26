@@ -16,7 +16,11 @@ const WS_RECONNECT_BASE_DELAY_MS = 1000;
 const WS_RECONNECT_MAX_DELAY_MS = 10000;
 // 后端会响应 ping 并回 pong，用短心跳及时发现半开连接。
 const WS_HEARTBEAT_INTERVAL_MS = 25000;
+// 连续多个心跳周期都收不到 pong，即可判定连接已半开（此时 send 不会抛错）。
+const WS_PONG_TIMEOUT_MS = WS_HEARTBEAT_INTERVAL_MS * 2.5;
 let __nextReconnectDelayMs = WS_RECONNECT_BASE_DELAY_MS;
+// 最近一次确认链路可用的时间戳（open 或收到 pong 时刷新）。
+let __lastPongAt = 0;
 
 function setConnected(value) {
     if (__wsConnected === value) return;
@@ -62,6 +66,24 @@ function scheduleReconnect() {
     }, delay);
 }
 
+// 主动废弃当前连接：半开连接下 send() 既不抛错也收不到 pong，
+// 只能自己关闭，让 onclose 完成状态更新与重连，否则连接状态会永久卡在“已连接”。
+function recycleSocket(ws) {
+    if (!ws || __globalWs !== ws) return;
+    try {
+        ws.close();
+    } catch (e) {
+        // 异常状态下 close 可能抛错且不会触发 onclose，这里手动回收避免状态卡死。
+        if (__globalWs === ws) {
+            __globalWs = null;
+            clearHeartbeatTimer();
+            __lastPongAt = 0;
+            setConnected(false);
+            scheduleReconnect();
+        }
+    }
+}
+
 function ensureGlobalWs() {
     // 若连接已存在且仍处于“连接中 / 已连接”状态，则直接复用。
     if (__globalWs && (__globalWs.readyState === WebSocket.OPEN || __globalWs.readyState === WebSocket.CONNECTING)) {
@@ -82,14 +104,24 @@ function ensureGlobalWs() {
         // 连接恢复后重置退避，后续若再次断开可从短延迟开始。
         resetReconnectBackoff();
         clearHeartbeatTimer();
-        // 心跳失败不主动断开，交给浏览器超时与重连逻辑处理。
+        // 刚建立连接即可视为链路可用，后续靠 pong 持续刷新。
+        __lastPongAt = Date.now();
         __heartbeatTimer = setInterval(() => {
             if (!__globalWs || __globalWs.readyState !== WebSocket.OPEN) return;
+            // 后台标签页的定时器会被浏览器节流，此期间不做过期判定，避免误杀健康连接。
+            if (document.visibilityState !== 'visible') {
+                __lastPongAt = Date.now();
+                return;
+            }
+            if (Date.now() - __lastPongAt > WS_PONG_TIMEOUT_MS) {
+                recycleSocket(__globalWs);
+                return;
+            }
             try {
                 __globalWs.send(JSON.stringify({ type: 'ping' }));
             } catch (e) {
-                // 发送失败说明连接可能已异常，触发一次主动探测重连。
-                scheduleReconnect();
+                // 发送异常说明连接已不可用，主动断开走统一重连路径。
+                recycleSocket(__globalWs);
             }
         }, WS_HEARTBEAT_INTERVAL_MS);
     };
@@ -97,8 +129,11 @@ function ensureGlobalWs() {
     ws.onmessage = function (event) {
         try {
             const msg = JSON.parse(event.data);
-            // pong 仅用于维持连接，不参与业务数据分发。
-            if (msg.type === 'pong') return;
+            // pong 仅用于维持连接与刷新活性时间戳，不参与业务数据分发。
+            if (msg.type === 'pong') {
+                __lastPongAt = Date.now();
+                return;
+            }
             // 仅处理后端定义的两类数据推送消息，其余消息类型忽略。
             if (msg.type === 'full_update' || msg.type === 'update') {
                 const data = msg.data || {};
@@ -131,6 +166,7 @@ function ensureGlobalWs() {
             return;
         }
         __globalWs = null;
+        __lastPongAt = 0;
         clearHeartbeatTimer();
         setConnected(false);
         // 连接关闭后自动尝试重连，覆盖插件重载等短暂不可用场景。
@@ -160,6 +196,7 @@ function useWebSocket(onData) {
                 clearReconnectTimer();
                 clearHeartbeatTimer();
                 __nextReconnectDelayMs = WS_RECONNECT_BASE_DELAY_MS;
+                __lastPongAt = 0;
                 if (__globalWs) {
                     try {
                         __globalWs.close();
