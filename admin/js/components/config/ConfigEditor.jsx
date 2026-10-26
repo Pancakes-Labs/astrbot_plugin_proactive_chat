@@ -85,7 +85,9 @@ function ConfigEditor() {
         // 切换上下文时立即清除脏标记，防止旧草稿被写入新会话的 key。
         isDirtyRef.current = false;
         setSaveFeedback({ type: '', text: '' });
-        loader.loadConfig(mode, selectedSession).then(() => {
+        // 过期请求会被 loadConfig 丢弃但仍正常 resolve，必须按采纳标记决定是否写入
+        loader.loadConfig(mode, selectedSession).then((applied) => {
+            if (!applied) return;
             isDirtyRef.current = false;
             setExpandedKeys(draft.restoreExpandedKeys(mode, selectedSession));
         });
@@ -108,7 +110,8 @@ function ConfigEditor() {
     const schemaEntries = mode === 'session' ? sessionSchemaEntries : Object.entries(schema || {});
     const sessionEnabled = mode === 'session' ? Boolean(config && config.enable) : false;
     const sessionTypeLabel = currentSessionType === 'group' ? '群聊' : '私聊';
-    const canSaveSessionConfig = mode !== 'session' || sessionConfigState.baseAvailable;
+    // config 为空时（无可用会话 / 请求失败）没有可提交内容，需一并禁用保存。
+    const canSaveConfig = Boolean(config) && (mode !== 'session' || sessionConfigState.baseAvailable);
     const selectedSessionMeta = sessions.find((item) => item.session === selectedSession);
     const hasOverride = Boolean(selectedSessionMeta && selectedSessionMeta.has_override);
 
@@ -223,7 +226,8 @@ function ConfigEditor() {
         );
     }
 
-    if (!schema || !config) {
+    // 仅 Schema 缺失时整页不可用；config 为空仍保留顶部控制区，否则用户会被困在会话模式。
+    if (!schema) {
         return (
             <Box sx={{ textAlign: 'center', py: 6 }}>
                 <Box sx={{ fontSize: '36px', mb: 1.5 }}>❌</Box>
@@ -306,6 +310,15 @@ function ConfigEditor() {
 
             {/* 主编辑区：根据 schemaEntries 动态递归渲染所有当前可见配置项。 */}
             <Box ref={scrollContainerRef} className="config-editor-scroll">
+                {!config ? (
+                    <Box sx={{ textAlign: 'center', py: 6 }}>
+                        <Box sx={{ fontSize: '36px', mb: 1.5 }}>❌</Box>
+                        <Typography variant="body1" color="error">无法加载配置</Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                            请切换目标会话，或返回全局配置后重试
+                        </Typography>
+                    </Box>
+                ) : (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                     {mode === 'session' && config && (
                         <Box sx={{ pb: 0.5 }}>
@@ -370,7 +383,8 @@ function ConfigEditor() {
                             />
                         </Box>
                     ))}
-                </Box>
+                    </Box>
+                )}
             </Box>
 
             {/* 底部操作栏：集中放置折叠控制、恢复默认、撤销、清空覆写与保存操作。 */}
@@ -431,7 +445,7 @@ function ConfigEditor() {
                     <Button
                         variant="contained"
                         onClick={handleSave}
-                        disabled={saving || !canSaveSessionConfig}
+                        disabled={saving || !canSaveConfig}
                         size="medium"
                         startIcon={<span>💾</span>}
                         sx={{
@@ -444,7 +458,7 @@ function ConfigEditor() {
                             }
                         }}
                     >
-                        {saving ? '保存中...' : (!canSaveSessionConfig && mode === 'session' ? '当前会话不可保存' : (mode === 'session' ? '保存会话配置' : '保存配置'))}
+                        {saving ? '保存中...' : (!canSaveConfig && mode === 'session' ? '当前会话不可保存' : (mode === 'session' ? '保存会话配置' : '保存配置'))}
                     </Button>
                 </Box>
             </Box>

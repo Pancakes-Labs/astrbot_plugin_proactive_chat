@@ -29,9 +29,11 @@
             }
         }, [api]);
 
+        // 返回 true 表示本次响应被采纳；返回 false 表示请求已过期或失败。
+        // 调用方据此决定是否同步派生状态（展开态、脏标记），避免旧响应覆盖新上下文。
         const loadConfig = React.useCallback(async (currentMode, currentSession) => {
             // 所有配置加载都以当前 Schema 为前提，避免出现“无结构定义的盲编辑”。
-            if (!schema) return;
+            if (!schema) return false;
 
             // 递增请求序号，防止快速切换会话时后返回的旧请求覆盖新状态。
             const requestSeq = ++loadConfigSeqRef.current;
@@ -45,7 +47,7 @@
                             setConfig(null);
                             setSessionConfigState({ baseAvailable: false, message: '请先选择一个会话' });
                         }
-                        return;
+                        return false;
                     }
                     setSessionLoading(true);
                     const sessionData = await api.getSessionConfig(currentSession);
@@ -65,15 +67,17 @@
                 }
 
                 // 如果不是最新请求，丢弃过期响应，避免会话串改。
-                if (requestSeq !== loadConfigSeqRef.current) return;
+                if (requestSeq !== loadConfigSeqRef.current) return false;
 
                 // 配置加载始终以服务端返回值为准，草稿不参与初始化覆盖。
                 setConfig(configData);
+                return true;
             } catch (e) {
                 if (requestSeq === loadConfigSeqRef.current) {
                     console.error('加载配置失败', e);
                     setConfig(null);
                 }
+                return false;
             } finally {
                 if (requestSeq === loadConfigSeqRef.current) {
                     setSessionLoading(false);
