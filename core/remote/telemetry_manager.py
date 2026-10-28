@@ -64,8 +64,7 @@ class TelemetryManager:
         # 版本号由统一版本工具提供，避免不同模块各自解析 metadata 造成不一致。
         self._plugin_version = plugin_version
         # 遥测默认开启，只有用户明确在 telemetry_config 中关闭时才停用。
-        telemetry_config = config.get("telemetry_config", {})
-        self._enabled = telemetry_config.get("enabled", True)
+        self._enabled = self._read_enabled(config)
         # 为当前安装实例生成稳定匿名 ID，用于跨重启聚合同一实例的遥测事件。
         self._instance_id = self._get_or_create_instance_id()
         # HTTP session 延迟初始化，只有真正发请求时才创建，减少空载资源占用。
@@ -93,10 +92,63 @@ class TelemetryManager:
         else:
             logger.debug("[主动消息] 遥测功能未启用喵。")
 
+    @staticmethod
+    def _read_enabled(config: dict[str, Any]) -> bool:
+        """从配置中读取遥测开关，只接受真正的布尔值。
+
+        字符串 "false" 之类的脏值交给 bool() 会被当成 True，用户关闭遥测后
+        仍会继续上报。配置可能来自历史文件或直接改盘，不能只依赖接口校验。
+        """
+        telemetry_config = (
+            config.get("telemetry_config") if isinstance(config, dict) else None
+        )
+        if not isinstance(telemetry_config, dict):
+            return True
+
+        enabled = telemetry_config.get("enabled", True)
+        if isinstance(enabled, bool):
+            return enabled
+
+        logger.warning(
+            "[主动消息] 遥测启用配置类型异常"
+            f"（{type(enabled).__name__}），已按默认开启处理喵。"
+        )
+        return True
+
     @property
     def enabled(self) -> bool:
         """是否启用遥测。"""
         return self._enabled
+
+    def apply_config(self, config: dict[str, Any]) -> None:
+        """同步最新配置中的遥测开关，使 Web 面板的修改无需重启即可生效。
+
+        构造时缓存的 _enabled 不会随插件配置变化自动刷新，因此保存配置后
+        必须由调用方把最新配置传进来，否则关闭遥测仍会继续上报。
+        """
+        if not isinstance(config, dict):
+            return
+
+        self._config = config
+        enabled = self._read_enabled(config)
+
+        if enabled == self._enabled:
+            return
+
+        self._enabled = enabled
+        if enabled:
+            logger.debug("[主动消息] 遥测已启用喵。")
+            return
+
+        # 关闭遥测要立刻停手：取消待触发的 flush、正在跑的 drain，并清空积压事件，
+        # 避免用户明确关闭后仍有事件被补发出去。
+        self._cancel_flush_timer()
+        self._feature_buffer.clear()
+        self._backlog.clear()
+        if self._drain_task and not self._drain_task.done():
+            self._drain_task.cancel()
+            self._drain_task = None
+        logger.debug("[主动消息] 遥测已关闭喵。")
 
     def _get_or_create_instance_id(self) -> str:
         """获取或创建实例 ID。"""
@@ -161,6 +213,9 @@ class TelemetryManager:
         """
         if not events:
             return True
+        # 兜底：配置在请求排队期间被关闭时，丢弃这一批而不是继续上报。
+        if not self._enabled:
+            return False
 
         now = time.monotonic()
         # 再次检查熔断状态（可能在 end_flow 调用时已经进入熔断）。
@@ -278,6 +333,9 @@ class TelemetryManager:
         """
         if not self._backlog:
             return
+        # 用户关闭遥测后不再自动补发任何积压事件。
+        if not self._enabled:
+            return
         if self._drain_task is not None and not self._drain_task.done():
             return
         self._drain_task = asyncio.create_task(self._drain_backlog())
@@ -309,7 +367,10 @@ class TelemetryManager:
         except Exception as e:
             logger.debug(f"[主动消息] 遥测积压同步异常喵: {e}")
         finally:
-            self._drain_task = None
+            # 只清理自身引用：任务可能已被 apply_config 取消并放入新任务，
+            # 无条件置空会把新任务的引用抹掉，导致并发 drain。
+            if self._drain_task is asyncio.current_task():
+                self._drain_task = None
 
     # ─── 公共上报接口 ─────────────────────────────────────────────────
 

@@ -3,31 +3,18 @@
  */
 
 function parseDateish(value) {
-    // 统一接受 null / undefined / 空串 等空值输入，调用方可直接拿返回值做真假判断。
-    if (value === null || value === undefined || value === '') return null;
+    // 秒/毫秒阈值与字符串解析统一由 TimeDomain 提供。
+    if (window.TimeDomain && typeof window.TimeDomain.toDate === 'function') {
+        return window.TimeDomain.toDate(value);
+    }
 
+    // TimeDomain 尚未加载时的最小兜底，仅覆盖 Date 与空值。
+    if (value === null || value === undefined || value === '') return null;
     if (value instanceof Date) {
-        // 对 Date 对象做一次防御性复制，避免外部修改原对象影响后续逻辑。
         return Number.isNaN(value.getTime()) ? null : new Date(value.getTime());
     }
-
-    if (typeof value === 'number') {
-        // 数字按时间戳处理；具体是秒还是毫秒由上层在传入前决定。
-        const fromNumber = new Date(value);
-        return Number.isNaN(fromNumber.getTime()) ? null : fromNumber;
-    }
-
-    const raw = String(value).trim();
-    if (!raw) return null;
-
-    // 兼容 "YYYY-MM-DD HH:mm:ss" 这类非标准 ISO 文本，统一替换为空格 -> T。
-    const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
-    const parsed = new Date(normalized);
-    if (!Number.isNaN(parsed.getTime())) {
-        return parsed;
-    }
-
-    return null;
+    const fallback = new Date(value);
+    return Number.isNaN(fallback.getTime()) ? null : fallback;
 }
 
 function resolveTimeZone(timeZone = 'Asia/Shanghai') {

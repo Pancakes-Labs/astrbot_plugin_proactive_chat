@@ -1,0 +1,760 @@
+﻿/* 文件职责：应用外壳、侧边栏、顶栏、卡片、按钮与配置页容器。 */
+
+/* 布局 */
+.app {
+    /* 整体采用“左侧导航 + 右侧主工作区”的桌面管理台结构。 */
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ===== 侧边栏导航区 ===== */
+/* 侧边栏 (左侧导航) */
+.sidebar {
+    /* 侧边栏固定宽度，使用玻璃材质与主内容区形成层次区隔。 */
+    width: 280px;
+    height: 100%;
+    background: var(--glass-bg);
+    backdrop-filter: blur(24px);
+    border-right: 1px solid var(--glass-border);
+    display: flex;
+    flex-direction: column;
+    padding: 32px 16px;
+    z-index: 50;
+}
+
+.sidebar-header {
+    padding: 0 16px 32px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.sidebar-logo-img {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgb(var(--md-primary-rgb) / 0.2);
+    object-fit: contain;
+}
+
+.nav-item {
+    /* 单个导航项在 hover / active 状态下通过背景与透明度强化当前定位。 */
+    width: 100%;
+    padding: 14px 20px;
+    border: none;
+    border-radius: 16px;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    cursor: pointer;
+    transition:
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        color var(--interactive-transition-duration) var(--theme-transition-easing),
+        opacity var(--interactive-transition-duration) var(--theme-transition-easing),
+        transform var(--interactive-transition-duration) var(--theme-transition-easing);
+    color: var(--md-sys-color-on-surface);
+    opacity: 0.8;
+    margin-bottom: 4px;
+}
+
+.sidebar-notification-badge {
+    margin-left: auto;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 7px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #FF6B6B, #E53935);
+    color: #FFFFFF;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: 0.01em;
+    box-shadow: 0 8px 18px rgba(229, 57, 53, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.42);
+    flex-shrink: 0;
+}
+
+.nav-item.active .sidebar-notification-badge {
+    background: linear-gradient(135deg, #FF5A5F, #D32F2F);
+    box-shadow: 0 8px 18px rgba(211, 47, 47, 0.24);
+}
+
+.nav-item:hover {
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    opacity: 1;
+}
+
+.nav-item.active {
+    background: var(--md-sys-color-primary-container);
+    color: var(--md-sys-color-on-primary-container);
+    opacity: 1;
+    font-weight: 600;
+}
+
+/* ===== 顶栏与主内容区 ===== */
+/* 主内容区域 */
+.main-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+}
+
+.top-bar {
+    /* 顶栏悬浮于内容区上方，使用伪元素实现半透明模糊遮罩。 */
+    height: var(--top-bar-height);
+    padding: 0 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    background: transparent;
+    overflow: hidden;
+    isolation: isolate;
+}
+
+.top-bar::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    background: rgba(255, 255, 255, 0.68);
+    -webkit-mask-image: linear-gradient(to bottom, black 55%, transparent 100%);
+    mask-image: linear-gradient(to bottom, black 55%, transparent 100%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+body.dark-theme .top-bar::before {
+    background: rgba(20, 18, 24, 0.88);
+}
+
+.top-bar > * {
+    position: relative;
+    z-index: 1;
+}
+
+.main-content {
+    /* 顶部留出 top-bar 高度，避免内容滚动时被悬浮顶栏遮挡。 */
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: calc(var(--top-bar-height) + 16px) 24px 24px;
+    box-sizing: border-box;
+}
+
+/* 配置页需要让卡片填满可视高度，这里用 flex 链代替硬编码 calc 高度。 */
+.main-content.is-config-view {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.main-content.is-config-view > .config-view-shell {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 顶部错误条：统一使用主题错误色，避免硬编码亮暗两套。 */
+.app-error-card {
+    margin-bottom: 16px;
+    color: var(--md-sys-color-error);
+    background: rgb(var(--md-error-rgb) / 0.08);
+    border-color: rgb(var(--md-error-rgb) / 0.2);
+}
+
+/* ===== 仪表盘卡片与通用容器 ===== */
+/* 仪表盘卡片 (Bento 风格) */
+.dashboard-grid {
+    /* 12 栏网格为桌面端默认布局基础，状态页和任务页都在此之上做跨度分配。 */
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 24px;
+}
+
+.card {
+    /* card 是管理端最常见的视觉容器：统一圆角、边框、阴影和悬浮反馈。 */
+    background: var(--md-sys-color-surface);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+    transition:
+        background-color var(--theme-transition-duration) var(--theme-transition-easing),
+        border-color var(--theme-transition-duration) var(--theme-transition-easing),
+        color var(--theme-transition-duration) var(--theme-transition-easing),
+        box-shadow var(--interactive-transition-duration) var(--theme-transition-easing),
+        transform var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+/* 为前端的卡片提供统一的入场动画，减少页面首次渲染时的生硬感。 */
+.status-panel-card,
+.task-card-enhanced,
+.status-timer-card,
+.status-timer-section-block,
+.tasks-empty-card,
+.status-timers-empty-card,
+.notifications-hero-card,
+.notifications-empty-card,
+.markdown-docs-sidebar-card,
+.markdown-docs-content-card,
+.markdown-docs-empty-card,
+.markdown-docs-empty-side-card,
+.config-card,
+.config-header,
+.notifications-inline-meta-item,
+.markdown-docs-file-item {
+    animation: card-fade-up 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.status-panel-card:nth-child(1),
+.task-card-enhanced:nth-child(1),
+.status-timer-card:nth-child(1),
+.status-timer-section-block:nth-child(1) {
+    animation-delay: 0.02s;
+}
+
+.status-panel-card:nth-child(2),
+.task-card-enhanced:nth-child(2),
+.status-timer-card:nth-child(2),
+.status-timer-section-block:nth-child(2) {
+    animation-delay: 0.06s;
+}
+
+.status-panel-card:nth-child(3),
+.task-card-enhanced:nth-child(3),
+.status-timer-card:nth-child(3),
+.status-timer-section-block:nth-child(3) {
+    animation-delay: 0.1s;
+}
+
+.status-panel-card:nth-child(n+4),
+.task-card-enhanced:nth-child(n+4),
+.status-timer-card:nth-child(n+4),
+.status-timer-section-block:nth-child(n+4) {
+    animation-delay: 0.14s;
+}
+
+.notifications-hero-card,
+.config-header,
+.markdown-docs-sidebar-card {
+    animation-delay: 0.02s;
+}
+
+.markdown-docs-content-card {
+    animation-delay: 0.08s;
+}
+
+.config-card,
+.notifications-empty-card,
+.markdown-docs-empty-card,
+.markdown-docs-empty-side-card {
+    animation-delay: 0.12s;
+}
+
+.notifications-inline-meta-item:nth-child(1),
+.markdown-docs-file-item:nth-child(1),
+.config-card .MuiAccordion-root:nth-child(1),
+.config-card .MuiPaper-root:nth-child(1) {
+    animation-delay: 0.03s;
+}
+
+.notifications-inline-meta-item:nth-child(2),
+.markdown-docs-file-item:nth-child(2),
+.config-card .MuiAccordion-root:nth-child(2),
+.config-card .MuiPaper-root:nth-child(2) {
+    animation-delay: 0.07s;
+}
+
+.markdown-docs-file-item:nth-child(n+3),
+.config-card .MuiAccordion-root:nth-child(n+3),
+.config-card .MuiPaper-root:nth-child(n+3) {
+    animation-delay: 0.11s;
+}
+
+/* ===== 配置页容器 ===== */
+/* 配置页面专用卡片样式 - 由 flex 链自然填满主内容区，避免硬编码高度。 */
+.config-card {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 0 !important; /*以此接管padding控制*/
+    overflow: hidden;
+}
+
+.config-card:hover {
+    /* 配置页整块占满屏幕，禁用上浮以免鼠标移动时整页抖动。 */
+    transform: none;
+}
+
+/* 配置编辑器内部滚动区与底部操作栏。 */
+.config-editor-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px 24px;
+}
+
+.config-editor-scroll::-webkit-scrollbar {
+    width: 6px;
+}
+
+.config-editor-scroll::-webkit-scrollbar-track {
+    background: var(--md-sys-color-background);
+    border-radius: 3px;
+}
+
+.config-editor-scroll::-webkit-scrollbar-thumb {
+    background: var(--md-sys-color-primary);
+    border-radius: 3px;
+}
+
+.config-editor-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--md-sys-color-primary);
+    filter: brightness(0.9);
+}
+
+.config-action-bar {
+    flex-shrink: 0;
+    background: var(--md-sys-color-surface);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid var(--md-sys-color-outline-variant);
+    padding: 16px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    box-shadow: 0 -4px 20px rgb(0 0 0 / 0.05);
+    z-index: 10;
+}
+
+/* 配置页内的行内提示条，按语义色区分成功 / 警告 / 错误。 */
+.config-inline-notice {
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.2);
+    background: rgb(var(--md-primary-rgb) / 0.08);
+}
+
+.config-inline-notice.is-success {
+    border-color: rgb(var(--md-success-rgb) / 0.22);
+    background: rgb(var(--md-success-rgb) / 0.08);
+}
+
+.config-inline-notice.is-warning {
+    border-color: rgb(var(--md-warning-rgb) / 0.24);
+    background: rgb(var(--md-warning-rgb) / 0.08);
+}
+
+.config-inline-notice.is-error {
+    border-color: rgb(var(--md-error-rgb) / 0.22);
+    background: rgb(var(--md-error-rgb) / 0.08);
+}
+
+.config-inline-notice-text {
+    display: block;
+    font-weight: 600;
+    line-height: 1.6;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.config-inline-notice.is-success .config-inline-notice-text {
+    color: var(--md-sys-color-success);
+}
+
+.config-inline-notice.is-warning .config-inline-notice-text {
+    color: var(--md-sys-color-warning);
+}
+
+.config-inline-notice.is-error .config-inline-notice-text {
+    color: var(--md-sys-color-error);
+}
+
+.config-header {
+    /* 配置头部固定在卡片顶部，确保模式切换、提示信息和标题不随表单滚走。 */
+    padding: 20px 24px;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--glass-border);
+    background: rgb(255 255 255 / 0.5);
+    backdrop-filter: blur(8px);
+    z-index: 10;
+}
+
+.config-header-accent {
+    width: 4px;
+    height: 24px;
+    background: var(--md-sys-color-primary);
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+html.theme-dark .config-header {
+    background: rgb(20 18 24 / 0.8); /* 增加不透明度，减弱透底亮度 */
+    border-bottom: 1px solid rgb(255 255 255 / 0.1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 12px 30px 0 rgb(var(--md-primary-rgb) / 0.12);
+    }
+
+    /* 配置页整块占满屏幕，必须放在通用规则之后覆盖上浮效果。 */
+    .config-card:hover {
+        transform: none;
+        box-shadow: var(--glass-shadow);
+    }
+}
+
+/* Bento 跨列：供各页面按 12 栏系统快速声明卡片宽度。 */
+.span-4 { grid-column: span 4; }
+.span-8 { grid-column: span 8; }
+.span-12 { grid-column: span 12; }
+
+/* ===== 通用按钮与交互控件 ===== */
+/* 按钮 */
+.btn {
+    padding: 10px 20px;
+    border-radius: 12px;
+    border: none;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        color var(--interactive-transition-duration) var(--theme-transition-easing),
+        transform var(--interactive-transition-duration) var(--theme-transition-easing),
+        box-shadow var(--interactive-transition-duration) var(--theme-transition-easing),
+        opacity var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+/* 通用操作按钮样式 */
+.btn-action {
+    width: 100%;
+    background: var(--md-sys-color-surface-variant);
+    color: var(--md-sys-color-on-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    transition:
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        color var(--interactive-transition-duration) var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        transform var(--interactive-transition-duration) var(--theme-transition-easing),
+        box-shadow var(--interactive-transition-duration) var(--theme-transition-easing),
+        opacity var(--interactive-transition-duration) var(--theme-transition-easing);
+    padding: 12px 16px;
+    line-height: 1.5;
+    cursor: pointer;
+}
+
+.btn-action span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-action:hover {
+    background: var(--md-sys-color-secondary-container);
+    color: var(--md-sys-color-on-secondary-container);
+    border-color: var(--md-sys-color-outline-variant);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.btn-action:active {
+    transform: translateY(0);
+    box-shadow: none;
+    opacity: 0.8;
+}
+
+/* 暗色模式下的按钮覆盖样式 */
+body.dark-theme .btn-action {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--md-sys-color-on-surface);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+body.dark-theme .btn-action:hover {
+    background: rgb(var(--md-primary-rgb) / 0.15);
+    color: var(--md-sys-color-primary);
+    border-color: rgb(var(--md-primary-rgb) / 0.3);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* ===== 滚动行为与兼容辅助类 ===== */
+/* 滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: var(--md-sys-color-secondary-container);
+    border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--md-sys-color-secondary); }
+
+/* 移动端滚动优化：不启用全局平滑滚动，避免与滚动位置恢复互相打架。 */
+.sidebar-menu,
+.main-content {
+    -webkit-overflow-scrolling: touch;
+}
+
+/* 按钮点击反馈 */
+.nav-item,
+.btn,
+.btn-action {
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+
+.nav-item:active,
+.btn:active {
+    opacity: 0.7;
+    transition: opacity 0.12s var(--theme-transition-easing);
+}
+
+/* 兼容之前的组件辅助样式 */
+.mono {
+    font-family: "Consolas", "SFMono-Regular", monospace;
+    font-size: 12px;
+}
+
+/* ===== 顶栏组件样式：时钟、连接状态、侧栏操作区 ===== */
+.header-clock-chip {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--md-sys-color-primary);
+    background: var(--md-sys-color-surface-variant);
+    padding: 6px 14px;
+    border-radius: 12px;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.header-clock-label {
+    font-size: 14px;
+    opacity: 0.8;
+    font-weight: 600;
+}
+
+.header-clock-value {
+    font-family: Monaco, Consolas, "Courier New", monospace;
+    font-size: 15px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+}
+
+.connection-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+}
+
+.connection-chip.is-connected {
+    background: rgba(76, 175, 80, 0.1);
+    border-color: rgba(76, 175, 80, 0.2);
+}
+
+.connection-chip.is-disconnected {
+    background: rgba(244, 67, 54, 0.1);
+    border-color: rgba(244, 67, 54, 0.2);
+}
+
+.connection-chip-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.connection-chip.is-connected .connection-chip-dot {
+    background: #4CAF50;
+    box-shadow: 0 0 8px #4CAF50;
+}
+
+.connection-chip.is-disconnected .connection-chip-dot {
+    background: #F44336;
+    box-shadow: 0 0 8px #F44336;
+}
+
+.connection-chip-text {
+    font-weight: 600 !important;
+    font-size: 13px !important;
+}
+
+.connection-chip.is-connected .connection-chip-text {
+    color: #4CAF50;
+}
+
+.connection-chip.is-disconnected .connection-chip-text {
+    color: #F44336;
+}
+
+.sidebar-actions-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.sidebar-action-btn {
+    width: 100%;
+    margin-bottom: 0;
+    padding: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--md-sys-color-on-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.04);
+    border-radius: 12px;
+    box-shadow: none;
+    line-height: 1.2;
+}
+
+.sidebar-action-btn:hover {
+    transform: none;
+    box-shadow: none;
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    color: var(--md-sys-color-on-surface);
+}
+
+body.dark-theme .sidebar-action-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+body.dark-theme .sidebar-action-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--md-sys-color-on-surface);
+}
+
+.sidebar-github-card {
+    display: block;
+    color: var(--md-sys-color-on-surface);
+}
+
+.sidebar-github-inner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.03);
+    border-radius: 12px;
+    transition:
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        transform var(--interactive-transition-duration) var(--theme-transition-easing),
+        box-shadow var(--interactive-transition-duration) var(--theme-transition-easing);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    cursor: pointer;
+}
+
+body.dark-theme .sidebar-github-inner {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.05);
+}
+
+.sidebar-github-inner:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--glass-shadow);
+}
+
+.sidebar-github-texts {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    overflow: hidden;
+}
+
+.sidebar-github-author {
+    font-weight: 700 !important;
+    color: inherit !important;
+    font-size: 0.75rem !important;
+    line-height: 1.2 !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    max-width: 170px;
+}
+
+.sidebar-github-meta {
+    display: block !important;
+    opacity: 0.6;
+    line-height: 1.2 !important;
+    font-size: 0.7rem !important;
+    color: inherit !important;
+}
+
+/* ===== 内联样式下沉：侧栏、顶栏与配置页头部 ===== */
+.sidebar-menu-icon {
+    font-size: 18px;
+}
+
+.sidebar-action-icon {
+    font-size: 16px;
+    margin-left: -6px;
+}
+
+.sidebar-action-icon.is-data {
+    margin-left: -4px;
+}
+
+.header-theme-icon {
+    font-size: 18px;
+}
+
+.sidebar-github-card {
+    text-decoration: none;
+}
+
+.sidebar-github-icon {
+    flex-shrink: 0;
+    fill: #000000;
+}
+
+html.theme-dark .sidebar-github-icon {
+    fill: #E6E1E5;
+}
+
+.config-header-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.task-card-top.is-overflow-visible,
+.task-card-title-block.is-overflow-visible {
+    overflow: visible;
+}

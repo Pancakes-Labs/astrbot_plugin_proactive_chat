@@ -28,7 +28,11 @@
         if (!response.ok) {
             // 优先透传后端明确返回的 error 字段，提升前端报错可读性。
             const message = payload && payload.error ? payload.error : '请求失败';
-            throw new Error(message);
+            const error = new Error(message);
+            // 附带状态码，便于调用方区分 401 等需要特殊处理的场景。
+            error.status = response.status;
+            error.payload = payload;
+            throw error;
         }
 
         return payload;

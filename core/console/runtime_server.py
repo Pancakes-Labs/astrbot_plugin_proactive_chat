@@ -128,7 +128,7 @@ class WebConsoleServer:
         @self.app.middleware("http")
         async def auth_middleware(request: Request, call_next):
             if not self.token_auth.enabled:
-                return await call_next(request)
+                return await self._with_static_cache_policy(request, call_next)
 
             path = request.url.path
             # 登录相关接口与静态资源无需令牌。
@@ -136,7 +136,7 @@ class WebConsoleServer:
                 return await call_next(request)
 
             if not path.startswith("/api"):
-                return await call_next(request)
+                return await self._with_static_cache_policy(request, call_next)
 
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
@@ -158,6 +158,27 @@ class WebConsoleServer:
         )
         routes.register(self.app)
         self._mount_static_files()
+
+    async def _with_static_cache_policy(self, request: Request, call_next):
+        """给静态响应按类型附加缓存策略。
+
+        入口 index.html 与脚本 / 样式都必须每次重新验证，否则浏览器会按启发式
+        新鲜期直接复用本地副本（约文件年龄的 10%），插件升级后就可能出现
+        index.html 已更新、js/css 仍是旧版的新旧混用。no-cache 只是强制验证，
+        文件未变更时依旧由 ETag + Last-Modified 返回 304，性能开销可忽略。
+        字体 / 图片体积大且很少变化，继续沿用启发式缓存。
+        """
+        response = await call_next(request)
+
+        path = request.url.path.lower()
+        if path in {"", "/"} or path.endswith(".html"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        elif path.endswith((".js", ".css")):
+            response.headers["Cache-Control"] = "no-cache"
+
+        return response
 
     def _mount_static_files(self) -> None:
         """把前端构建产物目录挂载为根路径静态资源。"""

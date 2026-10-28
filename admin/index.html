@@ -10,12 +10,18 @@
     <!-- favicon 指向插件根目录的 logo，便于浏览器标签页识别。 -->
     <link rel="icon" type="image/png" href="../logo.png">
 
-    <!-- 预加载字体样式，减少首屏闪烁。 -->
-    <link rel="preload" href="fonts/outfit.css" as="style">
+    <!-- 直接预加载主字重字体文件，避免 preload 与 stylesheet 重复请求同一份 CSS。 -->
+    <link rel="preload" href="fonts/outfit-400.ttf" as="font" type="font/ttf" crossorigin>
     <link href="fonts/outfit.css" rel="stylesheet">
 
-    <!-- 全局样式表，承载布局、卡片、主题变量等基础样式。 -->
-    <link rel="stylesheet" href="css/style.css">
+    <!-- 样式按职责拆分为 7 个文件，加载顺序即层叠顺序，不可随意调整。 -->
+    <link rel="stylesheet" href="css/tokens.css">
+    <link rel="stylesheet" href="css/boot.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/status.css">
+    <link rel="stylesheet" href="css/content.css">
+    <link rel="stylesheet" href="css/theme-dark.css">
+    <link rel="stylesheet" href="css/responsive.css">
 
     <!-- 以 UMD 方式引入 React / Babel / MUI。
          根据用户时区/语言自动选择 CDN：国内走 npmmirror，国外走 unpkg。 -->
@@ -72,6 +78,9 @@
                 }
             },
 
+            // 资源版本号取自 index.html 的最后修改时间，变更后自动失效旧缓存。
+            assetVersion: String(document.lastModified || Date.now()),
+
             // 触发并调度脚本队列的执行状态机
             triggerPendingScripts: function() {
                 if (this.libsLoaded < this.libsCount) {
@@ -95,7 +104,8 @@
                 var self = this;
                 this.pendingScripts.push(function() {
                     if (isBabel) {
-                        fetch(src)
+                        // 强制走网络，避免浏览器缓存旧版 JSX 导致引用已删除的组件。
+                        fetch(src, { cache: 'no-store' })
                             .then(function(res) {
                                 if (!res.ok) {
                                     throw new Error("HTTP error " + res.status);
@@ -105,7 +115,10 @@
                             .then(function(code) {
                                 if (typeof Babel === 'undefined') {
                                     self.showError("Babel is not loaded, failed to compile: " + src);
-                                    return; // 终止加载，不恢复 scriptRunning，不触发后续队列
+                                    // 编译环境缺失也必须释放队列锁，否则后续脚本会永久卡住。
+                                    self.scriptRunning = false;
+                                    self.triggerPendingScripts();
+                                    return;
                                 }
 
                                 try {
@@ -122,20 +135,30 @@
                                     self.triggerPendingScripts();
                                 } catch (e) {
                                     self.showError("Failed to compile JSX file " + src + ": " + e.message);
+                                    // 单个文件编译失败不应阻断整条加载链。
+                                    self.scriptRunning = false;
+                                    self.triggerPendingScripts();
                                 }
                             })
                             .catch(function(err) {
                                 self.showError("Failed to fetch JSX script " + src + ": " + err.message);
+                                // 拉取失败同样要放行队列，界面才能继续加载其余模块。
+                                self.scriptRunning = false;
+                                self.triggerPendingScripts();
                             });
                     } else {
                         var s = document.createElement('script');
-                        s.src = src;
+                        // 普通脚本同样拼接版本号，防止旧 .js 被长期缓存。
+                        s.src = src + (src.indexOf('?') === -1 ? '?' : '&') + 'v=' + encodeURIComponent(self.assetVersion);
                         s.onload = function() {
                             self.scriptRunning = false;
                             self.triggerPendingScripts();
                         };
                         s.onerror = function() {
                             self.showError("Failed to load script: " + src);
+                            // 关键：加载失败也要放行队列，否则整站会卡在白屏。
+                            self.scriptRunning = false;
+                            self.triggerPendingScripts();
                         };
                         document.body.appendChild(s);
                     }
@@ -153,6 +176,9 @@
                         self.triggerPendingScripts();
                     } catch (e) {
                         self.showError("Inline task failed: " + e.message);
+                        // 任务抛错时也必须释放队列锁，否则后续 JSX 模块永远不会加载。
+                        self.scriptRunning = false;
+                        self.triggerPendingScripts();
                     }
                 });
                 this.triggerPendingScripts();
@@ -198,13 +224,56 @@
 
     <!-- React 根节点；所有前端界面最终都会挂到这里。 -->
     <div id="root"></div>
-
-    <!-- 工具脚本必须先于 JSX 模块加载，以便后者可直接使用 window 上的工具对象。 -->
+    <!-- 全局异常面板：任何未捕获错误都会显示在这里，避免出现无提示白屏。 -->
+    <div id="boot-error-panel" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:9999;max-height:45vh;overflow:auto;padding:14px 18px;background:#2B1B1B;color:#FFD6D6;font:12px/1.6 Consolas,Menlo,monospace;border-top:2px solid #B3261E;white-space:pre-wrap;"></div>
     <script>
+        (function () {
+            var panel = document.getElementById('boot-error-panel');
+            function report(label, detail) {
+                if (!panel) return;
+                panel.style.display = 'block';
+                panel.textContent += '[' + label + '] ' + detail + '\n';
+            }
+            // 捕获脚本执行期错误，附带文件与行号，便于快速定位。
+            window.addEventListener('error', function (event) {
+                var target = event && event.target;
+                // 资源加载失败（IMG / LINK 等）在捕获阶段也会到达 window，但不是运行错误。
+                var isElementTarget = !!target
+                    && target !== window
+                    && target !== document
+                    && !!target.tagName;
+                if (isElementTarget) {
+                    if (target.tagName === 'SCRIPT') {
+                        report('脚本加载失败', target.src || '(unknown)');
+                    }
+                    // 其它资源缺失属于可降级的局部问题，不弹整块错误面板。
+                    return;
+                }
+                var err = event && event.error;
+                report('运行错误', (err && err.stack) || (event && event.message) || '未知错误');
+            }, true);
+            window.addEventListener('unhandledrejection', function (event) {
+                var reason = event && event.reason;
+                report('未处理的 Promise 拒绝', (reason && reason.stack) || String(reason));
+            });
+        })();
+    </script>
+
+    <!-- 主题令牌与工具脚本必须先于 JSX 模块加载，以便后者可直接使用 window 上的工具对象。 -->
+    <script>
+        window.ProactiveLoader.queueScript("js/theme/tokens.js", false);
         window.ProactiveLoader.queueScript("js/utils/auth.js", false);
         window.ProactiveLoader.queueScript("js/utils/http.js", false);
         window.ProactiveLoader.queueScript("js/utils/formatters.js", false);
         window.ProactiveLoader.queueScript("js/utils/markdown.js", false);
+        // 领域纯函数与公共 Hook 先于视图加载，供各页面直接复用。
+        window.ProactiveLoader.queueScript("js/domain/time.js", false);
+        window.ProactiveLoader.queueScript("js/domain/session.js", false);
+        window.ProactiveLoader.queueScript("js/domain/progress.js", false);
+        window.ProactiveLoader.queueScript("js/domain/scroll.js", false);
+        window.ProactiveLoader.queueScript("js/hooks/useNow.js", false);
+        window.ProactiveLoader.queueScript("js/hooks/useFeedback.js", false);
+        window.ProactiveLoader.queueScript("js/hooks/useScrollRestore.js", false);
     </script>
 
     <script>
@@ -281,28 +350,10 @@
 
                         setLoginBusy(true);
                         showInfo('正在验证密码...');
-                        fetch('/api/login', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify({ password: password }),
-                        })
-                            .then(function (res) {
-                                return res.json()
-                                    .then(function (data) {
-                                        return { ok: res.ok, data: data };
-                                    })
-                                    .catch(function () {
-                                        return { ok: res.ok, data: null };
-                                    });
-                            })
-                            .then(function (result) {
-                                if (!result.ok) {
-                                    var errorMessage = result.data && result.data.error ? result.data.error : '登录失败';
-                                    throw new Error(errorMessage);
-                                }
-                                var token = result.data && result.data.token;
+                        // 复用统一 HTTP 封装，避免启动页再维护一套 fetch + 错误处理逻辑。
+                        window.HttpUtil.post('/api/login', { password: password })
+                            .then(function (data) {
+                                var token = data && data.token;
                                 if (!token) {
                                     throw new Error('登录成功但未获取到访问令牌');
                                 }
@@ -330,31 +381,25 @@
                     setTimeout(function () { input.focus(); }, 0);
                 }
 
-                function verifyExistingToken(token) {
+                function verifyExistingToken() {
                     // 通过访问受保护接口来验证 token 是否仍然有效。
-                    return fetch('/api/status', {
-                        headers: {
-                            'Authorization': 'Bearer ' + token,
-                        },
-                    }).then(function (res) {
-                        if (res.status === 401) {
+                    return window.HttpUtil.get('/api/status').then(function () {
+                        proceed();
+                    }).catch(function (err) {
+                        if (err && err.status === 401) {
                             // 若 token 失效，则清理本地缓存，避免前端继续携带错误凭证。
                             window.AuthUtil.clearToken();
                             showLoginForm('访问令牌已失效，请重新登录');
                             return;
                         }
-                        if (!res.ok) {
-                            throw new Error('管理端鉴权校验失败，请稍后重试');
-                        }
-                        proceed();
+                        throw err;
                     });
                 }
 
                 // 第一步：询问后端当前是否启用了管理端密码。
-                fetch('/api/auth-info')
-                    .then(function (res) { return res.json(); })
+                window.HttpUtil.get('/api/auth-info')
                     .then(function (data) {
-                        if (!data.auth_required) {
+                        if (!data || !data.auth_required) {
                             // 无需鉴权时立即放行，进入应用初始化。
                             proceed();
                             return;
@@ -367,7 +412,7 @@
                             return;
                         }
 
-                        return verifyExistingToken(token);
+                        return verifyExistingToken();
                     })
                     .catch(function () {
                         // 管理端不可达通常意味着后端服务未启动或网络异常。
@@ -388,7 +433,11 @@
         window.ProactiveLoader.queueScript("js/components/layout/Sidebar.jsx", true);
         window.ProactiveLoader.queueScript("js/components/layout/Header.jsx", true);
         window.ProactiveLoader.queueScript("js/views/StatusView.jsx", true);
-        window.ProactiveLoader.queueScript("js/components/config/ConfigRenderer.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/config/ConfigShared.js", false);
+        window.ProactiveLoader.queueScript("js/components/config/ConfigField.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/config/useConfigLoader.js", false);
+        window.ProactiveLoader.queueScript("js/components/config/useConfigDraft.js", false);
+        window.ProactiveLoader.queueScript("js/components/config/ConfigEditor.jsx", true);
         window.ProactiveLoader.queueScript("js/views/ConfigView.jsx", true);
         window.ProactiveLoader.queueScript("js/views/TasksView.jsx", true);
         window.ProactiveLoader.queueScript("js/views/NotificationsView.jsx", true);

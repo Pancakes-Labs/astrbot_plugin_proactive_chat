@@ -90,10 +90,14 @@ function MarkdownDocsView() {
         || markdownFiles.find((item) => item.path === selectedMarkdownPath)?.title
         || 'Markdown 文档';
     const currentDocumentPath = markdownDocument?.path || selectedMarkdownPath;
-    const renderedHtml = markdownDocument?.content
-        // 文档正文和通知正文共用同一套 MarkdownRenderUtil，确保渲染风格一致。
-        ? window.MarkdownRenderUtil.renderMarkdownToHtml(markdownDocument.content)
-        : '';
+    // 正文解析成本较高，仅在文档内容变化时重新渲染。
+    const renderedHtml = React.useMemo(
+        () => (markdownDocument?.content
+            // 文档正文和通知正文共用同一套 MarkdownRenderUtil，确保渲染风格一致。
+            ? window.MarkdownRenderUtil.renderMarkdownToHtml(markdownDocument.content)
+            : ''),
+        [markdownDocument?.content]
+    );
 
     React.useEffect(() => {
         const articleEl = articleRef.current;

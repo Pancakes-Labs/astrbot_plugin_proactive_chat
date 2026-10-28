@@ -2,7 +2,7 @@
 /**
  * 文件职责：通知中心视图，负责通知列表展示、已读状态操作与手动刷新交互。
  */
- 
+
  const { Box, Typography, Button, Chip } = MaterialUI;
 
 const NOTIFICATION_TYPE_META = {
@@ -26,11 +26,16 @@ function resolveNotificationTypeMeta(type) {
     return NOTIFICATION_TYPE_META[canonicalType] || { label: '其他通知', color: 'default' };
 }
 
-function renderNotificationContent(item) {
-    // 通知正文无论来自纯文本还是 Markdown，都先走统一内容规范化，避免换行格式不一致。
-    const content = window.MarkdownRenderUtil.normalizeMarkdownContent(item?.content || '--');
-    const format = String(item?.content_format || 'text').trim().toLowerCase();
+// 通知正文渲染拆分到独立组件，并用 useMemo 缓存昂贵的 Markdown 解析结果。
+const NotificationContent = React.memo(function NotificationContent({ item }) {
+    const content = window.MarkdownRenderUtil.normalizeMarkdownContent(item && item.content ? item.content : '--');
+    const format = String((item && item.content_format) || 'text').trim().toLowerCase();
     const shouldRenderMarkdown = format === 'markdown' || window.MarkdownRenderUtil.isProbablyMarkdown(content);
+
+    const renderedHtml = React.useMemo(
+        () => (shouldRenderMarkdown ? window.MarkdownRenderUtil.renderMarkdownToHtml(content) : ''),
+        [content, shouldRenderMarkdown]
+    );
 
     if (!shouldRenderMarkdown) {
         return (
@@ -48,10 +53,10 @@ function renderNotificationContent(item) {
         <Box
             className="task-countdown-text notification-feed-content-text notification-md"
             // Markdown HTML 已在公共工具中做过 sanitize，这里只负责挂载结果。
-            dangerouslySetInnerHTML={{ __html: window.MarkdownRenderUtil.renderMarkdownToHtml(content) }}
+            dangerouslySetInnerHTML={{ __html: renderedHtml }}
         />
     );
-}
+});
 
 function NotificationsView({ onRefresh }) {
     const { state, dispatch } = useAppContext();
@@ -114,6 +119,8 @@ function NotificationsView({ onRefresh }) {
         }
     };
 
+    const unreadCount = Number(notificationsMeta.unread_count !== undefined ? notificationsMeta.unread_count : 0);
+
     return (
         <Box className="notifications-view">
             <div className="card notifications-hero-card">
@@ -124,39 +131,14 @@ function NotificationsView({ onRefresh }) {
                                 <Typography variant="h6" sx={{ fontWeight: 800 }}>
                                     {`通知中心 (当前共 ${notificationsMeta.total_count || notifications.length} 条通知)`}
                                 </Typography>
-                                <Box
-                                    sx={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: 0.75,
-                                        px: 1.25,
-                                        py: 0.6,
-                                        borderRadius: 999,
-                                        fontSize: '0.82rem',
-                                        fontWeight: 700,
-                                        lineHeight: 1,
-                                        border: '1px solid',
-                                        // 未读状态通过暖色强调，全部已读则回落到绿色提示“状态良好”。
-                                        borderColor: Number(notificationsMeta.unread_count ?? 0) > 0
-                                            ? 'rgba(245, 158, 11, 0.28)'
-                                            : 'rgba(46, 125, 50, 0.18)',
-                                        background: Number(notificationsMeta.unread_count ?? 0) > 0
-                                            ? 'rgba(245, 158, 11, 0.12)'
-                                            : 'rgba(46, 125, 50, 0.08)',
-                                        color: Number(notificationsMeta.unread_count ?? 0) > 0
-                                            ? '#B45309'
-                                            : '#2E7D32',
-                                    }}
-                                >
-                                    {Number(notificationsMeta.unread_count ?? 0) > 0
-                                        ? `未读 ${Number(notificationsMeta.unread_count ?? 0)} 条`
-                                        : '全部已读'}
+                                <Box className={`notification-unread-pill ${unreadCount > 0 ? 'is-unread' : 'is-clear'}`}>
+                                    {unreadCount > 0 ? `未读 ${unreadCount} 条` : '全部已读'}
                                 </Box>
                             </Box>
                             <div className="notifications-inline-meta">
                                 <div className="notifications-inline-meta-item is-pill">
                                     <span className="notifications-inline-meta-label">未读通知</span>
-                                    <strong>{Number(notificationsMeta.unread_count ?? 0)}</strong>
+                                    <strong>{unreadCount}</strong>
                                 </div>
                                 <div className="notifications-inline-meta-item is-pill">
                                     <span className="notifications-inline-meta-label">上次同步</span>
@@ -233,7 +215,7 @@ function NotificationsView({ onRefresh }) {
                                 </div>
 
                                 <div className="task-next-run-panel notification-feed-content-panel">
-                                    {renderNotificationContent(item)}
+                                    <NotificationContent item={item} />
                                     <Box className="notification-feed-actions notification-feed-actions-inside">
                                         <Button
                                             variant="outlined"

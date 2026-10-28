@@ -56,6 +56,21 @@ class ApiRoutes:
         # 注入 Docker 探测函数，便于测试替换。
         self._is_running_in_docker = is_docker_fn
 
+    def _sync_telemetry_config(self) -> None:
+        """把内存中的最新配置同步给遥测管理器。
+
+        TelemetryManager 在实例化时缓存了 enabled 开关，配置保存后不同步的话，
+        Web 面板里关闭遥测会看起来成功但事件仍在继续上报。
+        """
+        telemetry = getattr(self.plugin, "telemetry", None)
+        apply_config = getattr(telemetry, "apply_config", None)
+        if not callable(apply_config):
+            return
+        try:
+            apply_config(dict(self.config))
+        except Exception as e:
+            logger.debug(f"[主动消息] 同步遥测开关失败喵: {e}")
+
     def register(self, app) -> None:
         """把所有路由挂载到 FastAPI 应用上。
 
@@ -141,21 +156,24 @@ class ApiRoutes:
                 "content_format": "markdown",
             }
 
+        def _config_group(key: str) -> dict[str, Any]:
+            """读取配置分组并保证返回对象，避免历史脏数据（如 null）让配置页整体不可用。"""
+            value = self.config.get(key)
+            return dict(value) if isinstance(value, dict) else {}
+
         # 读取配置（web_admin 分组会剔除 password 字段）。
         @app.get("/api/config")
         async def get_config():
             web_admin = {
-                k: v
-                for k, v in self.config.get("web_admin", {}).items()
-                if k != "password"
+                k: v for k, v in _config_group("web_admin").items() if k != "password"
             }
+            # 返回所有可编辑分组，保证前端渲染的字段与服务端保存范围一致。
             return {
-                "friend_settings": dict(self.config.get("friend_settings", {})),
-                "group_settings": dict(self.config.get("group_settings", {})),
+                "friend_settings": _config_group("friend_settings"),
+                "group_settings": _config_group("group_settings"),
                 "web_admin": web_admin,
-                "notification_settings": dict(
-                    self.config.get("notification_settings", {})
-                ),
+                "notification_settings": _config_group("notification_settings"),
+                "telemetry_config": _config_group("telemetry_config"),
             }
 
         # 返回 _conf_schema.json 内容，供前端渲染配置表单。
@@ -172,21 +190,59 @@ class ApiRoutes:
                     logger.error(f"[主动消息] 读取 Schema 失败喵: {e}")
             return {}
 
-        # 更新配置：仅接受 friend_settings / group_settings / web_admin 三组。
+        # 更新配置：接受 Schema 中全部可编辑分组，避免前端保存后字段被静默丢弃。
         @app.post("/api/config")
         async def update_config(payload: dict[str, Any]):
-            allowed_keys = {"friend_settings", "group_settings", "web_admin"}
+            allowed_keys = {
+                "friend_settings",
+                "group_settings",
+                "web_admin",
+                "notification_settings",
+                "telemetry_config",
+            }
+            # 分组必须是对象：若写入 null，后续 GET /api/config 的 dict(...) 会抛错，
+            # 配置编辑器将无法重新加载，只能手动改配置文件才能恢复。
+            invalid_keys = [
+                key
+                for key in sorted(allowed_keys)
+                if key in payload and not isinstance(payload[key], dict)
+            ]
+            if invalid_keys:
+                return JSONResponse(
+                    {
+                        "error": "配置分组必须是对象",
+                        "invalid_keys": invalid_keys,
+                    },
+                    status_code=400,
+                )
+
+            # 遥测开关必须是布尔值。
+            telemetry_payload = payload.get("telemetry_config")
+            if isinstance(telemetry_payload, dict) and "enabled" in telemetry_payload:
+                if not isinstance(telemetry_payload["enabled"], bool):
+                    return JSONResponse(
+                        {
+                            "error": "telemetry_config.enabled 必须是布尔值",
+                            "invalid_keys": ["telemetry_config.enabled"],
+                        },
+                        status_code=400,
+                    )
+
             for key in allowed_keys:
                 if key not in payload:
                     continue
                 if key == "web_admin":
-                    old = dict(self.config.get("web_admin", {}))
+                    # 走 _config_group。
+                    old = _config_group("web_admin")
                     old.update(payload.get("web_admin", {}))
                     if "password" in payload.get("web_admin", {}):
                         old["password"] = payload["web_admin"]["password"]
                     self.config["web_admin"] = old
                 else:
                     self.config[key] = payload[key]
+
+            # 遥测开关是运行期缓存的，必须在内存配置更新后同步，否则要重启才生效。
+            self._sync_telemetry_config()
 
             try:
                 plugin.config.save_config()
