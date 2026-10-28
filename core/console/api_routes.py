@@ -216,11 +216,24 @@ class ApiRoutes:
                     status_code=400,
                 )
 
+            # 遥测开关必须是布尔值。
+            telemetry_payload = payload.get("telemetry_config")
+            if isinstance(telemetry_payload, dict) and "enabled" in telemetry_payload:
+                if not isinstance(telemetry_payload["enabled"], bool):
+                    return JSONResponse(
+                        {
+                            "error": "telemetry_config.enabled 必须是布尔值",
+                            "invalid_keys": ["telemetry_config.enabled"],
+                        },
+                        status_code=400,
+                    )
+
             for key in allowed_keys:
                 if key not in payload:
                     continue
                 if key == "web_admin":
-                    old = dict(self.config.get("web_admin", {}))
+                    # 走 _config_group。
+                    old = _config_group("web_admin")
                     old.update(payload.get("web_admin", {}))
                     if "password" in payload.get("web_admin", {}):
                         old["password"] = payload["web_admin"]["password"]
