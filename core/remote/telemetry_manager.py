@@ -64,8 +64,7 @@ class TelemetryManager:
         # 版本号由统一版本工具提供，避免不同模块各自解析 metadata 造成不一致。
         self._plugin_version = plugin_version
         # 遥测默认开启，只有用户明确在 telemetry_config 中关闭时才停用。
-        telemetry_config = config.get("telemetry_config", {})
-        self._enabled = telemetry_config.get("enabled", True)
+        self._enabled = self._read_enabled(config)
         # 为当前安装实例生成稳定匿名 ID，用于跨重启聚合同一实例的遥测事件。
         self._instance_id = self._get_or_create_instance_id()
         # HTTP session 延迟初始化，只有真正发请求时才创建，减少空载资源占用。
@@ -93,6 +92,29 @@ class TelemetryManager:
         else:
             logger.debug("[主动消息] 遥测功能未启用喵。")
 
+    @staticmethod
+    def _read_enabled(config: dict[str, Any]) -> bool:
+        """从配置中读取遥测开关，只接受真正的布尔值。
+
+        字符串 "false" 之类的脏值交给 bool() 会被当成 True，用户关闭遥测后
+        仍会继续上报。配置可能来自历史文件或直接改盘，不能只依赖接口校验。
+        """
+        telemetry_config = (
+            config.get("telemetry_config") if isinstance(config, dict) else None
+        )
+        if not isinstance(telemetry_config, dict):
+            return True
+
+        enabled = telemetry_config.get("enabled", True)
+        if isinstance(enabled, bool):
+            return enabled
+
+        logger.warning(
+            "[主动消息] 遥测启用配置类型异常"
+            f"（{type(enabled).__name__}），已按默认开启处理喵。"
+        )
+        return True
+
     @property
     def enabled(self) -> bool:
         """是否启用遥测。"""
@@ -108,10 +130,7 @@ class TelemetryManager:
             return
 
         self._config = config
-        telemetry_config = config.get("telemetry_config", {})
-        if not isinstance(telemetry_config, dict):
-            telemetry_config = {}
-        enabled = bool(telemetry_config.get("enabled", True))
+        enabled = self._read_enabled(config)
 
         if enabled == self._enabled:
             return
