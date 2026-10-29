@@ -434,6 +434,73 @@ class ApiRoutes:
                 "meta": payload.get("meta", {}),
             }
 
+        # 运行日志缓冲统计（可用行数/占用），供上传前确认可导出范围。
+        @app.get("/api/logs/stats")
+        async def get_log_stats():
+            service = getattr(plugin, "log_export_service", None)
+            if service is None:
+                return JSONResponse({"error": "日志服务不可用"}, status_code=503)
+            try:
+                return service.collect_stats()
+            except Exception as e:
+                logger.error(f"[主动消息] 读取日志统计失败喵: {e}")
+                return JSONResponse(
+                    {"error": "读取日志统计失败", "message": str(e)},
+                    status_code=500,
+                )
+
+        # 导出最近运行日志（脱敏）并上传生成分享链接。
+        @app.post("/api/logs/upload")
+        async def upload_logs(payload: dict[str, Any] | None = None):
+            service = getattr(plugin, "log_export_service", None)
+            if service is None:
+                return JSONResponse({"error": "日志服务不可用"}, status_code=503)
+
+            raw_count = (payload or {}).get("count")
+            try:
+                return await service.export_and_upload(raw_count)
+            except RuntimeError as e:
+                reason = str(e)
+                if reason == "empty":
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error": "暂无运行日志记录",
+                            "message": "运行日志自插件本次启动开始累积，稍后再试。",
+                        },
+                        status_code=404,
+                    )
+                if reason == "busy":
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error": "已有日志上传进行中",
+                            "message": "请等待当前上传完成后再试。",
+                        },
+                        status_code=409,
+                    )
+                if reason == "too_frequent":
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error": "上传过于频繁",
+                            "message": "请稍等几秒后再试。",
+                        },
+                        status_code=429,
+                    )
+                logger.warning(f"[主动消息] 日志上传失败喵: {e}")
+                return JSONResponse(
+                    {"ok": False, "error": "日志上传失败", "message": reason},
+                    status_code=500,
+                )
+            except Exception as e:
+                # 失败细节留在服务端日志，前端只拿到可读原因。
+                logger.warning(f"[主动消息] 日志上传失败喵: {e}")
+                return JSONResponse(
+                    {"ok": False, "error": "日志上传失败", "message": str(e)},
+                    status_code=500,
+                )
+
         # 在宿主机文件管理器中打开插件目录或数据目录。
         @app.post("/api/open-directory")
         async def open_directory(payload: dict[str, Any]):

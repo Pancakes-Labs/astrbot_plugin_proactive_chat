@@ -565,3 +565,159 @@ body.dark-theme .status-timer-info-item {
     opacity: 0.82;
     cursor: wait;
 }
+
+/* ===== 运行日志上传卡片 ===== */
+.log-upload-card {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.log-upload-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.log-upload-head-main {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    min-width: 0;
+}
+
+.log-upload-head-main .tasks-header-subtitle {
+    display: block;
+    margin-top: 6px;
+    line-height: 1.55;
+}
+
+.log-upload-stats {
+    display: flex;
+    gap: 18px;
+    flex-shrink: 0;
+}
+
+.log-upload-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-end;
+}
+
+.log-upload-stat-label {
+    font-size: 12px;
+    opacity: 0.66;
+}
+
+.log-upload-stat-value {
+    font-size: 15px;
+    font-weight: 800;
+}
+
+.log-upload-controls {
+    display: flex;
+    align-items: flex-end;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.log-upload-count-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 150px;
+}
+
+.log-upload-count-label {
+    font-size: 12px;
+    opacity: 0.66;
+}
+
+.log-upload-count-input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: var(--md-sys-color-surface);
+    color: inherit;
+    font-size: 14px;
+    font-family: inherit;
+    transition: border-color 0.18s ease;
+}
+
+.log-upload-count-input:focus {
+    outline: none;
+    border-color: rgb(var(--md-primary-rgb) / 0.55);
+}
+
+.log-upload-button-wrap {
+    /* 复用状态页 tooltip 容器，但宽度需要跟随按钮而非铺满整行。 */
+    flex: 1;
+    min-width: 240px;
+    max-width: 360px;
+}
+
+.log-upload-hint {
+    font-size: 13px;
+    opacity: 0.72;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--md-sys-color-surface-variant, rgba(103, 80, 164, 0.06));
+}
+
+.log-upload-result {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: rgb(var(--md-primary-rgb) / 0.03);
+    word-break: break-all;
+}
+
+.log-upload-result.is-error {
+    border-color: rgba(179, 38, 30, 0.35);
+    background: rgba(179, 38, 30, 0.05);
+}
+
+.log-upload-result.is-success {
+    border-color: rgba(46, 125, 50, 0.32);
+    background: rgba(46, 125, 50, 0.05);
+}
+
+.log-upload-link-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.log-upload-link {
+    font-family: Consolas, Menlo, monospace;
+    font-size: 13px;
+    color: var(--md-sys-color-primary);
+    text-decoration: underline;
+    word-break: break-all;
+}
+
+.log-upload-copy-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.log-upload-copy-btn:hover {
+    background: rgb(var(--md-primary-rgb) / 0.08);
+}
+
+.log-upload-expire {
+    opacity: 0.68;
+}

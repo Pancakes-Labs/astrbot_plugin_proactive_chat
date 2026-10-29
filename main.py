@@ -25,6 +25,7 @@ from .core.services.config_service import ConfigService
 from .core.services.context_service import ContextService
 from .core.services.lifecycle_service import LifecycleService
 from .core.services.llm_service import LlmService
+from .core.services.log_export_service import LogExportService
 from .core.services.scheduler_service import SchedulerService
 from .core.services.sender_service import SenderService
 from .core.services.session_service import SessionService
@@ -68,6 +69,7 @@ class ProactiveChatPlugin(star.Star):
         self.llm_service = LlmService(self)
         self.sender_service = SenderService(self)
         self.lifecycle_service = LifecycleService(self)
+        self.log_export_service = LogExportService(self)
         self.event_handlers = EventHandlers(self)
         self.orchestrator = FlowOrchestrator(self)
 

@@ -16,6 +16,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from astrbot.api import logger
 
 from ..adapters.astrbot_platform import iter_active_platform_instances
+from ...utils.runtime_log_collector import (
+    install_runtime_log_collector,
+    uninstall_runtime_log_collector,
+)
+from ..remote.log_paste_client import close_paste_client
 
 
 class LifecycleService:
@@ -40,6 +45,14 @@ class LifecycleService:
         plugin._startup_finalized = False
         plugin._startup_lock = asyncio.Lock()
         plugin._startup_task = None
+
+        # 挂载运行日志内存收集器（幂等）。放在最前面执行，确保初始化阶段的日志
+        # 也能被「上传运行日志」捕获，避免早期启动问题在导出里看不到。
+        try:
+            install_runtime_log_collector()
+            logger.debug("[主动消息] 运行日志收集器已挂载喵。")
+        except Exception as e:
+            logger.warning(f"[主动消息] 运行日志收集器挂载失败喵（已忽略）: {e}")
 
         plugin.data_lock = asyncio.Lock()
 
@@ -352,6 +365,17 @@ class LifecycleService:
                 except Exception:
                     pass
         finally:
+            # 先关闭日志上传会话，再卸载收集器：保证在途上传不会撞上已卸载的缓冲。
+            try:
+                await close_paste_client()
+            except Exception as e:
+                logger.debug(f"[主动消息] 关闭日志上传会话失败喵（已忽略）: {e}")
+
+            try:
+                uninstall_runtime_log_collector()
+            except Exception as e:
+                logger.debug(f"[主动消息] 卸载运行日志收集器失败喵（已忽略）: {e}")
+
             if plugin.telemetry:
                 try:
                     await plugin.telemetry.close()

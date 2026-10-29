@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
 /**
  * 文件职责：状态页视图，负责服务状态、计时器可视化与手动刷新交互展示。
  */
@@ -110,6 +110,176 @@ function StatusTimerCard({ timer, displayTimezone, nowMs, resetHint }) {
                         {meta.window_seconds ? formatDuration(meta.window_seconds, { compact: true, maxUnits: 2 }) : '--'}
                     </Typography>
                 </div>
+            </div>
+        </div>
+    );
+}
+
+function LogUploadCard({ displayTimezone }) {
+    const api = useApi();
+    // 状态机：idle -> loading -> success / error，附带已上传结果供展示链接。
+    const [uploadState, setUploadState] = React.useState({ phase: 'idle', result: null, error: '' });
+    const [stats, setStats] = React.useState(null);
+    // 可选行数，默认 500（与后端默认一致），上限由后端统计返回。
+    const [count, setCount] = React.useState(500);
+
+    const loadStats = React.useCallback(async () => {
+        try {
+            const payload = await api.getLogStats();
+            setStats(payload || null);
+        } catch (e) {
+            // 统计失败不打断页面，仅保留上次快照。
+            setStats(null);
+        }
+    }, [api]);
+
+    React.useEffect(() => {
+        loadStats();
+    }, [loadStats]);
+
+    const handleUpload = async () => {
+        if (uploadState.phase === 'loading') return;
+        setUploadState({ phase: 'loading', result: null, error: '' });
+        try {
+            const payload = await api.uploadLogs(Number(count) || 500);
+            setUploadState({ phase: 'success', result: payload || null, error: '' });
+            // 上传后刷新统计，避免同一份日志被反复上传而不自知。
+            loadStats();
+        } catch (e) {
+            const message = (e && e.payload && (e.payload.message || e.payload.error))
+                || (e && e.message)
+                || '上传失败';
+            setUploadState({ phase: 'error', result: null, error: message });
+        }
+    };
+
+    const buttonLabel = uploadState.phase === 'loading'
+        ? '正在上传运行日志...'
+        : uploadState.phase === 'success'
+            ? '上传完成，可再次上传'
+            : uploadState.phase === 'error'
+                ? '上传失败，点击重试'
+                : '上传运行日志并生成链接';
+
+    const availableLines = stats ? Number(stats.lines || 0) : 0;
+    const maxCount = stats ? Number(stats.max_count || 10000) : 10000;
+
+    return (
+        <div className="span-12">
+            <div className="card log-upload-card">
+                <div className="log-upload-head">
+                    <div className="log-upload-head-main">
+                        <div className="status-panel-icon status-panel-icon-blue">📤</div>
+                        <div>
+                            <Typography variant="h6" sx={{ fontWeight: 700 }}>运行日志上传</Typography>
+                            <Typography variant="body2" className="tasks-header-subtitle">
+                                读取本次启动以来插件自身的运行日志（INFO 及以上），脱敏后上传到日志分享服务，
+                                只返回链接，不会把日志正文发送到聊天或页面中。
+                            </Typography>
+                        </div>
+                    </div>
+                    <div className="log-upload-stats">
+                        <div className="log-upload-stat">
+                            <span className="log-upload-stat-label">可导出行数</span>
+                            <span className="log-upload-stat-value">{availableLines} 行</span>
+                        </div>
+                        <div className="log-upload-stat">
+                            <span className="log-upload-stat-label">缓冲占用</span>
+                            <span className="log-upload-stat-value">{stats ? `${Number(stats.size_kb || 0)} KB` : '--'}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="log-upload-controls">
+                    <label className="log-upload-count-field">
+                        <span className="log-upload-count-label">导出行数</span>
+                        <input
+                            type="number"
+                            min="1"
+                            max={maxCount}
+                            step="50"
+                            value={count}
+                            className="log-upload-count-input"
+                            onChange={(event) => {
+                                // 输入过程允许空值，提交时再交给后端钳制。
+                                const next = event.target.value;
+                                setCount(next === '' ? '' : Number(next));
+                            }}
+                            disabled={uploadState.phase === 'loading'}
+                        />
+                    </label>
+
+                    <div className="status-action-tooltip-wrap log-upload-button-wrap">
+                        <button
+                            type="button"
+                            className={`btn btn-action${uploadState.phase === 'loading' ? ' is-busy' : ''}`}
+                            onClick={handleUpload}
+                            disabled={uploadState.phase === 'loading' || availableLines === 0}
+                            aria-describedby="log-upload-tooltip"
+                        >
+                            <span className="status-action-icon">
+                                {uploadState.phase === 'loading' ? '⏳' : uploadState.phase === 'success' ? '✅' : uploadState.phase === 'error' ? '⚠️' : '📤'}
+                            </span>
+                            {buttonLabel}
+                        </button>
+                        <div className="status-action-tooltip-bubble" role="note" id="log-upload-tooltip">
+                            日志内容会对凭据、会话标识与本机路径做脱敏，但仍请自行确认后再公开分享链接。
+                        </div>
+                    </div>
+                </div>
+
+                {availableLines === 0 ? (
+                    <div className="log-upload-hint">
+                        暂无可导出的运行日志。日志自插件本次启动开始累积，稍后再试。
+                    </div>
+                ) : null}
+
+                {uploadState.phase === 'error' ? (
+                    <div className="log-upload-result is-error">
+                        <Typography variant="body2">❌ {uploadState.error}</Typography>
+                    </div>
+                ) : null}
+
+                {uploadState.phase === 'success' && uploadState.result ? (
+                    <div className="log-upload-result is-success">
+                        <Typography variant="body2">
+                            ✅ 已上传 {Number(uploadState.result.exported_lines || 0)} 行
+                            （{Number(uploadState.result.size_kb || 0)} KB），
+                            完成于 {formatFriendlyTime(Date.now(), displayTimezone)}。
+                        </Typography>
+                        <div className="log-upload-link-row">
+                            <a
+                                className="log-upload-link"
+                                href={uploadState.result.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                {uploadState.result.url}
+                            </a>
+                            <button
+                                type="button"
+                                className="btn log-upload-copy-btn"
+                                onClick={() => {
+                                    const url = uploadState.result?.url || '';
+                                    if (!url) return;
+                                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                                        navigator.clipboard.writeText(url).catch(() => {});
+                                        return;
+                                    }
+                                    // 非安全上下文下 clipboard API 不可用，退化为选中提示。
+                                    window.prompt('复制日志链接', url);
+                                }}
+                            >
+                                复制链接
+                            </button>
+                        </div>
+                        {uploadState.result.expires_at ? (
+                            <Typography variant="caption" className="log-upload-expire">
+                                链接过期时间：{uploadState.result.expires_at}
+                            </Typography>
+                        ) : null}
+                    </div>
+                ) : null}
             </div>
         </div>
     );
@@ -355,6 +525,8 @@ function StatusView({ onRefresh }) {
                         </div>
                     </div>
                 </div>
+
+                <LogUploadCard displayTimezone={displayTimezone} />
 
                 <div className="span-12">
                     <div className="status-timers-section">

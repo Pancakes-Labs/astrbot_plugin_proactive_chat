@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 文件职责：API 客户端常量，集中维护后端接口路径与调用方式。
  *
  * HttpUtil 本身是全局单例，引用天然稳定，因此这里直接导出一个冻结对象，
@@ -34,6 +34,10 @@
         triggerJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/trigger`, {}),
         cancelJob: (session) => HttpUtil.del(`/api/jobs/${encodeURIComponent(session)}`),
         rescheduleJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/reschedule`, {}),
+
+        // 运行日志：先取缓冲统计，再按需导出并上传生成分享链接。
+        getLogStats: () => HttpUtil.get('/api/logs/stats'),
+        uploadLogs: (count) => HttpUtil.post('/api/logs/upload', { count }),
     });
 
     // 兼容旧调用点：useApi() 直接返回同一个冻结对象，不再创建 Hook 内部状态。
