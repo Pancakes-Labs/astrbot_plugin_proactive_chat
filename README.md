@@ -1786,10 +1786,13 @@ flowchart LR
 
 如果你对这个插件有任何疑问、建议或 bug 反馈，欢迎加入我的 QQ 交流群。
 
-- **QQ 群**: 1033089808
+- **QQ 群**:
+  - 1033089808（已满）
+  - 1130257565（加这个）
+
 - **群二维码**:
   
-  <img width="281" alt="QQ Group QR Code" src="https://github.com/user-attachments/assets/53acb3c8-1196-4b9e-b0b3-ad3a62d5c41d" />
+  <img width="281" alt="QQ Group QR Code" src="https://github.com/user-attachments/assets/0b7ba9f4-9d3b-4d72-85a7-15321741bf1d" />
 
 ## 🤝 贡献
 
