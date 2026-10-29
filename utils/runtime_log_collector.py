@@ -310,9 +310,7 @@ class RuntimeLogCollector:
         matched = snapshot
         if keyword:
             matched = [
-                line
-                for line in snapshot
-                if keyword in line or _PLUGIN_ID in line
+                line for line in snapshot if keyword in line or _PLUGIN_ID in line
             ]
 
         collected: list[str] = []  # 新行在前

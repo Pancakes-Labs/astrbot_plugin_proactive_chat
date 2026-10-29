@@ -131,8 +131,8 @@ class LogExportService:
 
         async with self._lock:
             requested, clamped = self.clamp_count(count)
-            export_text, exported_lines, truncated_by_size = (
-                await self.export_snapshot(requested)
+            export_text, exported_lines, truncated_by_size = await self.export_snapshot(
+                requested
             )
             payload = await get_paste_client().upload_text(export_text)
 

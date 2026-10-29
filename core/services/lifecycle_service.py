@@ -15,11 +15,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from astrbot.api import logger
 
-from ..adapters.astrbot_platform import iter_active_platform_instances
 from ...utils.runtime_log_collector import (
     install_runtime_log_collector,
     uninstall_runtime_log_collector,
 )
+from ..adapters.astrbot_platform import iter_active_platform_instances
 from ..remote.log_paste_client import close_paste_client
 
 

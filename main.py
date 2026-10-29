@@ -15,6 +15,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.core.config.astrbot_config import AstrBotConfig
 
+from .core.adapters.command_handlers import CommandHandlers
 from .core.adapters.event_handlers import EventHandlers
 from .core.console.runtime_server import WebConsoleServer
 from .core.domain.domain_enums import TriggerSource
@@ -71,6 +72,7 @@ class ProactiveChatPlugin(star.Star):
         self.lifecycle_service = LifecycleService(self)
         self.log_export_service = LogExportService(self)
         self.event_handlers = EventHandlers(self)
+        self.command_handlers = CommandHandlers(self)
         self.orchestrator = FlowOrchestrator(self)
 
         # 会话差异配置管理器
@@ -257,6 +259,23 @@ class ProactiveChatPlugin(star.Star):
     async def on_after_message_sent(self, event: AstrMessageEvent) -> None:
         """消息发送后入口。"""
         await self.event_handlers.on_after_message_sent(event)
+
+    # ==================================================================
+    # 管理员指令
+    # ==================================================================
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("主动消息日志上传", alias={"主动消息日志导出"})
+    async def upload_runtime_logs(self, event: AstrMessageEvent, count: str = None):
+        """上传最近运行日志（脱敏）并返回分享链接。"""
+        async for result in self.command_handlers.upload_logs(event, count=count):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("主动消息日志")
+    async def show_runtime_logs(self, event: AstrMessageEvent):
+        """查看运行日志缓冲概况。"""
+        async for result in self.command_handlers.show_log_stats(event):
+            yield result
 
     # ==================================================================
     # 主动消息主流程

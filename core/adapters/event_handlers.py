@@ -21,8 +21,22 @@ class EventHandlers:
     通过构造注入 plugin 实例（容器），复用其服务能力。
     """
 
+    # 本插件自己的管理员指令前缀：指令消息不应被当作「用户回复」处理，
+    # 否则发送一条查看日志的指令就会重置未回复计数并重排下一次主动消息。
+    _OWN_COMMAND_PREFIXES = ("主动消息日志",)
+
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
+
+    def _is_own_command(self, event: AstrMessageEvent) -> bool:
+        """判断当前消息是否为本插件自己的指令（用于跳过用户活跃逻辑）。"""
+        try:
+            text = str(event.get_message_str() or "").strip()
+        except Exception:
+            return False
+        if not text:
+            return False
+        return any(text.startswith(prefix) for prefix in self._OWN_COMMAND_PREFIXES)
 
     # ------------------------------------------------------------------
     # 内部辅助：会话键迁移（集中收敛原重复 4 次的逻辑）
@@ -76,6 +90,11 @@ class EventHandlers:
     async def on_friend_message(self, event: AstrMessageEvent) -> None:
         """处理私聊消息：记录时间、取消调度、重置计数并重新排期。"""
         if not event.get_messages():
+            return
+
+        # 本插件自己的管理指令不视为“用户回复”，避免重置主动消息节奏。
+        if self._is_own_command(event):
+            logger.debug("[主动消息] 检测到本插件管理指令，跳过用户回复处理喵。")
             return
 
         session_id = event.unified_msg_origin
@@ -171,6 +190,11 @@ class EventHandlers:
         会先剔除 Bot 自身消息，避免把机器人发言误判为用户活跃。
         """
         if not event.get_messages():
+            return
+
+        # 本插件自己的管理指令不视为“群聊活跃”，避免误重置沉默计时器。
+        if self._is_own_command(event):
+            logger.debug("[主动消息] 检测到本插件管理指令，跳过群聊活跃处理喵。")
             return
 
         session_id = event.unified_msg_origin
