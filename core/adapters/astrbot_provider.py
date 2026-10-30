@@ -27,6 +27,10 @@ def provider_request_fields() -> set[str] | None:
         return None
 
 
+# 构造失败时按此顺序逐个剔除的可选字段：越靠后越不重要。
+_OPTIONAL_REQUEST_FIELDS = ("model", "conversation", "extra_user_content_parts")
+
+
 def build_provider_request(
     *,
     prompt: str,
@@ -35,6 +39,7 @@ def build_provider_request(
     system_prompt: str,
     extra_parts: list,
     conversation: Any = None,
+    model: str | None = None,
 ) -> Any:
     """构造 ProviderRequest，并兼容不同版本的字段差异。
 
@@ -49,6 +54,9 @@ def build_provider_request(
         "extra_user_content_parts": list(extra_parts or []),
         "conversation": conversation,
     }
+    if model:
+        kwargs["model"] = model
+
     # 能探测到字段集合时，直接过滤掉不支持的键一次构造成功。
     fields = provider_request_fields()
     if fields is not None:
@@ -58,7 +66,7 @@ def build_provider_request(
     try:
         return ProviderRequest(**kwargs)
     except TypeError:
-        for field_name in ("conversation", "extra_user_content_parts"):
+        for field_name in _OPTIONAL_REQUEST_FIELDS:
             if field_name not in kwargs:
                 continue
             candidate = {
@@ -75,10 +83,12 @@ def build_provider_request(
         )
 
 
-def supported_provider_kwargs(provider: Any) -> set[str] | None:
-    """探测 Provider.text_chat 支持的参数名。
+def supported_provider_kwargs(provider: Any) -> tuple[set[str], bool] | None:
+    """探测 Provider.text_chat 的关键字参数接口。
 
-    签名含 **kwargs 时返回 None，表示“全部参数均可传入”。
+    返回 (显式关键字参数名集合, 是否接受任意 **kwargs)。仅限位置的参数不会
+    出现在集合中，避免被误当关键字传入而抛 TypeError。无法探测签名时返回
+    None，调用方按“参数全部可传”处理以保持旧行为。
     """
     try:
         signature = inspect.signature(provider.text_chat)
@@ -86,15 +96,23 @@ def supported_provider_kwargs(provider: Any) -> set[str] | None:
         return None
 
     params = signature.parameters
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
-        return None
-    return set(params.keys())
+    keyword_names = {
+        name
+        for name, param in params.items()
+        if param.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    accepts_any = any(
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
+    return keyword_names, accepts_any
 
 
 async def invoke_provider(provider: Any, req: Any) -> Any:
     """调用 Provider，并按运行时能力裁剪不支持的可选参数。
 
     先组装候选参数，再依据 text_chat 签名过滤，保证兼容旧版本 Provider。
+    可选参数仅在取到有效值时才传入，避免覆盖 Provider 自身的默认行为。
     """
     call_kwargs: dict[str, Any] = {
         "prompt": getattr(req, "prompt", None),
@@ -109,10 +127,21 @@ async def invoke_provider(provider: Any, req: Any) -> Any:
     if model:
         call_kwargs["model"] = model
 
+    # 与 AstrBot 上游 agent runner 的调用约定对齐：会话 ID 与真实对话 ID 都需
+    # 显式传递，Provider 据此生成请求关联头或路由会话。
+    session_id = getattr(req, "session_id", None)
+    if session_id:
+        call_kwargs["session_id"] = str(session_id)
+    conversation_id = getattr(getattr(req, "conversation", None), "cid", None)
+    if conversation_id:
+        call_kwargs["conversation_id"] = str(conversation_id)
+
     supported = supported_provider_kwargs(provider)
     if supported is not None:
-        call_kwargs = {
-            key: value for key, value in call_kwargs.items() if key in supported
-        }
+        keyword_names, accepts_any = supported
+        if not accepts_any:
+            call_kwargs = {
+                key: value for key, value in call_kwargs.items() if key in keyword_names
+            }
 
     return await provider.text_chat(**call_kwargs)
