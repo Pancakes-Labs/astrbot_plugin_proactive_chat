@@ -75,14 +75,21 @@ jobs:
           mkdir -p "${BABEL_TOOLS_DIR}"
           pushd "${BABEL_TOOLS_DIR}"
           npm init -y >/dev/null 2>&1
-          npm install --no-save @babel/core @babel/cli @babel/preset-react
+          # 必须锁定 Babel 7 且显式使用 classic runtime。
+          # Babel 8 的 @babel/preset-react 默认 runtime 已从 classic 改为 automatic，
+          # 产物会在每个文件首行注入 import "react/jsx-runtime"，
+          # 而 WebUI 用普通 script 标签加载（非 type="module"），
+          # 浏览器直接抛 SyntaxError: Cannot use import statement outside a module，整页白屏。
+          npm install --no-save "@babel/core@^7" "@babel/cli@^7" "@babel/preset-react@^7"
+          printf '%s\n' '{"presets":[["@babel/preset-react",{"runtime":"classic"}]]}' > babel.config.json
+          NODE_PATH="${BABEL_TOOLS_DIR}/node_modules" node -e "console.log('Babel core ' + require('@babel/core/package.json').version + ' | preset-react ' + require('@babel/preset-react/package.json').version)"
           popd
 
-          NODE_PATH="${BABEL_TOOLS_DIR}/node_modules" \
+          NODE_ENV=production BABEL_ENV=production NODE_PATH="${BABEL_TOOLS_DIR}/node_modules" \
           "${BABEL_TOOLS_DIR}/node_modules/.bin/babel" admin/js \
             --extensions ".js,.jsx" \
             --out-dir "${BUILD_JS_DIR}" \
-            --presets @babel/preset-react \
+            --config-file "${BABEL_TOOLS_DIR}/babel.config.json" \
             --no-babelrc
 
           rm -rf admin/js
@@ -129,6 +136,19 @@ jobs:
 
           if find admin/js -type f -name '*.jsx' | grep -q .; then
             echo "::error::WebUI 编译后仍存在 .jsx 源文件"
+            exit 1
+          fi
+
+          # 产物必须是可直接被普通 script 执行的脚本（UMD/IIFE 风格），
+          # 出现顶层 import/export 即说明 Babel 又切回了 automatic runtime 或产出了 ESM。
+          if grep -rEq '^[[:space:]]*(import|export)[[:space:]{*]' admin/js; then
+            echo "::error::WebUI 编译产物包含 ESM import/export，普通 script 加载会白屏"
+            grep -rEn '^[[:space:]]*(import|export)[[:space:]{*]' admin/js | head -n 10
+            exit 1
+          fi
+
+          if grep -rq 'react/jsx-runtime' admin/js; then
+            echo "::error::WebUI 编译产物引用了 react/jsx-runtime，说明 preset-react 使用了 automatic runtime"
             exit 1
           fi
 
