@@ -34,10 +34,6 @@
         triggerJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/trigger`, {}),
         cancelJob: (session) => HttpUtil.del(`/api/jobs/${encodeURIComponent(session)}`),
         rescheduleJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/reschedule`, {}),
-
-        // 运行日志：先取缓冲统计，再按需导出并上传生成分享链接。
-        getLogStats: () => HttpUtil.get('/api/logs/stats'),
-        uploadLogs: (count) => HttpUtil.post('/api/logs/upload', { count }),
     });
 
     // 兼容旧调用点：useApi() 直接返回同一个冻结对象，不再创建 Hook 内部状态。

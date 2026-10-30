@@ -92,6 +92,8 @@ class RuntimeLogCollector:
         )
         self._lock = threading.Lock()
         self._handler: _RingBufferHandler | None = None
+        # 回退路径下被临时放宽级别的 Logger 及其原始级别，卸载时用于还原。
+        self._adjusted_levels: list[tuple[logging.Logger, int]] = []
         self._loguru_sink_id: int | None = None
         self._capture_all = capture_all
 
@@ -241,14 +243,27 @@ class RuntimeLogCollector:
         except Exception:
             self._loguru_sink_id = None
 
-        # 2. 回退机制：若无 Loguru，挂载到标准库 Root Logger 及插件 Logger
+        # 2. 回退机制：若无 Loguru，挂载到本插件的标准库 Logger
         handler = _RingBufferHandler(
             self, logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
         )
         handler.setLevel(level)
-        logging.getLogger().addHandler(handler)
+        plugin_logger = logging.getLogger(_PLUGIN_LOGGER_NAME)
+        # Handler 级别只是第二道闸门：记录要先过 Logger 的 effective level 才会进 Handler。
+        # 插件 Logger 若为 NOTSET（或宿主把它设成了 WARNING），INFO 记录在处理链入口
+        # 就被丢弃，handler 再宽松也拿不到日志。这里在其自身设置捕获级别并记录原值，
+        # 卸载时恢复；子 Logger 是 NOTSET，同样继承到该级别。
+        self._adjusted_levels = []
+        previous = plugin_logger.level
+        if previous == logging.NOTSET or previous > level:
+            plugin_logger.setLevel(level)
+            self._adjusted_levels.append((plugin_logger, previous))
+
+        # 只挂插件 Logger：其子 Logger 会冒泡上来，其它插件的日志不会混进缓冲，
+        # 口径与 Loguru Sink 的 filter 保持一致。挂到 root 反而会重复采集
+        # （propagate 时同一记录被插件与 root 各收一次）并把无关日志带进导出。
         try:
-            logging.getLogger(_PLUGIN_LOGGER_NAME).addHandler(handler)
+            plugin_logger.addHandler(handler)
         except Exception:
             pass
         self._handler = handler
@@ -266,14 +281,23 @@ class RuntimeLogCollector:
 
         if self._handler is not None:
             try:
-                logging.getLogger().removeHandler(self._handler)
-            except Exception:
-                pass
-            try:
                 logging.getLogger(_PLUGIN_LOGGER_NAME).removeHandler(self._handler)
             except Exception:
                 pass
+            # 兼容旧版本挂过 root 的实例，摘除时一并清理，避免重复采集。
+            try:
+                logging.getLogger().removeHandler(self._handler)
+            except Exception:
+                pass
             self._handler = None
+
+        # 恢复回退路径临时放宽的 Logger 级别，避免把宿主的默认级别永久改掉。
+        for target, previous in self._adjusted_levels:
+            try:
+                target.setLevel(previous)
+            except Exception:
+                pass
+        self._adjusted_levels = []
 
         with self._lock:
             self._buffer.clear()

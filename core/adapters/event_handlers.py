@@ -21,22 +21,52 @@ class EventHandlers:
     通过构造注入 plugin 实例（容器），复用其服务能力。
     """
 
-    # 本插件自己的管理员指令前缀：指令消息不应被当作「用户回复」处理，
+    # 本插件自己的管理员指令全名（含别名）：指令消息不应被当作「用户回复」处理，
     # 否则发送一条查看日志的指令就会重置未回复计数并重排下一次主动消息。
-    _OWN_COMMAND_PREFIXES = ("主动消息日志",)
+    # 这里必须比对完整指令名而不是前缀：以「主动消息日志」开头的普通聊天
+    # （如「主动消息日志说明」）并不是指令，不应被跳过活跃统计。
+    _OWN_COMMANDS = frozenset(
+        {
+            "主动消息日志",
+            "主动消息日志上传",
+            "主动消息日志导出",
+        }
+    )
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
 
     def _is_own_command(self, event: AstrMessageEvent) -> bool:
-        """判断当前消息是否为本插件自己的指令（用于跳过用户活跃逻辑）。"""
+        """判断当前消息是否为本插件自己的管理员指令。
+
+        仅用于跳过用户活跃逻辑，因此必须同时满足三个条件，避免误伤普通聊天：
+        1. 发送者是管理员（非管理员即便文本相同也不会真正执行指令）；
+        2. 文本在指令边界处结束（指令全名，或指令全名 + 空白 + 参数）；
+        3. 忽略唤醒前缀差异（AstrBot 已在唤醒阶段剥离唤醒词，这里再兜底一次）。
+        """
+        try:
+            is_admin = getattr(event, "is_admin", None)
+            if not callable(is_admin) or not is_admin():
+                return False
+        except Exception:
+            return False
+
         try:
             text = str(event.get_message_str() or "").strip()
         except Exception:
             return False
         if not text:
             return False
-        return any(text.startswith(prefix) for prefix in self._OWN_COMMAND_PREFIXES)
+
+        # 兜底剥离可能残留的唤醒前缀（如 /），指令名本身不含这些字符。
+        text = text.lstrip("/／!#.")
+        for command in self._OWN_COMMANDS:
+            if text == command:
+                return True
+            # 指令后必须跟空白参数，否则只是以指令名开头的普通文本。
+            if text.startswith(f"{command} ") or text.startswith(f"{command}\t"):
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # 内部辅助：会话键迁移（集中收敛原重复 4 次的逻辑）
