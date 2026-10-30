@@ -145,8 +145,13 @@ class LlmService:
         event: Any = None,
         conversation: Any = None,
         platform_context: str = "",
+        model: str | None = None,
     ) -> tuple[Any | None, str]:
-        """统一 LLM 调用入口。"""
+        """统一 LLM 调用入口。
+
+        model 为 None 时使用 Provider 自身的默认模型；传入非空值时仅覆盖本次
+        请求的模型，供后续按场景（压缩、降级、专用模型）分层调用复用。
+        """
         plugin = self.plugin
         motivation_template = session_config.get("proactive_prompt", "") or ""
         now_str = format_current_time(plugin.timezone)
@@ -178,6 +183,7 @@ class LlmService:
             system_prompt=system_prompt,
             extra_parts=extra_parts,
             conversation=conversation,
+            model=model,
         )
 
         try:
