@@ -21,11 +21,11 @@ function StatusMetricRow({ label, value, emphasize = false, status = '' }) {
     );
 }
 
-function StatusTimerCard({ timer, displayTimezone, nowMs, resetHint }) {
+function StatusTimerCard({ timer, displayTimezone, nowMs, snapshotAtMs, resetHint }) {
     // 派生信息统一交给领域函数计算，视图只负责结构。
     const meta = React.useMemo(
-        () => window.ProgressDomain.resolveStatusTimerCard(timer, nowMs, displayTimezone),
-        [timer, nowMs, displayTimezone]
+        () => window.ProgressDomain.resolveStatusTimerCard(timer, nowMs, displayTimezone, snapshotAtMs),
+        [timer, nowMs, displayTimezone, snapshotAtMs]
     );
     // 未回复次数大于 0 时用 warning 色，帮助管理员快速定位“机器人已被晾着”的会话。
     const unansweredCount = Number(meta.unanswered_count !== undefined ? meta.unanswered_count : 0);
@@ -137,8 +137,16 @@ function StatusView({ onRefresh }) {
         };
     }, []);
 
+    // 状态快照的本地到达时刻：后端只给整秒值，需要配合本地时钟继续递增。
+    const snapshotAtMs = Number(state.statusReceivedAt !== undefined ? state.statusReceivedAt : 0);
     // 统一把后端状态字段规整为前端友好的基础数字类型。
     const uptimeSeconds = Number(status.uptime_seconds !== undefined ? status.uptime_seconds : 0);
+    // 运行时长在两次快照之间按本地流逝时间补足，避免整秒值半天不动。
+    const liveUptimeSeconds = uptimeSeconds + (
+        snapshotAtMs > 0 && nowMs > snapshotAtMs
+            ? Math.max(0, Math.floor((nowMs - snapshotAtMs) / 1000))
+            : 0
+    );
     const jobsCount = Number(status.jobs_count !== undefined ? status.jobs_count : 0);
     const sessionsCount = Number(status.sessions_count !== undefined ? status.sessions_count : 0);
     const autoTriggerTimers = Number(status.auto_trigger_timers !== undefined ? status.auto_trigger_timers : 0);
@@ -188,7 +196,11 @@ function StatusView({ onRefresh }) {
 
         timerCards.forEach((timer) => {
             const key = `${timer.timer_kind}-${timer.session_id}`;
-            const currentRemaining = Math.max(0, Number(timer.remaining_seconds !== undefined ? timer.remaining_seconds : 0));
+            // 剩余秒数缺失时保持 null，避免 Number(null) 变成 0 影响重置判定。
+            const rawRemaining = timer.remaining_seconds;
+            const currentRemaining = (rawRemaining === null || rawRemaining === undefined || rawRemaining === '')
+                ? null
+                : Math.max(0, Number(rawRemaining));
             const currentTarget = Number(timer.target_time !== undefined ? timer.target_time : 0);
             const currentStatus = String(timer.status || '');
             const previous = previousTimerSnapshotRef.current[key] || null;
@@ -201,11 +213,14 @@ function StatusView({ onRefresh }) {
             };
 
             // 真正的“被重置”应表现为：同一张群沉默卡片的剩余时间突然回升，且当前仍处于有效运行态。
+            const previousRemaining = previous ? Number(previous.remainingSeconds) : NaN;
             const isGroupReset = timer.timer_kind === 'group_silence'
                 && previous
                 && currentStatus !== 'expired'
                 && currentStatus !== 'unknown'
-                && currentRemaining - Number(previous.remainingSeconds !== undefined ? previous.remainingSeconds : 0) > 3;
+                && currentRemaining !== null
+                && Number.isFinite(previousRemaining)
+                && currentRemaining - previousRemaining > 3;
 
             if (isGroupReset) {
                 nextHints[key] = true;
@@ -296,7 +311,7 @@ function StatusView({ onRefresh }) {
                             <div className="status-divider"></div>
                             <StatusMetricRow
                                 label="运行时长"
-                                value={formatDuration(uptimeSeconds, { compact: true, maxUnits: 4 })}
+                                value={formatDuration(liveUptimeSeconds, { compact: true, maxUnits: 4 })}
                                 emphasize
                             />
                             <StatusMetricRow label="已连接 WebSocket" value={`${Number(status.ws_connections !== undefined ? status.ws_connections : 0)} 个`} />
@@ -414,6 +429,7 @@ function StatusView({ onRefresh }) {
                                                             timer={timer}
                                                             displayTimezone={displayTimezone}
                                                             nowMs={nowMs}
+                                                            snapshotAtMs={snapshotAtMs}
                                                             resetHint={Boolean(resetHintMap[`${timer.timer_kind}-${timer.session_id}`])}
                                                         />
                                                     ))}
