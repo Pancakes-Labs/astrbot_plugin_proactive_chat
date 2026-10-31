@@ -14,6 +14,8 @@ const initialState = {
     error: '',
     // 首页状态汇总数据，对应后端 /api/status。
     status: null,
+    // 状态快照到达本地的时刻，用于把后端给出的整秒值继续在本地递增。
+    statusReceivedAt: 0,
     // 已知会话列表，可来自 HTTP 首载或 WebSocket 推送。
     sessions: [],
     // 当前生效的全局配置快照，对应后端 /api/config。
@@ -55,7 +57,7 @@ function reducer(state, action) {
             // 统一把 falsy 值收敛为空字符串，减少渲染层判断分支。
             return { ...state, error: action.payload || '' };
         case 'SET_STATUS':
-            return { ...state, status: action.payload };
+            return { ...state, status: action.payload, statusReceivedAt: Date.now() };
         case 'SET_SESSIONS':
             return { ...state, sessions: action.payload || [] };
         case 'SET_CONFIG':
