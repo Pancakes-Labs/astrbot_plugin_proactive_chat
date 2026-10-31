@@ -214,7 +214,7 @@ Starting from `v1.2.0`, the plugin introduced a brand-new, fully featured WebUI 
 | WeCom App | ⚠️ | v4.15.0+ | Proactive push is supported for WeCom Apps; WeCom Customer Service is untested | ❓ Awaiting community feedback |
 | WeCom Intelligent Bot | ✅ | v4.15.0+ | Supported, but requires a message push Webhook URL | ❓ Awaiting community feedback |
 | WeChat Official Account | ❓ | v4.8.0+ | No documentation available | ❓ Awaiting community feedback |
-| Personal WeChat | ❓ | v4.22.0+ | No precise official statement | ❓ Awaiting community feedback (may work based on past experience) |
+| Personal WeChat | ✅ | v4.22.0+ | No precise official statement | ✅ Confirmed usable by community feedback |
 | Feishu | ✅ | v4.15.0+ | Proactive push: supported | ✅ Confirmed usable by community feedback |
 | DingTalk | ✅ | v4.15.0+ | Proactive push: supported | ❓ Awaiting community feedback |
 | Telegram | ✅ | v4.15.0+ | Proactive push: supported | ❓ Awaiting community feedback |
@@ -231,7 +231,9 @@ Starting from `v1.2.0`, the plugin introduced a brand-new, fully featured WebUI 
 
 > [!NOTE]
 >
-> When using a QQ Official Bot, do not enter the QQ number like you would for a personal account. Use the UID instead. You can obtain it with the `/sid` command. The format looks like `4C011A2B3D4C5E6F9F8E7D6C5B4A3210`.
+> When using a QQ Official Bot, do not enter the QQ number like you would for a personal account. Use the openid / UID instead. You can obtain it with the `/sid` command. The format looks like `4C011A2B3D4C5E6F9F8E7D6C5B4A3210`.
+>
+> Since AstrBot v4.28.0, if "Isolated Session" (`platform_settings.unique_session`) is enabled, the third segment of a group UMO becomes `member_openid_group_openid`. Always copy the whole UMO printed by `/sid` instead of only one of the two openids.
 >
 > Personal WeChat requires the latest mobile WeChat version: iOS >= 8.0.70, Android >= 8.0.69, and the ClawBot plugin must be present in WeChat.
 
