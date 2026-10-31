@@ -50,15 +50,33 @@
         return Math.max(0, Math.ceil((targetMs - Number(nowMs || Date.now())) / 1000));
     }
 
-    // 计时器对象统一读取剩余秒数：优先使用后端字段，缺失时按目标时间推导。
-    function resolveTimerRemainingSeconds(timer, nowMs) {
-        const numeric = Number(timer && timer.remaining_seconds);
-        if (Number.isFinite(numeric)) {
-            return Math.max(0, numeric);
+    // 计时器剩余秒数的统一来源，按“后端快照 + 本地流逝”递增，避免整秒值停滞。
+    // 优先使用快照秒数：它与服务器时钟同源，可规避浏览器与服务器时钟偏差；
+    // 快照缺失时才退回目标时间推导，两者都没有时返回 null 交由调用方显示“待确认”。
+    function resolveTimerRemainingSeconds(timer, nowMs, snapshotAtMs) {
+        if (!timer) return null;
+        const now = Number(nowMs || Date.now());
+
+        // 显式判空，避免 null 被 Number() 变成 0 而误判为“已归零”。
+        const rawRemaining = timer.remaining_seconds;
+        if (rawRemaining !== null && rawRemaining !== undefined && rawRemaining !== '') {
+            const numeric = Number(rawRemaining);
+            if (Number.isFinite(numeric)) {
+                const snapshot = Number(snapshotAtMs);
+                if (!Number.isFinite(snapshot) || snapshot <= 0) {
+                    return Math.max(0, numeric);
+                }
+                const elapsedSeconds = Math.max(0, Math.floor((now - snapshot) / 1000));
+                return Math.max(0, numeric - elapsedSeconds);
+            }
         }
-        const targetMs = toEpochMs(timer && timer.target_time);
-        if (targetMs === null) return 0;
-        return Math.max(0, Math.ceil((targetMs - Number(nowMs || Date.now())) / 1000));
+
+        const targetMs = toEpochMs(timer.target_time);
+        if (targetMs !== null) {
+            return Math.max(0, Math.ceil((targetMs - now) / 1000));
+        }
+
+        return null;
     }
 
     window.TimeDomain = Object.freeze({
