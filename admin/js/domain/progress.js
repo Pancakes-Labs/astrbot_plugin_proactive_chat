@@ -60,8 +60,14 @@
 
             if (currentPriority === existingPriority) {
                 // 类型优先级相同时保留更快触发的那张卡，突出最紧迫状态。
-                const currentRemaining = Number(card.remaining_seconds !== undefined ? card.remaining_seconds : Number.MAX_SAFE_INTEGER);
-                const existingRemaining = Number(existing.remaining_seconds !== undefined ? existing.remaining_seconds : Number.MAX_SAFE_INTEGER);
+                // 剩余秒数缺失（null/undefined）应视为“最不紧迫”，避免 Number(null) 被当成 0。
+                const toSortableRemaining = (value) => {
+                    if (value === null || value === undefined || value === '') return Number.MAX_SAFE_INTEGER;
+                    const numeric = Number(value);
+                    return Number.isFinite(numeric) ? numeric : Number.MAX_SAFE_INTEGER;
+                };
+                const currentRemaining = toSortableRemaining(card.remaining_seconds);
+                const existingRemaining = toSortableRemaining(existing.remaining_seconds);
                 if (currentRemaining < existingRemaining) {
                     merged.set(key, card);
                 }
@@ -72,22 +78,26 @@
     }
 
     // 状态页计时器卡片：把后端字段换算成可直接渲染的文案与样式字段。
-    function resolveStatusTimerCard(timer, nowMs, displayTimezone) {
+    function resolveStatusTimerCard(timer, nowMs, displayTimezone, snapshotAtMs) {
         const targetTime = window.TimeDomain.toDate(timer.target_time);
-        const remainingSeconds = window.TimeDomain.resolveTimerRemainingSeconds(timer, nowMs);
+        const remainingSeconds = window.TimeDomain.resolveTimerRemainingSeconds(timer, nowMs, snapshotAtMs);
+        // 只要剩余秒数可推导即可展示倒计时，target_time 仅用于展示目标时间文本。
+        const hasLiveRemaining = remainingSeconds !== null && Number.isFinite(remainingSeconds);
         const windowSeconds = Math.max(0, Number(timer.window_seconds !== undefined ? timer.window_seconds : 0));
 
-        const fallbackProgress = windowSeconds > 0
+        // 有总窗口时用“窗口 - 实时剩余”推导进度，避免沿用后端快照值导致进度条长时间不动。
+        const derivedProgress = hasLiveRemaining && windowSeconds > 0
             ? clampPercent(((windowSeconds - remainingSeconds) / windowSeconds) * 100)
-            : 0;
-        const progressPercent = clampPercent(
-            timer.progress_percent !== undefined && timer.progress_percent !== null
-                ? timer.progress_percent
-                : fallbackProgress
-        );
+            : null;
+        const backendProgress = (timer.progress_percent !== undefined && timer.progress_percent !== null)
+            ? Number(timer.progress_percent)
+            : null;
+        const progressPercent = derivedProgress !== null
+            ? derivedProgress
+            : clampPercent(Number.isFinite(backendProgress) ? backendProgress : 0);
 
         const statusMeta = resolveProgressStatus(
-            targetTime ? remainingSeconds : null,
+            hasLiveRemaining ? remainingSeconds : null,
             {
                 future: '稳定运行',
                 soon: '正常计时',
@@ -128,7 +138,7 @@
             kindBadgeLabel: kindBadgeLabel,
             sourceModeLabel: window.resolveSourceModeLabel(timer.source_mode),
             unansweredLabel: window.formatUnansweredLabel(timer.unanswered_count, timer.max_unanswered_times),
-            countdownText: targetTime
+            countdownText: hasLiveRemaining
                 ? (remainingSeconds > 0
                     ? `${window.formatDuration(remainingSeconds, { compact: true, maxUnits: 3 })} 后到期`
                     : '等待下一轮刷新确认')
