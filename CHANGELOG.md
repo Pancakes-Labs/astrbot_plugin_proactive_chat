@@ -6,6 +6,45 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+# 2026/11/01 v1.3.0-beta.1
+
+## 🚀 What's Changed
+
+### ♻️ Refactor (重构)
+
+- 后端模块重构 by @DBJD-CR in #110
+  - 主动消息现按阶段处理，并优化上下文准备、消息发送和历史记录管理
+  - 优化会话识别与平台适配，增强对不同 LLM 服务接口的兼容性
+  - 改进自动触发及消息处理期间的会话状态管理
+
+- 前端模块重构 by @DBJD-CR in #114
+  - 修复配置保存、渲染优化、无障碍等事项
+  - 收敛重复逻辑，统一处理入口，新增一批 hooks
+  - 重构 WS 主通道、拆分配置渲染器、鉴权复用、样式逻辑优化等
+
+### 🐛 Bug Fixes (修复)
+
+- 适配新版 AstrBot，对齐 Provider 调用的会话与对话标识传参 by @hccnm & @DBJD-CR in #115
+- 修复了通过发版包安装的插件会有 WebUI 白屏的问题 by @DBJD-CR in [(4a9724e)](https://github.com/Pancakes-Labs/astrbot_plugin_proactive_chat/commit/4a9724e5c77bd0d76719445fa6609dea22b483f9)
+
+### 📚 Documentation (文档)
+
+- 更新适用于 v1.3.0-beta.1 的 README 文档、贡献指南和更新日志 by @DBJD-CR
+
+### 🔧 Chore (杂项)
+
+- 更新插件元数据中声明的支持平台 by @DBJD-CR
+
+---
+
+## ❤️ New Contributors
+
+- @hccnm made their first contribution in #115
+
+**Full Changelog**: https://github.com/Pancakes-Labs/astrbot_plugin_proactive_chat/compare/v1.2.6...v1.3.0-beta.1
+
+---
+
 # 2026/09/28 v1.2.6
 
 该版本预计将作为主动消息插件大更新之前的最后一个稳定版本。1.3 版本中我们将进行一轮大重构，便于后续新功能的开发与添加。
@@ -33,12 +72,13 @@
 
 ### 📚 Documentation (文档)
 
-- 更新适用于 v1.2.6 的 README 文档、贡献指南和更新日志 by @DBJD-CR in #108
+- 更新适用于 v1.2.6 的 README 文档、贡献指南和更新日志 by @DBJD-CR in #109
 
 ### 🔧 Chore (杂项)
 
 - 代码格式与质量检查工作流使用的 ruff 版本固定为 0.14.2 by @DBJD-CR in #104
-- 更新插件要求的最低 AstrBot 版本为 `4.24.0` by @DBJD-CR in #108
+- 更新 Github Actions 版本 by @dependabot[bot] in #108
+- 更新插件要求的最低 AstrBot 版本为 `4.24.0` by @DBJD-CR in #109
 
 ---
 
@@ -708,7 +748,7 @@ v1.0.0-beta.1是一次从架构到功能的全面升级，首次实现了完整�
 ### **🚀 性能与健壮性优化 (Performance & Robustness)**
 
 - 为重构后的主函数设计了新的并发处理逻辑，确保所有对会话数据的读写操作都在异步锁的保护下进行，解决了潜在的数据竞争风险
-- 使用更现代的异步处理方式，用 `asyncio.to_thread` 替代了 `loop.run_in_executor` 
+- 使用更现代的异步处理方式，用 `asyncio.to_thread` 替代了 `loop.run_in_executor`
 - 在时区配置无效并回退到系统时区时，增加了一条明确的警告日志，方便用户排查潜在的配置问题
 
 ### **🎨 代码质量与规范 (Code Quality & Style)**
