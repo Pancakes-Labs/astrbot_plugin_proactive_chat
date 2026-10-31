@@ -26,7 +26,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/AstrBot-v4.27.4%20Compatible-brightgreen.svg" alt="Compatible with AstrBot v4.27.4">
   <img src="https://img.shields.io/github/v/release/Pancakes-Labs/astrbot_plugin_proactive_chat?label=Release&color=brightgreen" alt="Latest Release">
-  <img src="https://img.shields.io/badge/QQ群-1033089808-12B7F3.svg" alt="QQ群">
+  <img src="https://img.shields.io/badge/QQ群-1130257565-12B7F3.svg" alt="QQ群">
 </p>
 
 <p align="center">
@@ -128,11 +128,11 @@
 > [!TIP]
 > 本项目的相关开发数据 (持续更新中)：
 >
-> 开发时长：累计 70 天（主插件部分）
+> 开发时长：累计 77 天（主插件部分）
 >
-> 累计工时：约 327 小时（主插件部分）
+> 累计工时：约 339 小时（主插件部分）
 >
-> Tokens Used：731,817,728
+> Tokens Used：859,607,913
 
 ## 🌟 功能特色
 
@@ -194,21 +194,63 @@ Session ID: 「123456789」
 >
 > 更不要照抄这里的示例或者是配置描述，一切情况以你自己实际为准。
 
-如果是 QQ 官方机器人，类似于：
+QQ 官方机器人的 `/sid` 输出会随 **AstrBot 版本** 与 **「隔离会话」(`platform_settings.unique_session`) 开关** 而不同，这是 AstrBot 核心行为，与本插件无关。请先对照下表确认自己属于哪种情况：
+
+| AstrBot 版本 | 隔离会话 | UMO 第三段是什么 | `/sid` 是否出现 `The group's ID` |
+| :--- | :--- | :--- | :--- |
+| < v4.28.0 | 关闭 | 群 openid (`7E933A67...`) | ❌ 不出现 |
+| < v4.28.0 | 开启 | 成员 openid（不含群信息） | ✅ 出现，需用它拼群 UMO |
+| ≥ v4.28.0 | 关闭 | 群 openid (`7E933A67...`) | ❌ 不出现 |
+| ≥ v4.28.0 | 开启 | `成员openid_群openid` (`4C011A2B..._7E933A67...`) | ✅ 出现 |
+
+> 分界线是 **AstrBot v4.28.0**。该版本起，QQ 官机在隔离会话模式下的会话 ID 由「仅成员 openid」改为「成员 openid + 群 openid 下划线拼接」，用于修复隔离模式下主动推送可能发错群的问题。
+
+**v4.28.0 及以上**：
+
+未开启隔离会话时，输出与普通群聊一致，直接复制 UMO 即可：
+
+```text
+UMO: 「default:GroupMessage:7E933A67F5C0AD0A128A199EFCE140B4」
+UID: 「4C011A2B3D4C5E6F9F8E7D6C5B4A3210」
+*Use UMO to set whitelist and configure routing, use UID to set admin list(UMO 可用于设置白名单和配置文件路由，UID 可用于设置管理员列表)
+
+Your session information:
+Bot ID: 「default」
+Message Type: 「GroupMessage」
+Session ID: 「7E933A67F5C0AD0A128A199EFCE140B4」
+```
+
+开启隔离会话后，UMO 第三段会变长（两段 openid 用 `_` 连接），**请整串复制，不要只取其中一段**：
+
+```text
+UMO: 「default:GroupMessage:4C011A2B3D4C5E6F9F8E7D6C5B4A3210_7E933A67F5C0AD0A128A199EFCE140B4」
+UID: 「4C011A2B3D4C5E6F9F8E7D6C5B4A3210」
+Your session information:
+Session ID: 「4C011A2B3D4C5E6F9F8E7D6C5B4A3210_7E933A67F5C0AD0A128A199EFCE140B4」
+
+The group's ID: 「7E933A67F5C0AD0A128A199EFCE140B4」. Set this ID to whitelist to allow the entire group.
+```
+
+**v4.27.x 及以下**：
+
+旧版在隔离会话模式下，UMO 第三段只有成员 openid，无法直接定位群，因此需要借助 `The group's ID` 拼出群 UMO：
 
 ```text
 UMO: 「default:GroupMessage:4C011A2B3D4C5E6F9F8E7D6C5B4A3210」
 UID: 「4C011A2B3D4C5E6F9F8E7D6C5B4A3210」
-*Use UMO to set whitelist and configure routing, use UID to set admin list(UMO 可用于设置白名单和配置文件路由，UID 可用于设置管理员列表)
 Your session information:
-Bot ID: 「default」
-Message Type: 「GroupMessage」
 Session ID: 「4C011A2B3D4C5E6F9F8E7D6C5B4A3210」
+
 The group's ID: 「7E933A67F5C0AD0A128A199EFCE140B4」. Set this ID to whitelist to allow the entire group.
 ```
 
-- 私聊推送请填 UMO 的部分，即 `default:FriendMessage:4C011A2B3D4C5E6F9F8E7D6C5B4A3210`。
-- 群聊推送请用 `The group's ID` 替换掉 `UID` 的部分，即填写 `default:GroupMessage:7E933A67F5C0AD0A128A199EFCE140B4`。
+此时群聊推送需用 `The group's ID` 替换掉 `UID` 部分，即填写 `default:GroupMessage:7E933A67F5C0AD0A128A199EFCE140B4`。
+
+**通用填写规则**：
+
+- 私聊推送：直接填 UMO 整串，例如 `default:FriendMessage:4C011A2B3D4C5E6F9F8E7D6C5B4A3210`。
+- 群聊推送：一律**原样复制** `/sid` 返回的 UMO 整串。不确定版本时，最稳妥的做法就是照抄 UMO，不要手拼。
+- 若 `/sid` 没有出现 `The group's ID`，说明当前未开启隔离会话，此时 UMO 第三段本身就是群标识，无需额外处理。
 
 其他平台配置流程基本类似。完成后重载插件即可开始发送主动消息。
 
@@ -248,7 +290,7 @@ The group's ID: 「7E933A67F5C0AD0A128A199EFCE140B4」. Set this ID to whitelist
 | 企微应用 | ⚠️ | v4.15.0+ | 主动消息推送：企业微信应用支持，未测试企业微信客服。 | ❓ 等待社区反馈 |
 | 企微智能机器人 | ✅ | v4.15.0+ | 主动消息推送：支持，但需要配置消息推送 Webhook URL。 | ❓ 等待社区反馈 |
 | 微信公众号 | ❓ | v4.8.0+ | 未提供说明 | ❓ 等待社区反馈 |
-| 个人微信 | ❓ | v4.22.0+ | 未提供准确说明 | ❓ 等待社区反馈 (但根据过往经验或许可用) |
+| 个人微信 | ✅ | v4.22.0+ | 未提供准确说明 | ✅ 社区反馈可用 |
 | 飞书 | ✅ | v4.15.0+ | 主动消息推送：支持 | ✅ 社区反馈可用 |
 | 钉钉 | ✅ | v4.15.0+ | 主动消息推送：支持 | ❓ 等待社区反馈 |
 | Telegram | ✅ | v4.15.0+ | 主动消息推送：支持 | ✅ 社区反馈可用 |
@@ -264,9 +306,22 @@ The group's ID: 「7E933A67F5C0AD0A128A199EFCE140B4」. Set this ID to whitelist
 | 其他平台 | ❓ | v4.8.0+ | - | ❓ 理论上支持所有支持主动消息推送的平台，但未经测试 |
 
 > [!NOTE]
-> 使用 QQ 官机时，注意不要像个人号那样填写 QQ 号，应填写 UID，可使用指令 `/sid` 获取，格式类似 `4C011A2B3D4C5E6F9F8E7D6C5B4A3210`。
+> 使用 QQ 官机时，注意不要像个人号那样填写 QQ 号，应填写 openid / UID，可使用指令 `/sid` 获取，格式类似 `4C011A2B3D4C5E6F9F8E7D6C5B4A3210`。
+>
+> 从 AstrBot v4.28.0 起，若开启了「隔离会话」，群聊 UMO 的第三段会变成 `成员openid_群openid` 形式，请整串复制 `/sid` 返回的 UMO，详见上方「推送会话列表」中的版本对照表。
 >
 > 使用个人微信需要升级到最新的手机微信版本：iOS >= 8.0.70，Android >= 8.0.69，并确保微信中包含 ClawBot 插件。
+
+> [!IMPORTANT]
+> **个人微信的活跃度限制**：该通道的主动消息依赖微信下发的 `context_token` 会话凭据，而这个凭据只有在你本人主动给 Bot 发过消息后才会刷新。
+>
+> 因此如果一段时间没和 Bot 聊天，主动消息可能持续推送失败（日志中表现为 `ret=-2, errcode=0, errmsg=prepare failed`），直到你再次发一条消息才会恢复。这不是插件故障，频繁重试也无效，反而会白白消耗 LLM 调用。
+>
+> 实用建议：
+>
+> - 个人微信更适合日常会经常聊天的会话，把它当作偶尔联系的长期推送通道并不合适；需要稳定长期主动推送，建议改用 QQ 个人号或官方机器人等通道。
+> - 多聊多回，适当调短主动消息间隔。
+> - 若日志出现 `context token missing, skip send`，说明本地根本没有可用凭据，此时先和 Bot 聊一句即可激活。
 
 PS: 由于我个人本地的测试环境有限，我们非常欢迎分享你在任何平台上的使用体验！
 
@@ -881,7 +936,10 @@ PS: 由于我个人本地的测试环境有限，我们非常欢迎分享你在�
 - **工具模块 (`utils/`)**：位于根目录，放置跨模块复用的通用工具，例如时间处理与版本读取。
 - **根目录**：保留插件入口、配置结构、依赖声明与项目说明文档等关键文件。
 
-当前目录结构示例：
+目录结构示例如下：
+
+<details>
+<summary>点击查看插件目录结构示例</summary>
 
 ```bash
 AstrBot/
@@ -994,6 +1052,8 @@ AstrBot/
 - `notifications_cache.json` 用于保存远端通知列表、本地已读状态与最近同步时间。
 - `.telemetry_id` 用于为当前安装实例生成稳定匿名标识，便于遥测平台聚合同一实例的事件。
 - `prompts_collection.md`、`user_config_snapshot.json`：v1.2.0 版本前保存的配置备份与提示词备份。由于新版本重构需要，在 v1.2.0 中暂时移除了相关功能。您可根据这些备份文件来辅助您恢复更新前的个性化配置。
+
+</details>
 
 ---
 
@@ -1615,7 +1675,9 @@ flowchart LR
 
 >**A**: QQ 官方机器人进行主动消息请使用大于等于 v4.22.1 的 AstrBot 版本。
 >
-> 使用 QQ 官机时，注意不要像个人号那样填写 QQ 号，应填写 UID，可使用指令 `/sid` 获取，格式类似 `4C011A2B3D4C5E6F9F8E7D6C5B4A3210`。
+> 使用 QQ 官机时，注意不要像个人号那样填写 QQ 号，应填写 openid 或 UID，可使用指令 `/sid` 获取，格式类似 `4C011A2B3D4C5E6F9F8E7D6C5B4A3210`。
+>
+> 另请注意：AstrBot v4.28.0 起，开启「隔离会话」后 QQ 官机群聊 UMO 的第三段为 `成员openid_群openid`，必须整串填入，只复制其中一段会导致会话找不到。
 
 </details>
 
@@ -1764,7 +1826,7 @@ flowchart LR
 ## 🚧 最新版本的已知限制
 
 - **Prompt 依赖**: 主动消息的效果，高度依赖于用户在提示词中提供的创造力和引导。也依赖于私聊/群聊中是否有足够丰富的上下文和 LLM 本身的模型能力。
-- **框架限制**: 由于 AstrBot 本身的限制，部分消息平台可能无法正常使用本插件的功能。
+- **框架和平台限制**: 由于 AstrBot 本身或部分消息平台的限制，部分平台可能无法完全正常使用本插件的功能。
 
 ## 💖 友情链接与致谢
 
@@ -1778,9 +1840,10 @@ flowchart LR
 
 我的其他插件：
 
-- [灾害预警(Disaster_Warning)](https://github.com/Pancakes-Labs/astrbot_plugin_disaster_warning) - 它能让你的 Bot 提供实时的地震、海啸、台风、气象预警信息推送服务。
-- [视奸面板(Live_Dashboard)](https://github.com/Pancakes-Labs/astrbot_plugin_live_dashboard) - 它能让你的 Bot 和群友可以随时随地视奸你手机和电脑的活动状态。
+- [灾害预警 (Disaster_Warning)](https://github.com/Pancakes-Labs/astrbot_plugin_disaster_warning) - 它能让你的 Bot 提供实时的地震、海啸、台风、气象预警信息推送服务。
+- [视奸面板 (Live_Dashboard)](https://github.com/Pancakes-Labs/astrbot_plugin_live_dashboard) - 它能让你的 Bot 和群友可以随时随地视奸你手机和电脑的活动状态。
 - [代码统计 (Count_Loc)](https://github.com/Pancakes-Labs/astrbot_plugin_count_loc) - 它能让你的 Bot 对任意公开的 GitHub 或 GitLab 仓库的代码行数、文件数量、注释行数、物理总行数等指标进行快捷获取和分析。
+- [影子封禁 (Shadow_Ban)](https://github.com/Pancakes-Labs/astrbot_plugin_shadow_ban) - Ban 掉你不喜欢的人，别让你 LLM 宝贵的 Token 浪费掉。
 
 ## 📞 联系我们
 
