@@ -20,17 +20,21 @@
     }
 
     function startTimer() {
-        if (timer) return;
-        timer = setInterval(() => {
+        if (timer || listeners.size === 0) return;
+        // 递归 setTimeout 并对其到下一个整秒，避免 setInterval 累积漂移
+        // 导致秒数偶发跳两秒或卡住一拍。
+        const delay = 1000 - (Date.now() % 1000);
+        timer = setTimeout(() => {
+            timer = null;
             // 页面隐藏时暂停刷新，回到前台后由 visibilitychange 立即补一帧。
-            if (document.visibilityState === 'hidden') return;
-            notify();
-        }, 1000);
+            if (document.visibilityState !== 'hidden') notify();
+            startTimer();
+        }, delay);
     }
 
     function stopTimerIfIdle() {
         if (listeners.size > 0 || !timer) return;
-        clearInterval(timer);
+        clearTimeout(timer);
         timer = null;
     }
 
