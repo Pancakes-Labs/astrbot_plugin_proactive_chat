@@ -108,17 +108,52 @@ def supported_provider_kwargs(provider: Any) -> tuple[set[str], bool] | None:
     return keyword_names, accepts_any
 
 
-async def invoke_provider(provider: Any, req: Any) -> Any:
+DOUYIN_TOOL_LOOP_AVAILABLE = True
+DOUYIN_TOOL_NAMES = frozenset({
+    "douyin_watch_recommended", "douyin_comment_watched",
+})
+
+
+async def invoke_provider(
+    provider: Any, req: Any, *, context: Any = None, event: Any = None,
+    session_config: dict | None = None, trigger: str = "",
+) -> Any:
     """调用 Provider，并按运行时能力裁剪不支持的可选参数。
 
     先组装候选参数，再依据 text_chat 签名过滤，保证兼容旧版本 Provider。
     可选参数仅在取到有效值时才传入，避免覆盖 Provider 自身的默认行为。
     """
+    # Execute only integration tools left by the request permission hooks.
+    # The framework loop cannot preserve a request-level model override.
+    if (
+        context is not None and event is not None
+        and trigger == "schedule"
+        and (session_config or {}).get("enable") is True
+        and callable(getattr(context, "tool_loop_agent", None))
+        and event.get_extra("douyin_proactive_tool_loop", False) is True
+        and not getattr(req, "model", None)
+    ):
+        from astrbot.core.agent.tool import ToolSet
+
+        selected = ToolSet([
+            tool for tool in getattr(getattr(req, "func_tool", None), "func_list", [])
+            if tool.name in DOUYIN_TOOL_NAMES and tool.active
+        ])
+        if selected:
+            return await context.tool_loop_agent(
+                event=event, chat_provider_id=provider.meta().id,
+                prompt=getattr(req, "prompt", None),
+                contexts=getattr(req, "contexts", None),
+                system_prompt=getattr(req, "system_prompt", None),
+                extra_user_content_parts=getattr(req, "extra_user_content_parts", None),
+                tools=selected, max_steps=4, tool_call_timeout=180,
+            )
+
     call_kwargs: dict[str, Any] = {
         "prompt": getattr(req, "prompt", None),
         "contexts": getattr(req, "contexts", None),
         "system_prompt": getattr(req, "system_prompt", None),
-        "func_tool": getattr(req, "func_tool", None),
+        "func_tool": None,  # Single-shot calls do not execute tools.
     }
     extra_parts = getattr(req, "extra_user_content_parts", None)
     if extra_parts:
