@@ -251,19 +251,29 @@ class ContextService:
             return None
         return platform_id, user_key
 
-    def build_platform_history_user_candidates(self, user_key: str) -> list[str]:
+    def build_platform_history_user_candidates(
+        self, user_key: str, raw_session_id: str | None = None
+    ) -> list[str]:
         """构建平台流水 user_id 候选键（兼容 webchat 等格式）。
+
+        AstrBot 核心写入平台流水时使用完整 UMO（str(session)）作为 user_id，
+        因此必须优先用完整 UMO 查询，再回退裸会话 ID；否则只能查到插件自行
+        补写到裸会话 ID 键下的主动消息，看不到真实的群聊记录。
 
         webchat 场景下 user_key 可能形如 “xxx!yyy”，需同时尝试后半段。
         """
         if not isinstance(user_key, str) or not user_key:
-            return []
+            user_key = ""
 
         user_key = user_key.strip()
-        if not user_key:
-            return []
 
-        candidates: list[str] = [user_key]
+        candidates: list[str] = []
+        if isinstance(raw_session_id, str):
+            raw_session_id = raw_session_id.strip()
+            if raw_session_id and raw_session_id != user_key:
+                candidates.append(raw_session_id)
+        if user_key:
+            candidates.append(user_key)
 
         if "!" in user_key:
             maybe_session_id = user_key.split("!")[-1].strip()
@@ -293,7 +303,9 @@ class ContextService:
             return [], 0
 
         platform_id, raw_user_key = parsed
-        user_candidates = self.build_platform_history_user_candidates(raw_user_key)
+        user_candidates = self.build_platform_history_user_candidates(
+            raw_user_key, raw_session_id=session_id
+        )
         if not user_candidates:
             return [], 0
 
