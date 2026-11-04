@@ -299,6 +299,14 @@ class SenderService:
             return
 
         platform_id, _message_type, target_id = parsed
+        # 与 AstrBot 核心保持一致：核心以完整 UMO（str(session)）作为平台流水的
+        # user_id，插件此前使用裸会话 ID 补写，导致主动消息被写入独立的键空间，
+        # 读取侧按 UMO 查询时看不到群聊真实消息。
+        storage_user_id = (
+            session_id.strip()
+            if isinstance(session_id, str) and session_id.strip()
+            else target_id
+        )
         if platform_id == "webchat":
             return
         history_mgr = getattr(plugin.context, "message_history_manager", None)
@@ -323,13 +331,13 @@ class SenderService:
 
             await history_mgr.insert(
                 platform_id=platform_id,
-                user_id=target_id,
+                user_id=storage_user_id,
                 content={"type": "bot", "message": message_parts},
                 sender_id="bot",
                 sender_name="bot",
             )
             logger.debug(
-                f"[主动消息] 已将主动消息补写入平台 ({platform_id}) 的流水喵，会话标识为 {target_id}。"
+                f"[主动消息] 已将主动消息补写入平台 ({platform_id}) 的流水喵，会话标识为 {storage_user_id}。"
             )
         except Exception as e:
             logger.warning(f"[主动消息] 补写平台流水失败喵: {e}", exc_info=True)
