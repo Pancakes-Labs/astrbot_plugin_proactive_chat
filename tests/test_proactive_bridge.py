@@ -234,8 +234,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+        seen = {}
         async def broken_hook(ev, req):
-            self.assertTrue(extras["douyin_proactive_tool_loop"])
+            seen["marker"] = extras.get("douyin_proactive_tool_loop")
             req.func_tool = ToolSet([tool("douyin_comment_watched")])
             raise RuntimeError("later permission hook failed")
 
@@ -249,6 +250,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             event=event, trigger="schedule",
         )
         request = ns["invoke_provider"].call_args.args[1]
+        self.assertIs(seen.get("marker"), True)
+        self.assertIs(extras["douyin_proactive_tool_loop"], False)
         self.assertIsNone(request.func_tool)
         self.assertEqual(
             ns["invoke_provider"].call_args.kwargs["trigger"], "schedule",
