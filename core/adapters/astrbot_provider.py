@@ -9,7 +9,7 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-from astrbot.api.provider import ProviderRequest
+from astrbot.api.provider import LLMResponse, ProviderRequest
 
 
 def provider_request_fields() -> set[str] | None:
@@ -137,10 +137,10 @@ async def invoke_provider(
 
         selected = ToolSet([
             tool for tool in getattr(getattr(req, "func_tool", None), "func_list", [])
-            if tool.name in DOUYIN_TOOL_NAMES and tool.active
+            if tool.name == "douyin_watch_recommended" and tool.active
         ])
         if selected:
-            return await context.tool_loop_agent(
+            response = await context.tool_loop_agent(
                 event=event, chat_provider_id=provider.meta().id,
                 prompt=getattr(req, "prompt", None),
                 contexts=getattr(req, "contexts", None),
@@ -148,12 +148,28 @@ async def invoke_provider(
                 extra_user_content_parts=getattr(req, "extra_user_content_parts", None),
                 tools=selected, max_steps=4, tool_call_timeout=180,
             )
+            if isinstance(response, str):
+                return LLMResponse(role="assistant", completion_text=response)
+            return response
+
+    # Comments remain disabled until the integration supports durable idempotency
+    # and an atomic stale-run check at the actual public-send boundary.
+    original_tools = getattr(req, "func_tool", None)
+    plain_tools = original_tools
+    if original_tools is not None:
+        from astrbot.core.agent.tool import ToolSet
+
+        plain_tools = ToolSet([
+            tool for tool in original_tools.func_list
+            if tool.name not in DOUYIN_TOOL_NAMES
+        ])
+        plain_tools = plain_tools if plain_tools else None
 
     call_kwargs: dict[str, Any] = {
         "prompt": getattr(req, "prompt", None),
         "contexts": getattr(req, "contexts", None),
         "system_prompt": getattr(req, "system_prompt", None),
-        "func_tool": None,  # Single-shot calls do not execute tools.
+        "func_tool": plain_tools,
     }
     extra_parts = getattr(req, "extra_user_content_parts", None)
     if extra_parts:

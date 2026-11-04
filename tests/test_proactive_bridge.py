@@ -4,7 +4,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 
 class ToolSet:
@@ -19,14 +19,14 @@ class ToolSet:
 
 provider_api = types.ModuleType("astrbot.api.provider")
 provider_api.ProviderRequest = types.SimpleNamespace
+provider_api.LLMResponse = lambda **kw: types.SimpleNamespace(result_chain=None, **kw)
 tool_api = types.ModuleType("astrbot.core.agent.tool")
 tool_api.ToolSet = ToolSet
-sys.modules["astrbot.api.provider"] = provider_api
-sys.modules["astrbot.core.agent.tool"] = tool_api
 path = Path(__file__).resolve().parents[1] / "core/adapters/astrbot_provider.py"
 spec = importlib.util.spec_from_file_location("bridge_adapter", path)
 bridge = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bridge)
+with patch.dict(sys.modules, {provider_api.__name__: provider_api}):
+    spec.loader.exec_module(bridge)
 
 
 def tool(name, active=True):
@@ -38,6 +38,9 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
     """Check execution routing without invoking any real tool."""
 
     def setUp(self):
+        sdk = patch.dict(sys.modules, {tool_api.__name__: tool_api})
+        sdk.start()
+        self.addCleanup(sdk.stop)
         self.provider = types.SimpleNamespace(
             text_chat=AsyncMock(return_value="plain"),
             meta=lambda: types.SimpleNamespace(id="resolved-provider"),
@@ -66,7 +69,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         result = await bridge.invoke_provider(
             self.provider, self.req, **self.kwargs,
         )
-        self.assertEqual(result, "final-response")
+        self.assertEqual(result.completion_text, "final-response")
         args = self.context.tool_loop_agent.call_args.kwargs
         self.assertEqual(args["chat_provider_id"], "resolved-provider")
         self.assertIs(args["event"], self.event)
@@ -76,7 +79,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args["extra_user_content_parts"], ["temp"])
         self.assertEqual(
             [t.name for t in args["tools"].func_list],
-            ["douyin_watch_recommended", "douyin_comment_watched"],
+            ["douyin_watch_recommended"],
         )
         self.assertEqual(len(self.req.func_tool.func_list), 4)
         self.provider.text_chat.assert_not_awaited()
@@ -87,9 +90,10 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, "plain")
         self.context.tool_loop_agent.assert_not_awaited()
-        self.assertIsNone(
-            self.provider.text_chat.call_args.kwargs["func_tool"],
-        )
+        self.assertTrue(all(
+            t.name not in bridge.DOUYIN_TOOL_NAMES
+            for t in getattr(self.provider.text_chat.call_args.kwargs["func_tool"], "func_list", [])
+        ))
 
     async def test_disabled_session(self):
         self.kwargs["session_config"] = {"enable": False}
@@ -103,7 +107,10 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.context.tool_loop_agent = None
         result = await bridge.invoke_provider(self.provider, self.req, **self.kwargs)
         self.assertEqual(result, "plain")
-        self.assertIsNone(self.provider.text_chat.call_args.kwargs["func_tool"])
+        self.assertEqual(
+            [t.name for t in self.provider.text_chat.call_args.kwargs["func_tool"].func_list],
+            ["execute_shell", "inactive"],
+        )
 
     async def test_model_override_preserved_in_plain_path(self):
         self.req.model = "explicit-model"
@@ -163,6 +170,11 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        sdk = patch.dict(sys.modules, {tool_api.__name__: tool_api})
+        sdk.start()
+        self.addCleanup(sdk.stop)
+
     """Execute the actual service method with inert framework boundaries."""
 
     async def test_hook_failure_clears_partially_added_tools(self):

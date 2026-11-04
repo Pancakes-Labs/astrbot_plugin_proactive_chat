@@ -92,11 +92,15 @@ class LlmService:
         if event is None or EventType is None:
             return False
 
-        await dispatch_event_hook(event, EventType.OnWaitingLLMRequestEvent)
+        await dispatch_event_hook(
+            event, EventType.OnWaitingLLMRequestEvent, propagate_errors=True
+        )
         if event.is_stopped():
             return True
 
-        return await dispatch_event_hook(event, EventType.OnLLMRequestEvent, req)
+        return await dispatch_event_hook(
+            event, EventType.OnLLMRequestEvent, req, propagate_errors=True
+        )
 
     async def dispatch_llm_response_hooks(self, event: Any, resp: Any) -> bool:
         """派发 LLM 响应后置钩子。"""
