@@ -51,7 +51,14 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         spec.loader.exec_module(self.bridge)
         self.provider = types.SimpleNamespace(text_chat=AsyncMock(return_value="plain"),
                                               meta=lambda: types.SimpleNamespace(id="provider"))
-        self.context = types.SimpleNamespace(tool_loop_agent=AsyncMock(return_value="final"))
+        async def modern_loop(*, event, chat_provider_id, prompt=None,
+                              contexts=None, system_prompt=None,
+                              extra_user_content_parts=None, tools=None,
+                              max_steps=30, tool_call_timeout=120):
+            return "final"
+        loop = AsyncMock(return_value="final")
+        loop.__signature__ = inspect.signature(modern_loop)
+        self.context = types.SimpleNamespace(tool_loop_agent=loop)
         self.event = types.SimpleNamespace(get_extra=lambda key, default=False: True)
         self.kwargs = dict(context=self.context, event=self.event,
                            session_config={"enable": True}, trigger="schedule")

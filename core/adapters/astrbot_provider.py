@@ -83,6 +83,14 @@ def build_provider_request(
         )
 
 
+def tool_loop_accepts_extra_parts(tool_loop: Any) -> bool:
+    """Return whether the framework loop explicitly preserves temporary parts."""
+    try:
+        return "extra_user_content_parts" in inspect.signature(tool_loop).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def supported_provider_kwargs(provider: Any) -> tuple[set[str], bool] | None:
     """探测 Provider.text_chat 的关键字参数接口。
 
@@ -130,6 +138,7 @@ async def invoke_provider(
         and trigger == "schedule"
         and (session_config or {}).get("enable") is True
         and callable(getattr(context, "tool_loop_agent", None))
+        and tool_loop_accepts_extra_parts(context.tool_loop_agent)
         and event.get_extra("douyin_proactive_tool_loop", False) is True
         and not getattr(req, "model", None)
     ):

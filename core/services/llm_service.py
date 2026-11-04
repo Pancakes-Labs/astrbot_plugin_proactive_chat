@@ -12,7 +12,9 @@ from astrbot.api import logger
 
 from ...utils.time_utils import format_current_time
 from ..adapters.astrbot_event import dispatch_event_hook
-from ..adapters.astrbot_provider import build_provider_request, invoke_provider
+from ..adapters.astrbot_provider import (
+    build_provider_request, invoke_provider, tool_loop_accepts_extra_parts,
+)
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -195,6 +197,7 @@ class LlmService:
             enabled = (
                 trigger == "schedule" and session_config.get("enable") is True
                 and callable(getattr(plugin.context, "tool_loop_agent", None))
+                and tool_loop_accepts_extra_parts(plugin.context.tool_loop_agent)
                 and not getattr(req, "model", None)
             )
             event.set_extra("douyin_proactive_tool_loop", enabled)

@@ -1,5 +1,6 @@
 """Offline bridge contracts; no device or public API calls."""
 import importlib.util
+import inspect
 import sys
 import types
 import unittest
@@ -34,6 +35,13 @@ def tool(name, active=True):
     return types.SimpleNamespace(name=name, active=active)
 
 
+async def compatible_tool_loop_agent(*, event, chat_provider_id, prompt=None,
+                            contexts=None, system_prompt=None,
+                            extra_user_content_parts=None, tools=None,
+                            max_steps=30, tool_call_timeout=120):
+    return "final-response"
+
+
 class BridgeTests(unittest.IsolatedAsyncioTestCase):
     """Check execution routing without invoking any real tool."""
 
@@ -45,9 +53,9 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             text_chat=AsyncMock(return_value="plain"),
             meta=lambda: types.SimpleNamespace(id="resolved-provider"),
         )
-        self.context = types.SimpleNamespace(
-            tool_loop_agent=AsyncMock(return_value="final-response"),
-        )
+        loop = AsyncMock(return_value="final-response")
+        loop.__signature__ = inspect.signature(compatible_tool_loop_agent)
+        self.context = types.SimpleNamespace(tool_loop_agent=loop)
         self.event = types.SimpleNamespace(
             get_extra=lambda key, default=False: True,
         )
@@ -160,6 +168,20 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         ])
         await self.fallback()
 
+    async def test_legacy_tool_loop_falls_back_without_losing_plain_path(self):
+        async def legacy_tool_loop(*, event, chat_provider_id, prompt=None,
+                                   contexts=None, system_prompt=None, tools=None,
+                                   max_steps=30, tool_call_timeout=120):
+            return "legacy"
+        legacy = AsyncMock(side_effect=legacy_tool_loop)
+        legacy.__signature__ = inspect.signature(legacy_tool_loop)
+        self.context.tool_loop_agent = legacy
+        await self.fallback()
+        self.assertEqual(
+            self.provider.text_chat.call_args.kwargs["extra_user_content_parts"],
+            ["temp"],
+        )
+
     async def test_loop_error_does_not_replay(self):
         self.context.tool_loop_agent.side_effect = TimeoutError("unknown")
         with self.assertRaises(TimeoutError):
@@ -193,6 +215,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
                 **kw, func_tool=None,
             ),
             "invoke_provider": AsyncMock(return_value=None),
+            "tool_loop_accepts_extra_parts": bridge.tool_loop_accepts_extra_parts,
         }
         exec(compile(ast.Module(body=[method], type_ignores=[]),
                      str(source_path), "exec"), ns)
@@ -201,9 +224,11 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             set_extra=lambda key, value: extras.update({key: value}),
         )
         provider = object()
+        modern_loop = AsyncMock()
+        modern_loop.__signature__ = inspect.signature(compatible_tool_loop_agent)
         plugin = types.SimpleNamespace(
             timezone=None, telemetry=None,
-            context=types.SimpleNamespace(tool_loop_agent=AsyncMock()),
+            context=types.SimpleNamespace(tool_loop_agent=modern_loop),
             context_service=types.SimpleNamespace(
                 sanitize_history_content=lambda history: history,
             ),
@@ -228,6 +253,57 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             ns["invoke_provider"].call_args.kwargs["trigger"], "schedule",
         )
+
+
+    async def test_legacy_tool_loop_disables_marker_and_plain_path(self):
+        import ast
+        import logging
+
+        source_path = path.parents[1] / "services/llm_service.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+        method = next(n for n in cls.body
+                      if getattr(n, "name", "") == "generate_llm_response")
+        ns = {
+            "Any": object, "logger": logging.getLogger("bridge-test"),
+            "format_current_time": lambda tz: "now",
+            "build_provider_request": lambda **kw: types.SimpleNamespace(
+                **kw, func_tool=None,
+            ),
+            "invoke_provider": AsyncMock(return_value=None),
+            "tool_loop_accepts_extra_parts": bridge.tool_loop_accepts_extra_parts,
+        }
+        exec(compile(ast.Module(body=[method], type_ignores=[]),
+                     str(source_path), "exec"), ns)
+        extras = {}
+        event = types.SimpleNamespace(
+            set_extra=lambda key, value: extras.update({key: value}),
+        )
+        async def legacy_loop(*, event, chat_provider_id, prompt=None,
+                               contexts=None, system_prompt=None, tools=None,
+                               max_steps=30, tool_call_timeout=120):
+            return "legacy"
+        legacy = AsyncMock(side_effect=legacy_loop)
+        legacy.__signature__ = inspect.signature(legacy_loop)
+        plugin = types.SimpleNamespace(
+            timezone=None, telemetry=None,
+            context=types.SimpleNamespace(tool_loop_agent=legacy),
+            context_service=types.SimpleNamespace(
+                sanitize_history_content=lambda history: history,
+            ),
+        )
+        service = types.SimpleNamespace(
+            plugin=plugin, build_extra_content_parts=lambda **kw: [],
+            resolve_chat_provider=AsyncMock(return_value=object()),
+            dispatch_llm_request_hooks=AsyncMock(return_value=False),
+        )
+        await ns["generate_llm_response"](
+            service, "session", {"enable": True}, [], "", 0,
+            event=event, trigger="schedule",
+        )
+        self.assertIs(extras["douyin_proactive_tool_loop"], False)
+        self.assertIsNone(ns["invoke_provider"].call_args.args[1].func_tool)
+        legacy.assert_not_awaited()
 
 
 if __name__ == "__main__":
