@@ -13,7 +13,7 @@ from astrbot.api import logger
 
 from ...utils.time_utils import is_quiet_time
 from ..adapters.astrbot_conversation import (
-    add_assistant_message,
+    add_proactive_message_pair,
     verify_message_persisted,
 )
 from ..domain.domain_enums import HookPoint, StageResult, TriggerSource
@@ -190,9 +190,8 @@ class FlowOrchestrator:
             logger.debug("[主动消息] 本次结果无文本内容，跳过对话历史存档喵。")
         else:
             try:
-                await add_assistant_message(
+                await add_proactive_message_pair(
                     plugin.context.conversation_manager,
-                    session_id,
                     conv_id,
                     assistant_response,
                 )
