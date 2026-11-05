@@ -196,7 +196,8 @@ class LlmService:
             # 钩子可能已部分注入工具，失败后整体丢弃，避免半注入状态被执行。
             logger.error(f"[主动消息] 派发 LLM 前置钩子失败喵: {e}")
             req.func_tool = None
-            stopped = False
+            # 钩子可能先请求停止事件再抛错，停止意图需保留。
+            stopped = self._safe_is_stopped(event)
         if stopped:
             logger.info("[主动消息] LLM 前置钩子终止了事件传播，放弃本次请求喵。")
             return None, final_user_simulation_prompt
@@ -299,6 +300,16 @@ class LlmService:
         return llm_response_obj, self.resolve_final_user_prompt(
             req, final_user_simulation_prompt
         )
+
+    @staticmethod
+    def _safe_is_stopped(event: Any) -> bool:
+        """读取事件停止状态，事件缺失或实现异常时视为未停止。"""
+        if event is None:
+            return False
+        try:
+            return bool(event.is_stopped())
+        except Exception:
+            return False
 
     @staticmethod
     def resolve_final_user_prompt(req: Any, fallback: str) -> str:

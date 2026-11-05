@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from typing import Any
 
 from astrbot.api import logger
@@ -117,6 +118,22 @@ TOOL_UNAVAILABLE_NOTICE = (
 )
 
 
+def serialize_tool_arguments(arguments: Any) -> str:
+    """把工具参数统一成 JSON 字符串。
+
+    Provider 返回的 tools_call_args 是 dict 列表，而 ToolCall.FunctionBody
+    的 arguments 字段只接受字符串或 None，直接传 dict 会触发校验异常。
+    """
+    if arguments is None:
+        return "{}"
+    if isinstance(arguments, str):
+        return arguments or "{}"
+    try:
+        return json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "{}"
+
+
 def build_tool_calls_result(llm_response: Any) -> Any:
     """把模型的工具调用请求包装为不可用回执，供下一轮请求回灌。"""
     from astrbot.core.agent.message import (
@@ -135,7 +152,9 @@ def build_tool_calls_result(llm_response: Any) -> Any:
             id=str(call_id or f"proactive-unavailable-{index}"),
             function=ToolCall.FunctionBody(
                 name=function_name,
-                arguments=args[index] if index < len(args) else "{}",
+                arguments=serialize_tool_arguments(
+                    args[index] if index < len(args) else None
+                ),
             ),
         )
         for index, (function_name, call_id) in enumerate(zip(names, call_ids or names))
