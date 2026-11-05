@@ -538,13 +538,11 @@ class SenderService:
                 event, base_components
             )
             if not should_send:
-                # 文本被钩子拦截，但 TTS 可能已送出，成功与否以实际送达为准。
+                # 文本被钩子拦截：TTS 可能已送出，此处只跳过文本发送，
+                # 仍需走统一收尾，以便写入报告并重置群聊沉默计时器。
                 if report is not None:
                     report.stopped_by_hook = True
-                    report.sent = bool(is_tts_sent)
-                    report.voice_sent = bool(is_tts_sent)
-                self._clear_event_result(event)
-                return is_tts_sent
+                decorated_chain = []
             if not decorated_chain:
                 logger.debug("[主动消息] 装饰后消息链为空，跳过文本发送喵。")
 
@@ -604,7 +602,8 @@ class SenderService:
                         )
                     )
 
-        if event is not None and EventType is not None:
+        # 仅在确实送出过消息时派发发送后钩子，避免空发送也触发扩展逻辑。
+        if any_sent and event is not None and EventType is not None:
             try:
                 await dispatch_event_hook(event, EventType.OnAfterMessageSentEvent)
             except Exception as e:
