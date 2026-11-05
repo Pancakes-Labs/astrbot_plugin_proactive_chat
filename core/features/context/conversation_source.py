@@ -1,7 +1,8 @@
 """CONTEXT 阶段默认功能：准备上下文与人格。
 
 默认行为由 context_service.prepare_llm_request 提供（覆盖对话历史、
-平台流水与混合模式），本功能仅负责在流水线中调用它。
+平台流水与混合模式），本功能仅负责在流水线中调用它，
+并把结果写入 ctx.contexts 的强类型上下文块。
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ...domain.context_block import BlockKind, ContextBlock
 from ...domain.domain_enums import HookPoint, StageResult
 from ...pipeline.stage_protocol import BaseStage
 
@@ -36,10 +38,30 @@ class ContextStage(BaseStage):
 
         # 记录准备结果，供后续阶段消费。
         ctx.conversation_id = request_package["conv_id"]
-        ctx.extra["history"] = request_package["history"]
-        ctx.extra["system_prompt"] = request_package["system_prompt"]
-        ctx.extra["platform_context"] = request_package.get("platform_context", "")
-        ctx.extra["conversation"] = request_package.get("conversation")
+        ctx.conversation = request_package.get("conversation")
+        # 仅移除本阶段此前写入的块，保留其他 CONTEXT 阶段（含更高优先级）的产物。
+        ctx.contexts.remove_by_source(self.name)
+        ctx.add_context(
+            ContextBlock(
+                kind=BlockKind.STABLE_HISTORY,
+                content=request_package.get("history") or [],
+                source=self.name,
+            )
+        )
+        ctx.add_context(
+            ContextBlock(
+                kind=BlockKind.SYSTEM_PROMPT,
+                content=request_package.get("system_prompt") or "",
+                source=self.name,
+            )
+        )
+        ctx.add_context(
+            ContextBlock(
+                kind=BlockKind.TEMP_REFERENCE,
+                content=request_package.get("platform_context") or "",
+                source=self.name,
+            )
+        )
 
         # 会话标识最终确定后再次规范化，确保事件构造、last_message_times 与
         # session_data 读取键全局一致（与旧实现完全相同）。

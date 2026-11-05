@@ -29,6 +29,7 @@ from ..adapters.astrbot_event import (
     resolve_message_type,
 )
 from ..adapters.astrbot_platform import find_platform_by_id
+from ..domain.delivery_report import DeliveryReport
 from ..domain.session_key import is_group_umo
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
@@ -460,11 +461,14 @@ class SenderService:
         text: str,
         event: Any = None,
         initial_chain: list | None = None,
+        report: DeliveryReport | None = None,
     ) -> bool:
         """发送主动消息（支持 TTS 与分段）。
 
         流程：可选 TTS 语音 -> 装饰钩子 -> 可选分段 -> 逐段发送 ->
         发送后钩子。任一环节实际送出至少一条即视为成功。
+
+        report 非空时回填本次发送的真实统计（TTS / 分段 / 钩子拦截）。
         """
         plugin = self.plugin
         session_config = plugin.config_service.get_session_config(session_id)
@@ -484,6 +488,8 @@ class SenderService:
         tts_conf = session_config.get("tts_settings", {})
         seg_conf = session_config.get("segmented_reply_settings", {})
         text = text or ""
+        segmented = False
+        send_count = 0
 
         # 可选语音发送：合成成功即作为一条消息链直接送出。
         is_tts_sent = False
@@ -532,8 +538,11 @@ class SenderService:
                 event, base_components
             )
             if not should_send:
-                self._clear_event_result(event)
-                return False
+                # 文本被钩子拦截：TTS 可能已送出，此处只跳过文本发送，
+                # 仍需走统一收尾，以便写入报告并重置群聊沉默计时器。
+                if report is not None:
+                    report.stopped_by_hook = True
+                decorated_chain = []
             if not decorated_chain:
                 logger.debug("[主动消息] 装饰后消息链为空，跳过文本发送喵。")
 
@@ -546,6 +555,8 @@ class SenderService:
                 segmented = len(send_chain) != len(decorated_chain)
 
             if decorated_chain:
+                # 仅统计真正送达的条目，失败的尝试不计入报告。
+                sent_segments = 0
                 if segmented:
                     logger.info(
                         f"[主动消息] 分段回复已启用，将发送 {len(send_chain)} 条消息喵。"
@@ -555,6 +566,7 @@ class SenderService:
                     for idx, comp in enumerate(send_chain):
                         if await self.send_chain(session_id, event, [comp]) is True:
                             any_sent = True
+                            sent_segments += 1
                         if idx < len(send_chain) - 1:
                             interval = await self.calc_interval(
                                 getattr(comp, "text", "") or "", seg_conf
@@ -565,6 +577,8 @@ class SenderService:
                             await asyncio.sleep(interval)
                 elif await self.send_chain(session_id, event, send_chain) is True:
                     any_sent = True
+                    sent_segments = 1
+                send_count = sent_segments
 
                 if plugin.telemetry and plugin.telemetry.enabled:
                     plugin._track_task(
@@ -588,13 +602,27 @@ class SenderService:
                         )
                     )
 
-        if event is not None and EventType is not None:
+        # 仅在确实送出过消息、且事件未被钩子终止时派发发送后钩子：
+        # dispatch_event_hook 会先执行 handler 再检查停止状态，已停止的事件
+        # 仍可能触发首个 handler 的副作用，故这里前置判断。
+        if (
+            any_sent
+            and event is not None
+            and EventType is not None
+            and not self._safe_is_stopped(event)
+        ):
             try:
                 await dispatch_event_hook(event, EventType.OnAfterMessageSentEvent)
             except Exception as e:
                 logger.error(f"[主动消息] 派发发送后钩子失败喵: {e}")
 
         self._clear_event_result(event)
+
+        if report is not None:
+            report.sent = bool(any_sent)
+            report.voice_sent = bool(is_tts_sent)
+            report.segmented = bool(segmented)
+            report.segment_count = send_count
 
         if not any_sent:
             logger.error(

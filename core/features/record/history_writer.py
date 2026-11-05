@@ -21,18 +21,13 @@ class RecordStage(BaseStage):
     async def handle(self, ctx) -> StageResult:
         """把本轮问答存档到对话历史、递增未回复计数并安排下一次调度。
 
-        参数全部取自上游阶段写入的 ctx.extra。
+        待存档内容取自 ctx.outcome（模型产出）与 ctx.prompts（实际提示词）。
         """
-        session_id = ctx.session_id
-        extra = getattr(ctx, "extra", {}) or {}
+        if ctx.outcome is None:
+            # 理论上不会到达此处（DELIVER 已校验），保险起见直接跳过存档。
+            return StageResult.CONTINUE
 
-        await self.orchestrator.finalize_and_reschedule(
-            session_id,
-            ctx.conversation_id,
-            extra.get("final_user_prompt", ""),
-            extra.get("response_text", ""),
-            ctx.unanswered_count,
-        )
+        await self.orchestrator.finalize_and_reschedule(ctx)
         return StageResult.CONTINUE
 
 

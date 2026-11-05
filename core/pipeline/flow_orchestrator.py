@@ -166,23 +166,27 @@ class FlowOrchestrator:
 
         return True, "allowed"
 
-    async def finalize_and_reschedule(
-        self,
-        session_id: str,
-        conv_id: str,
-        user_prompt: str,
-        assistant_response: str,
-        unanswered_count: int,
-    ) -> None:
+    async def finalize_and_reschedule(self, ctx: ProactiveContext) -> None:
         """主动消息任务完成后的收尾工作。
 
         步骤：存档对话历史并回读校验 -> 递增未回复计数 -> 私聊安排下一次调度 ->
         群聊清理残留调度状态。
+
+        待存档内容统一取自 ctx.outcome 与 ctx.prompts，不再接收散装参数。
         """
         plugin = self.plugin
         if getattr(plugin, "_terminating", False):
             logger.info("[主动消息] 插件正在终止，跳过本次主动消息的收尾与重调度喵。")
             return
+
+        session_id = ctx.session_id
+        conv_id = ctx.conversation_id
+        unanswered_count = ctx.unanswered_count
+        outcome = ctx.outcome
+        user_prompt = (
+            outcome.final_user_prompt if outcome and outcome.final_user_prompt else ""
+        ) or ctx.prompts.merge_text()
+        assistant_response = outcome.text if outcome else ""
 
         if not (assistant_response or "").strip():
             logger.debug("[主动消息] 本次结果无文本内容，跳过对话历史存档喵。")
