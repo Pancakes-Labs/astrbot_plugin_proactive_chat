@@ -70,19 +70,25 @@ async def verify_message_persisted(
         return False
 
 
-async def add_message_pair(
+PROACTIVE_HISTORY_USER_TEXT = "[主动消息]"
+
+
+async def add_proactive_message_pair(
     conversation_manager: Any,
     conv_id: str,
-    user_prompt: str,
     assistant_response: str,
 ) -> None:
-    """存档一对 user/assistant 消息到对话历史。
+    """存档主动消息的 assistant 回复，User 侧只写中性占位符。
 
-    依赖 AstrBot 的消息段 API；旧版本缺失时抛出运行时错误。
+    主动消息的触发 prompt 通常包含“禁止调用工具”等一次性约束，
+    不应进入后续上下文。这里保留 user/assistant 成对结构，但把
+    User 侧固定为 `[主动消息]`，兼容 Gemini 等要求角色交替的 provider。
     """
     if UserMessageSegment is None or TextPart is None:
         raise RuntimeError("当前 AstrBot 版本缺少消息段 API")
-    user_msg_obj = UserMessageSegment(content=[TextPart(text=user_prompt)])
+    user_msg_obj = UserMessageSegment(
+        content=[TextPart(text=PROACTIVE_HISTORY_USER_TEXT)]
+    )
     assistant_msg_obj = AssistantMessageSegment(
         content=[TextPart(text=assistant_response)]
     )

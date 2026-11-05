@@ -29,7 +29,6 @@ class RecordStage(BaseStage):
         await self.orchestrator.finalize_and_reschedule(
             session_id,
             ctx.conversation_id,
-            extra.get("final_user_prompt", ""),
             extra.get("response_text", ""),
             ctx.unanswered_count,
         )
