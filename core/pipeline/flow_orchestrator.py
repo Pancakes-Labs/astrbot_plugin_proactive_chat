@@ -12,7 +12,10 @@ from typing import Any
 from astrbot.api import logger
 
 from ...utils.time_utils import is_quiet_time
-from ..adapters.astrbot_conversation import add_message_pair, verify_message_persisted
+from ..adapters.astrbot_conversation import (
+    add_assistant_message,
+    verify_message_persisted,
+)
 from ..domain.domain_enums import HookPoint, StageResult, TriggerSource
 from ..domain.request_context import ProactiveContext
 from ..domain.session_key import is_friend_type, is_group_type
@@ -170,7 +173,6 @@ class FlowOrchestrator:
         self,
         session_id: str,
         conv_id: str,
-        user_prompt: str,
         assistant_response: str,
         unanswered_count: int,
     ) -> None:
@@ -188,10 +190,10 @@ class FlowOrchestrator:
             logger.debug("[主动消息] 本次结果无文本内容，跳过对话历史存档喵。")
         else:
             try:
-                await add_message_pair(
+                await add_assistant_message(
                     plugin.context.conversation_manager,
+                    session_id,
                     conv_id,
-                    user_prompt,
                     assistant_response,
                 )
                 if await verify_message_persisted(

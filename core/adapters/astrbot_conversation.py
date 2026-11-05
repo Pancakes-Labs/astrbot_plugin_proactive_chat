@@ -18,12 +18,10 @@ try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.agent.message import (
         AssistantMessageSegment,
         TextPart,
-        UserMessageSegment,
     )
 except ImportError:  # pragma: no cover
     AssistantMessageSegment = None  # type: ignore[assignment]
     TextPart = None  # type: ignore[assignment]
-    UserMessageSegment = None  # type: ignore[assignment]
 
 
 def extract_record_text(content: Any) -> str:
@@ -70,26 +68,36 @@ async def verify_message_persisted(
         return False
 
 
-async def add_message_pair(
+async def add_assistant_message(
     conversation_manager: Any,
+    session_id: str,
     conv_id: str,
-    user_prompt: str,
     assistant_response: str,
 ) -> None:
-    """存档一对 user/assistant 消息到对话历史。
+    """只存档 assistant 回复，不写入主动消息的触发提示词。
 
-    依赖 AstrBot 的消息段 API；旧版本缺失时抛出运行时错误。
+    主动消息的 prompt 只服务于本次生成（通常还包含“禁止调用工具”等
+    一次性约束），不应作为 User 消息进入后续对话上下文。这里直接向
+    会话历史追加 assistant 记录，保持后续上下文干净。
     """
-    if UserMessageSegment is None or TextPart is None:
+    if AssistantMessageSegment is None or TextPart is None:
         raise RuntimeError("当前 AstrBot 版本缺少消息段 API")
-    user_msg_obj = UserMessageSegment(content=[TextPart(text=user_prompt)])
     assistant_msg_obj = AssistantMessageSegment(
         content=[TextPart(text=assistant_response)]
     )
-    await conversation_manager.add_message_pair(
-        cid=conv_id,
-        user_message=user_msg_obj,
-        assistant_message=assistant_msg_obj,
+    conversation = await conversation_manager.get_conversation(session_id, conv_id)
+    if not conversation:
+        raise RuntimeError(f"conversation not found: {conv_id}")
+    history = getattr(conversation, "history", None)
+    if isinstance(history, str):
+        history = json.loads(history)
+    if not isinstance(history, list):
+        history = []
+    history.append(assistant_msg_obj.model_dump())
+    await conversation_manager.update_conversation(
+        unified_msg_origin=session_id,
+        conversation_id=conv_id,
+        history=history,
     )
 
 
