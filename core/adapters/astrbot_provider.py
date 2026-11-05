@@ -146,10 +146,12 @@ def build_tool_calls_result(llm_response: Any) -> Any:
     names = list(getattr(llm_response, "tools_call_name", None) or [])
     args = list(getattr(llm_response, "tools_call_args", None) or [])
     call_ids = list(getattr(llm_response, "tools_call_ids", None) or [])
+    extra_content = getattr(llm_response, "tools_call_extra_content", None) or {}
 
     tool_calls = [
         ToolCall(
             id=str(call_id or f"proactive-unavailable-{index}"),
+            extra_content=extra_content.get(call_id),
             function=ToolCall.FunctionBody(
                 name=function_name,
                 arguments=serialize_tool_arguments(
