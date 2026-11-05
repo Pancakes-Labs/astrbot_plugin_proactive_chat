@@ -15,6 +15,7 @@ class BlockKind(Enum):
     """上下文块类型（决定注入位置与是否落库）。"""
 
     STABLE_HISTORY = "stable_history"  # 稳定对话历史（可缓存前缀，落库）
+    SYSTEM_PROMPT = "system_prompt"  # 系统提示词/人格设定（不落库）
     TEMP_REFERENCE = "temp_reference"  # 临时参考（平台流水等，不落库）
     RUNTIME_FACT = "runtime_fact"  # 运行时事实（时间/计数等，不落库）
 
@@ -40,3 +41,7 @@ class ContextBundle:
 
     def add(self, block: ContextBlock) -> None:
         self.blocks.append(block)
+
+    def clear(self) -> None:
+        """清空全部上下文块（重新装配时使用）。"""
+        self.blocks.clear()
