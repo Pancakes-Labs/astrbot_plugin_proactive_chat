@@ -42,6 +42,15 @@ class ContextBundle:
     def add(self, block: ContextBlock) -> None:
         self.blocks.append(block)
 
+    def remove_by_source(self, source: str) -> int:
+        """移除指定来源写入的块，返回移除数量。
+
+        用于同一阶段重复装配时替换自身产物，避免误删其他阶段写入的块。
+        """
+        before = len(self.blocks)
+        self.blocks = [b for b in self.blocks if b.source != source]
+        return before - len(self.blocks)
+
     def clear(self) -> None:
         """清空全部上下文块（重新装配时使用）。"""
         self.blocks.clear()
