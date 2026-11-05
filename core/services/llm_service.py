@@ -12,9 +12,7 @@ from astrbot.api import logger
 
 from ...utils.time_utils import format_current_time
 from ..adapters.astrbot_event import dispatch_event_hook
-from ..adapters.astrbot_provider import (
-    build_provider_request, invoke_provider, tool_loop_accepts_extra_parts,
-)
+from ..adapters.astrbot_provider import build_provider_request, invoke_provider
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -152,7 +150,6 @@ class LlmService:
         conversation: Any = None,
         platform_context: str = "",
         model: str | None = None,
-        trigger: str = "",
     ) -> tuple[Any | None, str]:
         """统一 LLM 调用入口。
 
@@ -193,26 +190,12 @@ class LlmService:
             model=model,
         )
 
-        if event is not None:
-            enabled = (
-                trigger == "schedule" and session_config.get("enable") is True
-                and callable(getattr(plugin.context, "tool_loop_agent", None))
-                and tool_loop_accepts_extra_parts(plugin.context.tool_loop_agent)
-                and not getattr(req, "model", None)
-            )
-            event.set_extra("douyin_proactive_tool_loop", enabled)
-            if enabled:
-                from astrbot.core.agent.tool import ToolSet
-
-                req.func_tool = ToolSet()
-
         try:
             stopped = await self.dispatch_llm_request_hooks(event, req)
         except Exception as e:
+            # 钩子可能已部分注入工具，失败后整体丢弃，避免半注入状态被执行。
             logger.error(f"[主动消息] 派发 LLM 前置钩子失败喵: {e}")
-            req.func_tool = None  # Discard tools if permission hooks fail midway.
-            if event is not None:
-                event.set_extra("douyin_proactive_tool_loop", False)
+            req.func_tool = None
             stopped = False
         if stopped:
             logger.info("[主动消息] LLM 前置钩子终止了事件传播，放弃本次请求喵。")
@@ -220,10 +203,7 @@ class LlmService:
 
         llm_response_obj = None
         try:
-            llm_response_obj = await invoke_provider(
-                provider, req, context=plugin.context, event=event,
-                session_config=session_config, trigger=trigger,
-            )
+            llm_response_obj = await invoke_provider(provider, req)
             logger.info("[主动消息] 调用 LLM 成功喵。")
             if plugin.telemetry and plugin.telemetry.enabled:
                 plugin._track_task(

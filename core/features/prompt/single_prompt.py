@@ -39,7 +39,6 @@ class DeliberateStage(BaseStage):
             extra.get("system_prompt", ""),
             ctx.unanswered_count,
             event=ctx.event,
-            trigger=getattr(ctx.trigger, "value", ctx.trigger),
             conversation=extra.get("conversation"),
             platform_context=extra.get("platform_context", ""),
         )

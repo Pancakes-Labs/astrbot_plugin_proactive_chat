@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
+from astrbot.api import logger
 from astrbot.api.provider import LLMResponse, ProviderRequest
 
 
@@ -83,14 +84,6 @@ def build_provider_request(
         )
 
 
-def tool_loop_accepts_extra_parts(tool_loop: Any) -> bool:
-    """Return whether the framework loop explicitly preserves temporary parts."""
-    try:
-        return "extra_user_content_parts" in inspect.signature(tool_loop).parameters
-    except (TypeError, ValueError):
-        return False
-
-
 def supported_provider_kwargs(provider: Any) -> tuple[set[str], bool] | None:
     """探测 Provider.text_chat 的关键字参数接口。
 
@@ -116,70 +109,64 @@ def supported_provider_kwargs(provider: Any) -> tuple[set[str], bool] | None:
     return keyword_names, accepts_any
 
 
-DOUYIN_TOOL_LOOP_AVAILABLE = True
-DOUYIN_TOOL_NAMES = frozenset({
-    "douyin_watch_recommended", "douyin_comment_watched",
-})
+# 主动消息链路不参与框架工具循环，模型若请求调用工具必须被明确拒绝一次，
+# 否则该轮响应既无文本也无消息链，会被上游判定为失败而静默丢弃。
+TOOL_UNAVAILABLE_NOTICE = (
+    "当前为主动消息场景，无法执行工具调用。请忽略工具请求，"
+    "基于已有上下文直接使用纯文本作答，不要再次调用任何工具。"
+)
 
 
-async def invoke_provider(
-    provider: Any, req: Any, *, context: Any = None, event: Any = None,
-    session_config: dict | None = None, trigger: str = "",
-) -> Any:
-    """调用 Provider，并按运行时能力裁剪不支持的可选参数。
+def build_tool_calls_result(llm_response: Any) -> Any:
+    """把模型的工具调用请求包装为不可用回执，供下一轮请求回灌。"""
+    from astrbot.core.agent.message import (
+        AssistantMessageSegment,
+        ToolCall,
+        ToolCallMessageSegment,
+    )
+    from astrbot.core.provider.entities import ToolCallsResult
 
-    先组装候选参数，再依据 text_chat 签名过滤，保证兼容旧版本 Provider。
-    可选参数仅在取到有效值时才传入，避免覆盖 Provider 自身的默认行为。
-    """
-    # Execute only integration tools left by the request permission hooks.
-    # The framework loop cannot preserve a request-level model override.
-    if (
-        context is not None and event is not None
-        and trigger == "schedule"
-        and (session_config or {}).get("enable") is True
-        and callable(getattr(context, "tool_loop_agent", None))
-        and tool_loop_accepts_extra_parts(context.tool_loop_agent)
-        and event.get_extra("douyin_proactive_tool_loop", False) is True
-        and not getattr(req, "model", None)
-    ):
-        from astrbot.core.agent.tool import ToolSet
+    names = list(getattr(llm_response, "tools_call_name", None) or [])
+    args = list(getattr(llm_response, "tools_call_args", None) or [])
+    call_ids = list(getattr(llm_response, "tools_call_ids", None) or [])
 
-        selected = ToolSet([
-            tool for tool in getattr(getattr(req, "func_tool", None), "func_list", [])
-            if tool.name == "douyin_watch_recommended" and tool.active
-        ])
-        if selected:
-            response = await context.tool_loop_agent(
-                event=event, chat_provider_id=provider.meta().id,
-                prompt=getattr(req, "prompt", None),
-                contexts=getattr(req, "contexts", None),
-                system_prompt=getattr(req, "system_prompt", None),
-                extra_user_content_parts=getattr(req, "extra_user_content_parts", None),
-                tools=selected, max_steps=4, tool_call_timeout=180,
+    tool_calls = [
+        ToolCall(
+            id=str(call_id or f"proactive-unavailable-{index}"),
+            function=ToolCall.FunctionBody(
+                name=function_name,
+                arguments=args[index] if index < len(args) else "{}",
+            ),
+        )
+        for index, (function_name, call_id) in enumerate(zip(names, call_ids or names))
+    ]
+    if not tool_calls:
+        return None
+
+    return ToolCallsResult(
+        tool_calls_info=AssistantMessageSegment(tool_calls=tool_calls),
+        tool_calls_result=[
+            ToolCallMessageSegment(
+                role="tool",
+                tool_call_id=tool_call.id,
+                content=TOOL_UNAVAILABLE_NOTICE,
             )
-            if isinstance(response, str):
-                return LLMResponse(role="assistant", completion_text=response)
-            return response
+            for tool_call in tool_calls
+        ],
+    )
 
-    # Comments remain disabled until the integration supports durable idempotency
-    # and an atomic stale-run check at the actual public-send boundary.
-    original_tools = getattr(req, "func_tool", None)
-    plain_tools = original_tools
-    if original_tools is not None:
-        from astrbot.core.agent.tool import ToolSet
 
-        plain_tools = ToolSet([
-            tool for tool in original_tools.func_list
-            if tool.name not in DOUYIN_TOOL_NAMES
-        ])
-        plain_tools = plain_tools if plain_tools else None
-
+async def _call_text_chat(provider: Any, req: Any) -> Any:
+    """按 Provider 运行时能力组装参数并调用一次 text_chat。"""
     call_kwargs: dict[str, Any] = {
         "prompt": getattr(req, "prompt", None),
         "contexts": getattr(req, "contexts", None),
         "system_prompt": getattr(req, "system_prompt", None),
-        "func_tool": plain_tools,
+        "func_tool": getattr(req, "func_tool", None),
     }
+    tool_calls_result = getattr(req, "tool_calls_result", None)
+    if tool_calls_result:
+        call_kwargs["tool_calls_result"] = tool_calls_result
     extra_parts = getattr(req, "extra_user_content_parts", None)
     if extra_parts:
         call_kwargs["extra_user_content_parts"] = extra_parts
@@ -205,3 +192,41 @@ async def invoke_provider(
             }
 
     return await provider.text_chat(**call_kwargs)
+
+
+async def invoke_provider(provider: Any, req: Any, *, max_tool_rounds: int = 1) -> Any:
+    """调用 Provider，并按运行时能力裁剪不支持的可选参数。
+
+    先组装候选参数，再依据 text_chat 签名过滤，保证兼容旧版本 Provider。
+    可选参数仅在取到有效值时才传入，避免覆盖 Provider 自身的默认行为。
+
+    主动消息链路不进入框架工具循环；若模型仍请求工具，这里回灌一次
+    “工具不可用”回执并摘除工具，使其在下一次请求中给出纯文本回复，
+    避免整轮响应因无文本而被判定失败。
+    """
+    response = await _call_text_chat(provider, req)
+    if isinstance(response, str):
+        response = LLMResponse(role="assistant", completion_text=response)
+
+    rounds = 0
+    while (
+        rounds < max_tool_rounds
+        and getattr(response, "tools_call_name", None)
+        and not getattr(response, "completion_text", None)
+    ):
+        tool_calls_result = build_tool_calls_result(response)
+        if tool_calls_result is None:
+            break
+
+        rounds += 1
+        logger.info(
+            f"[主动消息] 模型请求调用工具 {list(response.tools_call_name)}，"
+            "主动消息场景不支持执行，已回灌不可用提示并重试纯文本生成喵。"
+        )
+        req.func_tool = None
+        req.tool_calls_result = tool_calls_result
+        response = await _call_text_chat(provider, req)
+        if isinstance(response, str):
+            response = LLMResponse(role="assistant", completion_text=response)
+
+    return response
