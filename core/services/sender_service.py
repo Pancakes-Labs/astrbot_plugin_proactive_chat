@@ -538,12 +538,13 @@ class SenderService:
                 event, base_components
             )
             if not should_send:
+                # 文本被钩子拦截，但 TTS 可能已送出，成功与否以实际送达为准。
                 if report is not None:
                     report.stopped_by_hook = True
-                    report.sent = False
+                    report.sent = bool(is_tts_sent)
                     report.voice_sent = bool(is_tts_sent)
                 self._clear_event_result(event)
-                return False
+                return is_tts_sent
             if not decorated_chain:
                 logger.debug("[主动消息] 装饰后消息链为空，跳过文本发送喵。")
 
@@ -556,7 +557,8 @@ class SenderService:
                 segmented = len(send_chain) != len(decorated_chain)
 
             if decorated_chain:
-                send_count = len(send_chain) if segmented else 1
+                # 仅统计真正送达的条目，失败的尝试不计入报告。
+                sent_segments = 0
                 if segmented:
                     logger.info(
                         f"[主动消息] 分段回复已启用，将发送 {len(send_chain)} 条消息喵。"
@@ -566,6 +568,7 @@ class SenderService:
                     for idx, comp in enumerate(send_chain):
                         if await self.send_chain(session_id, event, [comp]) is True:
                             any_sent = True
+                            sent_segments += 1
                         if idx < len(send_chain) - 1:
                             interval = await self.calc_interval(
                                 getattr(comp, "text", "") or "", seg_conf
@@ -576,6 +579,8 @@ class SenderService:
                             await asyncio.sleep(interval)
                 elif await self.send_chain(session_id, event, send_chain) is True:
                     any_sent = True
+                    sent_segments = 1
+                send_count = sent_segments
 
                 if plugin.telemetry and plugin.telemetry.enabled:
                     plugin._track_task(
