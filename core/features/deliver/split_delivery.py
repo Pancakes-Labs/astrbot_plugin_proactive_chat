@@ -6,6 +6,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ...domain.delivery_report import DeliveryReport
 from ...domain.domain_enums import HookPoint, StageResult
 from ...pipeline.stage_protocol import BaseStage
 
@@ -24,15 +25,21 @@ class DeliverStage(BaseStage):
         """投递主动消息；发送失败时不存档、不计数，直接重调度。"""
         plugin = self.orchestrator.plugin
         session_id = ctx.session_id
-        # extra 承载上游阶段产出的待发送内容。
-        extra = getattr(ctx, "extra", {}) or {}
+        outcome = ctx.outcome
+        if outcome is None or not outcome.has_content:
+            logger.warning("[主动消息] 投递阶段缺少生成结果，放弃本次主动消息喵。")
+            ctx.abort("missing_outcome")
+            return StageResult.RESCHEDULE
 
+        report = DeliveryReport()
+        ctx.delivery = report
         sent_ok = (
             await plugin.sender_service.send_proactive_message(
                 session_id,
-                extra.get("response_text", ""),
+                outcome.text,
                 event=ctx.event,
-                initial_chain=extra.get("result_chain"),
+                initial_chain=outcome.chain,
+                report=report,
             )
             is True
         )

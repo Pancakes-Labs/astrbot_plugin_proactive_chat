@@ -29,6 +29,7 @@ from ..adapters.astrbot_event import (
     resolve_message_type,
 )
 from ..adapters.astrbot_platform import find_platform_by_id
+from ..domain.delivery_report import DeliveryReport
 from ..domain.session_key import is_group_umo
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
@@ -460,11 +461,14 @@ class SenderService:
         text: str,
         event: Any = None,
         initial_chain: list | None = None,
+        report: DeliveryReport | None = None,
     ) -> bool:
         """发送主动消息（支持 TTS 与分段）。
 
         流程：可选 TTS 语音 -> 装饰钩子 -> 可选分段 -> 逐段发送 ->
         发送后钩子。任一环节实际送出至少一条即视为成功。
+
+        report 非空时回填本次发送的真实统计（TTS / 分段 / 钩子拦截）。
         """
         plugin = self.plugin
         session_config = plugin.config_service.get_session_config(session_id)
@@ -484,6 +488,8 @@ class SenderService:
         tts_conf = session_config.get("tts_settings", {})
         seg_conf = session_config.get("segmented_reply_settings", {})
         text = text or ""
+        segmented = False
+        send_count = 0
 
         # 可选语音发送：合成成功即作为一条消息链直接送出。
         is_tts_sent = False
@@ -532,6 +538,10 @@ class SenderService:
                 event, base_components
             )
             if not should_send:
+                if report is not None:
+                    report.stopped_by_hook = True
+                    report.sent = False
+                    report.voice_sent = bool(is_tts_sent)
                 self._clear_event_result(event)
                 return False
             if not decorated_chain:
@@ -546,6 +556,7 @@ class SenderService:
                 segmented = len(send_chain) != len(decorated_chain)
 
             if decorated_chain:
+                send_count = len(send_chain) if segmented else 1
                 if segmented:
                     logger.info(
                         f"[主动消息] 分段回复已启用，将发送 {len(send_chain)} 条消息喵。"
@@ -595,6 +606,12 @@ class SenderService:
                 logger.error(f"[主动消息] 派发发送后钩子失败喵: {e}")
 
         self._clear_event_result(event)
+
+        if report is not None:
+            report.sent = bool(any_sent)
+            report.voice_sent = bool(is_tts_sent)
+            report.segmented = bool(segmented)
+            report.segment_count = send_count
 
         if not any_sent:
             logger.error(
