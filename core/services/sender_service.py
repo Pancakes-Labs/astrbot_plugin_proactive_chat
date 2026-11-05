@@ -602,8 +602,15 @@ class SenderService:
                         )
                     )
 
-        # 仅在确实送出过消息时派发发送后钩子，避免空发送也触发扩展逻辑。
-        if any_sent and event is not None and EventType is not None:
+        # 仅在确实送出过消息、且事件未被钩子终止时派发发送后钩子：
+        # dispatch_event_hook 会先执行 handler 再检查停止状态，已停止的事件
+        # 仍可能触发首个 handler 的副作用，故这里前置判断。
+        if (
+            any_sent
+            and event is not None
+            and EventType is not None
+            and not self._safe_is_stopped(event)
+        ):
             try:
                 await dispatch_event_hook(event, EventType.OnAfterMessageSentEvent)
             except Exception as e:
