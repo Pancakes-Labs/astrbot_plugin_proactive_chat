@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from typing import Any
 
@@ -30,11 +31,11 @@ MIGRATED_TEMPLATE_ID = "legacy"
 def normalize_template(raw: Any) -> dict[str, Any] | None:
     """把单个模板归一化为 {id, name, role, text, enabled, weight}。
 
-    没有有效正文的项返回 None，避免脏数据进入运行时。
+    只有完全无法解释的输入才返回 None。正文为空的条目会被保留
+    （宽容原则：归一化结果会被写回配置，丢弃等于永久删除用户数据），
+    空正文条目在选取阶段由 pick_template 跳过。
     """
     if isinstance(raw, str):
-        if not raw.strip():
-            return None
         return {
             "id": "",
             "name": "",
@@ -48,8 +49,8 @@ def normalize_template(raw: Any) -> dict[str, Any] | None:
         return None
 
     text = raw.get("text")
-    if not isinstance(text, str) or not text.strip():
-        return None
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
 
     template: dict[str, Any] = {
         "id": _as_text(raw.get("id")),
@@ -122,7 +123,8 @@ def pick_template(
     weighted=False 时固定取第一条，结果确定、便于排查；
     weighted=True 时按 weight 加权随机，权重越大被选中概率越高。
     """
-    candidates = enabled_templates(templates)
+    # 空正文条目不可用于生成，必须在选取阶段排除。
+    candidates = [item for item in enabled_templates(templates) if item["text"].strip()]
     if not candidates:
         return None
     if not weighted or len(candidates) == 1:
@@ -166,16 +168,21 @@ def resolve_active_template(
 
     # 旧字段优先于迁移留档，保证用户在面板里改 proactive_prompt 依然立即生效。
     legacy = section.get(LEGACY_PROMPT_KEY)
-    if isinstance(legacy, str) and legacy.strip():
-        return {
-            "id": "",
-            "name": "",
-            "role": DEFAULT_TEMPLATE_ROLE,
-            "text": legacy,
-            "enabled": True,
-            "weight": DEFAULT_TEMPLATE_WEIGHT,
-        }
+    if isinstance(legacy, str):
+        if legacy.strip():
+            return {
+                "id": "",
+                "name": "",
+                "role": DEFAULT_TEMPLATE_ROLE,
+                "text": legacy,
+                "enabled": True,
+                "weight": DEFAULT_TEMPLATE_WEIGHT,
+            }
+        # 键存在但为空串 = 用户主动清空提示词，属明确禁用意图。
+        # 此时必须直接返回 None，绝不能回退到迁移留档，否则清空的旧文本会复活。
+        return None
 
+    # 完全没有旧字段（键不存在）：只在此情况下回退迁移留档，兼容回滚场景。
     return pick_template(
         [
             item
@@ -213,6 +220,9 @@ def _as_bool(value: Any) -> bool:
 def _as_weight(value: Any) -> int:
     # bool 是 int 的子类，必须先排除，避免 True 被当成权重 1。
     if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return DEFAULT_TEMPLATE_WEIGHT
+    # JSON 允许 NaN / Infinity，int() 转换会抛异常，需先排除非有限值。
+    if not math.isfinite(value):
         return DEFAULT_TEMPLATE_WEIGHT
     weight = int(value)
     return weight if weight > 0 else DEFAULT_TEMPLATE_WEIGHT
