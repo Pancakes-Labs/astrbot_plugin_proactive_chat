@@ -38,15 +38,57 @@
     return obj;
  }
 
+// 把人格摘要压成一行短文案：人格名（来源），缺失时给出明确占位。
+function resolvePersonaLabel(persona) {
+    if (!persona) return '解析中…';
+    if (persona.disabled) return '已禁用（不注入人格）';
+    const name = persona.persona_name || persona.persona_id;
+    if (!name) return '未解析到可用人格';
+    const source = persona.persona_source_label || persona.persona_source;
+    return source ? `${name}（${source}）` : name;
+}
+
+// 浏览上下文记忆键：记录上次停留在“全局配置”还是某个会话的差异配置，
+// 以及会话模式下具体选中的会话，保证切换视图 / 刷新后回到同一处。
+const CONFIG_VIEW_CONTEXT_KEY = 'astrbot_plugin_proactive_config_view_context';
+
+function readSavedViewContext() {
+    try {
+        const raw = localStorage.getItem(CONFIG_VIEW_CONTEXT_KEY);
+        if (!raw) return { mode: 'global', session: '' };
+        const parsed = JSON.parse(raw);
+        const mode = parsed && parsed.mode === 'session' ? 'session' : 'global';
+        const session = parsed && typeof parsed.session === 'string' ? parsed.session : '';
+        return { mode, session };
+    } catch (e) {
+        // 缓存损坏时退回全局配置，不影响页面可用性。
+        return { mode: 'global', session: '' };
+    }
+}
+
+function writeSavedViewContext(mode, session) {
+    try {
+        localStorage.setItem(CONFIG_VIEW_CONTEXT_KEY, JSON.stringify({
+            mode: mode === 'session' ? 'session' : 'global',
+            session: session || '',
+        }));
+    } catch (e) {
+        // 存储受限时静默降级，浏览上下文记忆属于非关键体验。
+    }
+}
+
 function ConfigEditor() {
     const api = useApi();
+    // 初始值来自本地缓存：首渲染即定位到上次浏览的上下文，避免先闪一下全局配置。
+    const initialViewContextRef = useRef(readSavedViewContext());
 
     // 多会话模式相关状态：global 表示编辑全局配置，session 表示编辑单会话差异配置。
-    const [mode, setMode] = useState('global');
-    const [selectedSession, setSelectedSession] = useState('');
+    const [mode, setMode] = useState(initialViewContextRef.current.mode);
+    const [selectedSession, setSelectedSession] = useState(initialViewContextRef.current.session);
     const [expandedKeys, setExpandedKeys] = useState([]);
     const [saving, setSaving] = useState(false);
-    const [saveFeedback, setSaveFeedback] = useState({ type: '', text: '' });
+    // 已恢复的浏览上下文，避免恢复态被“默认选中第一个会话”覆盖。
+    const savedSessionRef = useRef(initialViewContextRef.current.session);
 
     const scrollContainerRef = useRef(null);
     const isDirtyRef = useRef(false);
@@ -74,22 +116,38 @@ function ConfigEditor() {
     });
 
     // 默认选中第一个会话，避免会话模式初始为空。
+    // 优先恢复上次选中的会话，只有它已不存在（会话被删除）时才回退到第一项。
     useEffect(() => {
-        if (selectedSession || sessions.length === 0) return;
-        const first = sessions[0] && sessions[0].session;
-        if (first) setSelectedSession(first);
+        if (sessions.length === 0) return;
+        if (selectedSession) return;
+        const saved = savedSessionRef.current;
+        const exists = saved && sessions.some((item) => item && item.session === saved);
+        const nextSession = exists ? saved : (sessions[0] && sessions[0].session);
+        if (nextSession) setSelectedSession(nextSession);
     }, [sessions, selectedSession]);
+
+    // 任何浏览上下文变化都写回缓存，供下次进入配置页时恢复。
+    useEffect(() => {
+        // 会话模式下尚未确定具体会话时不落盘，否则会存成空会话、丢掉上次选择。
+        if (mode === 'session' && !selectedSession) return;
+        // 同步“期望恢复的会话”，避免用户手动切换后被旧的恢复目标回拉。
+        if (selectedSession) savedSessionRef.current = selectedSession;
+        writeSavedViewContext(mode, selectedSession);
+    }, [mode, selectedSession]);
 
     useEffect(() => {
         if (!schema) return;
         // 切换上下文时立即清除脏标记，防止旧草稿被写入新会话的 key。
         isDirtyRef.current = false;
-        setSaveFeedback({ type: '', text: '' });
+        // 关键：先恢复该上下文的展开态，再发起加载。
+        // 若等到 loadConfig resolve 后再 setExpandedKeys，期间 useConfigDraft 的
+        // “记忆展开态” effect 会先用初始的空数组覆盖 localStorage，
+        // 于是刷新/切换回来后展开状态永远是全部收起。
+        setExpandedKeys(draft.restoreExpandedKeys(mode, selectedSession));
         // 过期请求会被 loadConfig 丢弃但仍正常 resolve，必须按采纳标记决定是否写入
         loader.loadConfig(mode, selectedSession).then((applied) => {
             if (!applied) return;
             isDirtyRef.current = false;
-            setExpandedKeys(draft.restoreExpandedKeys(mode, selectedSession));
         });
         // 依赖只保留上下文标识；loader/draft 每次渲染都是新引用，不能直接作为依赖。
     }, [loadContextKey, schema]);
@@ -144,7 +202,12 @@ function ConfigEditor() {
                 isDirtyRef.current = false;
                 localStorage.removeItem(draft.getDraftKey(currentMode, currentSession));
                 setConfig((response && response.effective) || cleanedConfig);
-                setSaveFeedback({ type: 'success', text: '会话差异配置已保存' });
+                if (window.Toast) {
+                    window.Toast.success('会话差异配置已保存', {
+                        title: '配置管理',
+                        key: 'config-save',
+                    });
+                }
                 await loader.loadSessions();
                 // 会话模式保存后强制回读服务端 effective，确保会话隔离与覆写状态显示正确。
                 await loader.loadConfig(currentMode, currentSession);
@@ -160,12 +223,18 @@ function ConfigEditor() {
                 isDirtyRef.current = false;
                 setConfig(cleanedConfig);
                 localStorage.removeItem(draft.getDraftKey(currentMode, currentSession));
-                setSaveFeedback({ type: 'success', text: '全局配置已保存' });
+                if (window.Toast) {
+                    window.Toast.success('全局配置已保存', {
+                        title: '配置管理',
+                        key: 'config-save',
+                    });
+                }
             }
         } catch (e) {
             console.error('保存配置失败', e);
-            setSaveFeedback({ type: 'error', text: (e && e.message) || '保存配置失败，请检查后端返回信息' });
-            window.alert((e && e.message) || '保存配置失败，请检查后端返回信息');
+            const message = (e && e.message) || '保存配置失败，请检查后端返回信息';
+            if (window.Toast) window.Toast.error(message, { title: '保存配置失败', key: 'config-save' });
+            else window.alert(message);
         } finally {
             setSaving(false);
         }
@@ -182,13 +251,14 @@ function ConfigEditor() {
         try {
             await api.resetSessionConfig(selectedSession);
             localStorage.removeItem(draft.getDraftKey(mode, selectedSession));
-            setSaveFeedback({ type: 'success', text: '会话差异配置已清空' });
+            if (window.Toast) window.Toast.success('会话差异配置已清空');
             await loader.loadSessions();
             await loader.loadConfig(mode, selectedSession);
         } catch (e) {
             console.error('清空会话差异配置失败', e);
-            setSaveFeedback({ type: 'error', text: (e && e.message) || '清空会话差异配置失败' });
-            window.alert((e && e.message) || '清空会话差异配置失败');
+            const message = (e && e.message) || '清空会话差异配置失败';
+            if (window.Toast) window.Toast.error(message, { title: '清空失败' });
+            else window.alert(message);
         } finally {
             setSaving(false);
         }
@@ -215,6 +285,23 @@ function ConfigEditor() {
             setConfig(defaults);
         }
         localStorage.removeItem(draft.getDraftKey());
+        if (window.Toast) {
+            window.Toast.info('已填入默认值，记得点击“保存配置”才会生效', { title: '恢复默认' });
+        }
+    };
+
+    // 撤销更改：成功后需要明确告诉用户草稿已丢弃，否则容易怀疑是否真的生效。
+    const handleDiscardChanges = async () => {
+        if (!window.confirm('确定要撤销所有未保存的更改吗？\n\n这将重新加载服务器上已保存的配置。')) return;
+        localStorage.removeItem(draft.getDraftKey());
+        try {
+            await loader.loadConfig(mode, selectedSession);
+            isDirtyRef.current = false;
+            if (window.Toast) window.Toast.success('未保存的更改已撤销', { title: '配置管理' });
+        } catch (e) {
+            const message = (e && e.message) || '撤销失败，请稍后重试';
+            if (window.Toast) window.Toast.error(message, { title: '撤销失败' });
+        }
     };
 
     if (loader.loading) {
@@ -286,23 +373,21 @@ function ConfigEditor() {
                 </Box>
 
                 {mode === 'session' && selectedSessionMeta && (
-                    <Typography variant="caption" color="text.secondary">
+                    // 会话基础信息与生效人格合并为一行，避免多行小字堆叠造成视觉噪音。
+                    <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.7 }}>
                         当前会话：{selectedSessionMeta.session_display_name || selectedSessionMeta.session_name || selectedSessionMeta.session}
                         {selectedSessionMeta.session_name ? ` ｜ UMO：${selectedSessionMeta.session}` : ''}
                         {' ｜ '}未回复次数：{selectedSessionMeta.unanswered_count !== undefined ? selectedSessionMeta.unanswered_count : 0}
+                        {' ｜ '}
+                        <Box component="span" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                            生效人格：{resolvePersonaLabel(loader.sessionPersona)}
+                        </Box>
                     </Typography>
                 )}
-                {mode === 'session' && !sessionConfigState.baseAvailable && sessionConfigState.message && (
+                {mode === 'session' && !loader.sessionConfigState.baseAvailable && loader.sessionConfigState.message && (
                     <Box className="config-inline-notice is-warning">
                         <Typography variant="caption" className="config-inline-notice-text">
-                            {sessionConfigState.message}
-                        </Typography>
-                    </Box>
-                )}
-                {saveFeedback.text && (
-                    <Box className={`config-inline-notice ${saveFeedback.type === 'success' ? 'is-success' : 'is-error'}`}>
-                        <Typography variant="caption" className="config-inline-notice-text">
-                            {saveFeedback.text}
+                            {loader.sessionConfigState.message}
                         </Typography>
                     </Box>
                 )}
@@ -415,12 +500,7 @@ function ConfigEditor() {
                         恢复默认
                     </Button>
                     <Button
-                        onClick={() => {
-                            if (window.confirm('确定要撤销所有未保存的更改吗？\n\n这将重新加载服务器上已保存的配置。')) {
-                                localStorage.removeItem(draft.getDraftKey());
-                                loader.loadConfig(mode, selectedSession);
-                            }
-                        }}
+                        onClick={handleDiscardChanges}
                         disabled={saving}
                         variant="outlined"
                         size="medium"
