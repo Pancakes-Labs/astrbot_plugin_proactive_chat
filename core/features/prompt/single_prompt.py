@@ -1,8 +1,7 @@
-"""PROMPT 阶段默认功能：构建 LLM 请求与调用。
+"""DELIBERATE 阶段默认功能：调用 LLM 并封装生成结果。
 
-默认行为由 llm_service.generate_llm_response 提供（含单一提示词、
-装饰后处理与结果提取）。本功能负责在流水线 DELIBERATE 阶段调用它，
-并把产出封装为 LlmOutcome / PromptBlock。
+提示词拼装已在 PROMPT 阶段（prompt_stage）完成，本阶段只消费
+ctx.prompts 与 ctx.contexts，不再自行解析 session_config 里的模板字段。
 """
 
 from __future__ import annotations
@@ -31,6 +30,11 @@ class DeliberateStage(BaseStage):
         session_id = ctx.session_id
         session_config = plugin.config_service.get_session_config(session_id) or {}
 
+        # 提示词与运行时附加块均由 PROMPT 阶段产出，这里只负责传递。
+        # 未装配 PROMPT 阶段时传 None，交由 llm_service 走旧路径自行拼装。
+        prepared_prompt = ctx.prompts.merge_text() if ctx.prompts.blocks else None
+        extra_parts = ctx.prompts.extra_parts if ctx.prompts.blocks else None
+
         (
             llm_response,
             final_user_prompt,
@@ -43,6 +47,8 @@ class DeliberateStage(BaseStage):
             event=ctx.event,
             conversation=ctx.conversation,
             platform_context=ctx.platform_context,
+            prepared_prompt=prepared_prompt,
+            extra_parts=extra_parts,
         )
         if not llm_response:
             # LLM 调用失败或无返回：中止并重调度。
@@ -63,14 +69,16 @@ class DeliberateStage(BaseStage):
             final_user_prompt=final_user_prompt,
             provider_id=await self._resolve_provider_id(session_id),
         )
-        # 本轮实际送入模型的提示词记为一个 PromptBlock，供 RECORD 阶段存档。
-        ctx.prompts.add(
-            PromptBlock(
-                text=final_user_prompt,
-                role="task",
-                source=self.name,
+        # PROMPT 阶段登记的正文即本轮实际提示词，此处不再重复登记；
+        # 仅在该阶段缺失时补记一条，保证 RECORD 仍能存档送出的内容。
+        if not ctx.prompts.blocks:
+            ctx.prompts.add(
+                PromptBlock(
+                    text=final_user_prompt,
+                    role="task",
+                    source=self.name,
+                )
             )
-        )
         return StageResult.CONTINUE
 
     async def _resolve_provider_id(self, session_id: str) -> str:
