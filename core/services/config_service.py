@@ -95,13 +95,16 @@ class ConfigService:
         effective = manager.get_effective(normalized_session_id, base_config)
 
         if isinstance(effective, dict):
+            override = manager.get_override(normalized_session_id)
             effective["_session_type"] = base_config.get("_session_type")
             effective["_from_session_list"] = base_config.get(
                 "_from_session_list", False
             )
-            effective["_has_override"] = bool(
-                manager.get_override(normalized_session_id)
-            )
+            effective["_has_override"] = bool(override)
+            # 记录会话实际覆写过的顶层字段。
+            # 合并后的配置无法区分「继承自全局」与「会话显式设置」，
+            # 提示词解析需要这个信息来判断哪一方更具体、应当优先。
+            effective["_override_keys"] = sorted(override.keys())
 
         return effective
 

@@ -19,6 +19,15 @@ from .persona_resolution import (
     PersonaResolution,
 )
 from .prompt_block import PromptBlock, PromptBundle
+from .prompt_templates import (
+    LEGACY_PROMPT_KEY,
+    MIGRATED_TEMPLATE_ID,
+    PROMPT_TEMPLATES_KEY,
+    build_templates_from_legacy,
+    normalize_templates,
+    resolve_active_prompt,
+    resolve_active_template,
+)
 from .request_context import ProactiveContext
 from .session_config import SessionConfig
 from .session_key import (
@@ -35,7 +44,9 @@ __all__ = [
     "ContextBundle",
     "DeliveryReport",
     "HookPoint",
+    "LEGACY_PROMPT_KEY",
     "LlmOutcome",
+    "MIGRATED_TEMPLATE_ID",
     "PERSONA_SOURCE_BUILTIN",
     "PERSONA_SOURCE_CONVERSATION",
     "PERSONA_SOURCE_DEFAULT",
@@ -44,6 +55,7 @@ __all__ = [
     "PERSONA_SOURCE_PROFILE",
     "PERSONA_SOURCE_SESSION_RULE",
     "PersonaResolution",
+    "PROMPT_TEMPLATES_KEY",
     "ProactiveContext",
     "PromptBlock",
     "PromptBundle",
@@ -52,8 +64,12 @@ __all__ = [
     "StageResult",
     "ToolCallRecord",
     "TriggerSource",
+    "build_templates_from_legacy",
     "contains_group_marker",
     "is_friend_type",
     "is_group_type",
     "is_group_umo",
+    "normalize_templates",
+    "resolve_active_prompt",
+    "resolve_active_template",
 ]

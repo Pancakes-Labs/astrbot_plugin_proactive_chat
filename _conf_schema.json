@@ -51,6 +51,39 @@
                 "default": "[系统任务：主动对话]\n你被授权在私聊中发起一次“主动消息”。你的回复必须完全符合你的人格设定，并严格遵守所有的输出规则。\n\n[情景分析]\n- 我们好像已经有一段时间没有说话了，我应该主动打破沉默，让他知道我想他了。\n- 当前时间是: {{current_time}}。\n- 我之前已经主动找过他，但他没有回复的次数是: {{unanswered_count}} 次。如果这个次数大于0，我的语气应该带上一点点不易察觉的失落和困惑。\n\n[行动指南]\n1.  首先，回顾我们的聊天记录，看看我们最后在聊什么。\n2.  如果上次的话题已经结束了，我可以关心一下他现在在做什么。\n3.  我可以向他提出一个我一直以来都很好奇的问题。\n4.  如果实在不知道该说什么，就直接表达我想他的心情也可以。\n\n[最终指令]\n请综合以上所有信息，用最像你自己的、最自然的方式，生成一句主动聊天的开场白。",
                 "hint": "这段话将指导LLM在私聊中发起主动消息时的思考。你可以使用 {{unanswered_count}} (未回复次数) 和 {{current_time}} (当前时间) 这两个占位符"
             },
+            "prompt_templates": {
+                "description": "多提示词模板列表",
+                "type": "list",
+                "invisible": true,
+                "default": [],
+                "hint": "预留字段，用于承载多提示词模板，当前版本暂未开放编辑。留空时回退使用 proactive_prompt。",
+                "items": {
+                    "id": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "name": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "role": {
+                        "type": "string",
+                        "default": "task"
+                    },
+                    "text": {
+                        "type": "text",
+                        "default": ""
+                    },
+                    "enabled": {
+                        "type": "bool",
+                        "default": true
+                    },
+                    "weight": {
+                        "type": "int",
+                        "default": 100
+                    }
+                }
+            },
             "context_settings": {
                 "description": "🧩 上下文注入设置",
                 "type": "object",
@@ -334,6 +367,39 @@
                 "type": "text",
                 "default": "[系统任务：群聊主动破冰]\n你被授权在群聊中发起一次“主动消息”以活跃气氛。你的回复必须完全符合你的人格设定，并严格遵守所有的输出规则。\n\n[情景分析]\n- 这个群聊好像已经冷清了一段时间了，我应该说些什么来让大家重新聊起来。\n- 当前时间是: {{current_time}}。\n- 我上次在这个群里主动说话但没人理我的次数是: {{unanswered_count}} 次。\n\n[行动指南]\n1.  回顾群聊的聊天记录，看看大家最后在讨论什么有趣的话题，如果没有聊完，尝试延续它。\n2.  向群里的所有人，提出一个开放性的、大家都能参与进来的问题。\n\n[最终指令]\n请综合以上所有信息，用最像你自己的、最自然的方式，生成一句能在群聊中打破僵局、活跃气氛的开场白。",
                 "hint": "这段话将指导LLM在群聊中发起主动消息时的思考。你可以使用 {{unanswered_count}} (未回复次数) 和 {{current_time}} (当前时间) 这两个占位符"
+            },
+            "prompt_templates": {
+                "description": "多提示词模板列表",
+                "type": "list",
+                "invisible": true,
+                "default": [],
+                "hint": "预留字段，用于承载多提示词模板，当前版本暂未开放编辑。留空时回退使用 proactive_prompt。",
+                "items": {
+                    "id": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "name": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "role": {
+                        "type": "string",
+                        "default": "task"
+                    },
+                    "text": {
+                        "type": "text",
+                        "default": ""
+                    },
+                    "enabled": {
+                        "type": "bool",
+                        "default": true
+                    },
+                    "weight": {
+                        "type": "int",
+                        "default": 100
+                    }
+                }
             },
             "context_settings": {
                 "description": "🧩 上下文注入设置",

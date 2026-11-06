@@ -194,9 +194,15 @@ class ApiRoutes:
                 ],
             }
 
-        # 返回 _conf_schema.json 内容，供前端渲染配置表单。
+        # 返回配置 schema，供前端渲染配置表单。
+        # 优先使用运行期装配结果：已合并各 Feature 的配置声明，
+        # 比磁盘上的静态文件更贴近当前实际生效的配置结构。
         @app.get("/api/config-schema")
         async def get_config_schema():
+            runtime_schema = getattr(self.config, "schema", None)
+            if isinstance(runtime_schema, dict) and runtime_schema:
+                return runtime_schema
+
             schema_path = Path(__file__).resolve().parents[2] / "_conf_schema.json"
             if schema_path.exists():
                 try:

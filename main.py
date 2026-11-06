@@ -21,6 +21,7 @@ from .core.domain.domain_enums import TriggerSource
 from .core.pipeline.flow_orchestrator import FlowOrchestrator
 from .core.remote.notification_center import NotificationCenter
 from .core.remote.telemetry_manager import TelemetryManager
+from .core.services.config_assembly_service import ConfigAssemblyService
 from .core.services.config_service import ConfigService
 from .core.services.context_service import ContextService
 from .core.services.lifecycle_service import LifecycleService
@@ -63,6 +64,8 @@ class ProactiveChatPlugin(star.Star):
         self.session_service = SessionService(self)
         self.storage_service = StorageService(self)
         self.config_service = ConfigService(self)
+        # 配置装配：汇总 Feature 自带配置声明并执行一次性数据迁移。
+        self.config_assembly_service = ConfigAssemblyService(self)
         self.scheduler_service = SchedulerService(self)
         self.context_service = ContextService(self)
         self.llm_service = LlmService(self)

@@ -469,6 +469,12 @@ class TelemetryManager:
                 # 私聊主动提示词正文属于高敏感内容，必须完全移除。
                 if "proactive_prompt" in friend_settings:
                     del friend_settings["proactive_prompt"]
+                # 多提示词模板同样整段过滤，只保留条数用于统计。
+                templates = friend_settings.pop("prompt_templates", None)
+                if templates is not None:
+                    friend_settings["prompt_templates_count"] = (
+                        len(templates) if isinstance(templates, list) else 0
+                    )
 
             group_settings = config_copy.get("group_settings")
             if isinstance(group_settings, dict):
@@ -480,6 +486,11 @@ class TelemetryManager:
                 # 群聊提示词也做整段过滤，避免活跃策略被直接暴露。
                 if "proactive_prompt" in group_settings:
                     del group_settings["proactive_prompt"]
+                templates = group_settings.pop("prompt_templates", None)
+                if templates is not None:
+                    group_settings["prompt_templates_count"] = (
+                        len(templates) if isinstance(templates, list) else 0
+                    )
 
             web_admin = config_copy.get("web_admin")
             if isinstance(web_admin, dict) and "password" in web_admin:

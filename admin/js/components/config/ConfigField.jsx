@@ -235,8 +235,9 @@
 }
 
 function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', expandedKeys = [], onToggleExpand = () => {} }) {
-    // hidden 字段完全不渲染，通常用于后端保留字段或不希望前端直接编辑的项。
-    if (schema.hidden) return null;
+    // 隐藏字段完全不渲染：hidden 为本项目写法，invisible 与 AstrBot 面板保持一致，
+    // 两者都用于后端保留字段或不希望用户直接编辑的项。
+    if (schema.hidden || schema.invisible) return null;
 
     // 对输入控件使用一层本地态，便于处理 Slider / 文本输入中的过渡值。
     const [localValue, setLocalValue] = useState(value);

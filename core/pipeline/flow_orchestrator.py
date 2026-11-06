@@ -32,10 +32,18 @@ class FlowOrchestrator:
     # ------------------------------------------------------------------
     # 流水线装配
     # ------------------------------------------------------------------
+    def build_features(self) -> list:
+        """构造默认 Feature 列表。
+
+        仅用于读取 Feature 声明的配置，不执行任何 Stage；
+        配置装配服务与流水线构建共用同一份清单，避免顺序不一致。
+        """
+        return build_default_features(self)
+
     def build_pipeline(self) -> PipelineRunner:
         """构建流水线（装配 Feature 并注入结束行为）。"""
         registry = FeatureRegistry(config=dict(self.plugin.config))
-        registry.register_features(build_default_features(self))
+        registry.register_features(self.build_features())
 
         runner = PipelineRunner(registry.hooks)
         runner.set_stop_handler(HookPoint.GATE, self._on_gate_stop)
