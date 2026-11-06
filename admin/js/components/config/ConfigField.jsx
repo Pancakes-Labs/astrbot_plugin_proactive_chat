@@ -3,9 +3,220 @@
  * 文件职责：单个配置字段渲染组件，按 Schema 类型动态生成输入控件。
  */
 
- const { Box, TextField, Switch, Typography, Accordion, AccordionSummary, AccordionDetails, Paper, Chip, Slider, MenuItem } = MaterialUI;
+ const { Box, TextField, Switch, Typography, Accordion, AccordionSummary, AccordionDetails, Paper, Chip, Slider, MenuItem, Button, Dialog, DialogTitle, DialogContent, DialogActions } = MaterialUI;
  const { useState, useEffect } = React;
  const { stripLeadingEmoji, CONFIG_ICONS } = window.ConfigShared;
+
+ // 人格列表在页面生命周期内只请求一次：字段数量多，逐字段请求会造成重复开销。
+ const personaStore = {
+     items: null,
+     specialOptions: [],
+     promise: null,
+ };
+
+ function loadPersonasOnce() {
+     if (personaStore.items) return Promise.resolve(personaStore);
+     if (personaStore.promise) return personaStore.promise;
+
+     const api = window.ApiClient;
+     if (!api || typeof api.getPersonas !== 'function') {
+         personaStore.items = [];
+         return Promise.resolve(personaStore);
+     }
+
+     personaStore.promise = api.getPersonas()
+         .then((data) => {
+             personaStore.items = (data && data.personas) || [];
+             personaStore.specialOptions = (data && data.special_options) || [];
+             return personaStore;
+         })
+         .catch((err) => {
+             console.error('加载人格列表失败', err);
+             // 人格下拉会因此退化为仅剩特殊选项，提示一次即可（store 保证只请求一次）。
+             if (window.Toast) {
+                 window.Toast.warning((err && err.message) || '人格列表加载失败，已仅保留特殊选项', {
+                     title: '人格列表',
+                     key: 'config-persona-load',
+                 });
+             }
+             personaStore.items = [];
+             return personaStore;
+         })
+         .finally(() => {
+             personaStore.promise = null;
+         });
+
+     return personaStore.promise;
+ }
+
+ // 人格正文预览：复用通知页 / 文档页同一套 Markdown 渲染与清洗能力，
+ // 让用 Markdown 书写的人格提示词也能获得标题、列表、代码块等排版。
+ function PersonaPromptPreview({ content }) {
+     const raw = (content === undefined || content === null) ? '' : String(content);
+
+     const rendered = React.useMemo(() => {
+         if (!raw.trim()) return { isMarkdown: false, html: '' };
+         const util = window.MarkdownRenderUtil;
+         if (!util || typeof util.renderMarkdownToHtml !== 'function') {
+             return { isMarkdown: false, html: '' };
+         }
+         return {
+             // 纯文本人格也允许按 Markdown 渲染：没有语法时输出等价段落，不会变形。
+             isMarkdown: true,
+             html: util.renderMarkdownToHtml(raw),
+         };
+     }, [raw]);
+
+     if (!rendered.isMarkdown) {
+         // Markdown 工具缺失时退回等宽纯文本，至少保证正文完整可读。
+         return (
+             <Typography
+                 component="pre"
+                 sx={{
+                     m: 0,
+                     fontFamily: 'inherit',
+                     fontSize: '0.875rem',
+                     lineHeight: 1.75,
+                     whiteSpace: 'pre-wrap',
+                     wordBreak: 'break-word',
+                 }}
+             >
+                 {raw || '该人格没有可预览的正文内容'}
+             </Typography>
+         );
+     }
+
+     return (
+         <Box
+             className="notification-md persona-prompt-md"
+             // HTML 已在 MarkdownRenderUtil 中完成 sanitize，这里只负责挂载。
+             dangerouslySetInnerHTML={{ __html: rendered.html }}
+         />
+     );
+ }
+
+ // 人格选择器：AstrBot 的 select_persona 在这里用等价下拉实现，
+ // 特殊项（跟随当前人格 / 不使用人格）与真实人格合并展示。
+ // 人格提示词正文改由弹窗查看，避免长文本撑开表单布局。
+ function PersonaSelectField({ schema, fieldKey, localValue, onChange }) {
+     const [personas, setPersonas] = useState(personaStore.items || []);
+     const [specialOptions, setSpecialOptions] = useState(personaStore.specialOptions || []);
+     const [previewOpen, setPreviewOpen] = useState(false);
+
+     useEffect(() => {
+         let disposed = false;
+         loadPersonasOnce().then((store) => {
+             if (disposed) return;
+             setPersonas(store.items || []);
+             setSpecialOptions(store.specialOptions || []);
+         });
+         return () => { disposed = true; };
+     }, []);
+
+     const currentValue = localValue !== undefined && localValue !== null
+         ? String(localValue)
+         : (schema.default !== undefined ? String(schema.default) : '');
+
+     // 已保存的人格可能已被删除，这里补一个占位项，避免下拉框显示空白。
+     const knownValues = new Set([
+         ...specialOptions.map((item) => item.value),
+         ...personas.map((item) => item.name),
+     ]);
+     const valueMissing = currentValue !== '' && !knownValues.has(currentValue);
+     const currentPersona = personas.find((item) => item.name === currentValue);
+     const currentSpecial = specialOptions.find((item) => item.value === currentValue);
+     const currentLabel = (currentSpecial || {}).label || '';
+     // 只有选中真实人格时才提供正文预览入口。
+     const canPreview = Boolean(currentPersona && currentPersona.prompt);
+
+     return (
+         <Box sx={{ py: 1.5 }}>
+             <Box sx={{ mb: 1 }}>
+                 <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary', fontSize: '0.9rem' }}>
+                     {schema.description || fieldKey}
+                 </Typography>
+                 {schema.hint && (
+                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                         {schema.hint}
+                     </Typography>
+                 )}
+             </Box>
+             <TextField
+                 select
+                 fullWidth
+                 size="small"
+                 value={currentValue}
+                 onChange={(e) => onChange(e.target.value)}
+                 variant="outlined"
+                 SelectProps={{
+                     MenuProps: {
+                         PaperProps: {
+                             sx: { borderRadius: 1.5, mt: 0.5, boxShadow: 'var(--md-menu-shadow)' }
+                         }
+                     }
+                 }}
+                 sx={{
+                     '& .MuiOutlinedInput-root': {
+                         borderRadius: 1.5,
+                         bgcolor: 'background.paper',
+                         '&.Mui-focused > fieldset': { borderColor: 'primary.main' }
+                     }
+                 }}
+             >
+                 {specialOptions.map((option) => (
+                     <MenuItem key={`special_${option.value}`} value={option.value}>
+                         {option.label}
+                     </MenuItem>
+                 ))}
+                 {valueMissing && (
+                     <MenuItem key="missing" value={currentValue}>
+                         {`${currentValue}（人格不存在）`}
+                     </MenuItem>
+                 )}
+                 {personas.map((persona) => (
+                     <MenuItem key={persona.name} value={persona.name}>
+                         {persona.name}
+                     </MenuItem>
+                 ))}
+             </TextField>
+
+             {/* 状态行：特殊选项说明或人格正文预览入口，保持单行不撑高表单。 */}
+             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.75, flexWrap: 'wrap' }}>
+                 {currentSpecial && (
+                     <Chip size="small" label={currentLabel} variant="outlined" />
+                 )}
+                 {canPreview && (
+                     <Button
+                         size="small"
+                         variant="text"
+                         onClick={() => setPreviewOpen(true)}
+                         sx={{ minWidth: 'auto', px: 1, py: 0, fontSize: '0.75rem' }}
+                     >
+                         查看人格内容
+                     </Button>
+                 )}
+             </Box>
+
+             <Dialog
+                 open={previewOpen}
+                 onClose={() => setPreviewOpen(false)}
+                 maxWidth="md"
+                 fullWidth
+                 PaperProps={{ sx: { borderRadius: 3 } }}
+             >
+                 <DialogTitle sx={{ fontWeight: 800, pb: 1 }}>
+                     {`人格内容 · ${currentPersona ? currentPersona.name : fieldKey}`}
+                 </DialogTitle>
+                 <DialogContent dividers>
+                     <PersonaPromptPreview content={currentPersona ? currentPersona.prompt : ''} />
+                 </DialogContent>
+                 <DialogActions sx={{ px: 3, py: 1.5 }}>
+                     <Button onClick={() => setPreviewOpen(false)}>关闭</Button>
+                 </DialogActions>
+             </Dialog>
+         </Box>
+     );
+ }
 
  // 把字段描述区抽成模块级组件，避免在 ConfigField 渲染体内重复创建组件类型。
  function DescriptionSection({ schema, fieldKey, flex = 8 }) {
@@ -45,6 +256,18 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
     const titleText = stripLeadingEmoji(rawTitle) || rawTitle;
     const icon = CONFIG_ICONS[fieldKey] || '⚙️';
     const currentPath = path ? `${path}.${fieldKey}` : fieldKey;
+
+    // AstrBot 的 _special 控件类型：select_persona 用同源人格列表渲染。
+    if (schema._special === 'select_persona') {
+        return (
+            <PersonaSelectField
+                schema={schema}
+                fieldKey={fieldKey}
+                localValue={localValue}
+                onChange={handleChange}
+            />
+        );
+    }
 
     // object + items 表示一个可折叠的配置分组，内部再递归渲染子字段。
     if (schema.type === 'object' && schema.items) {
