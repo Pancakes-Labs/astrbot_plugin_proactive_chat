@@ -53,7 +53,8 @@
     // 计时器剩余秒数的统一来源，按“后端快照 + 本地流逝”递增，避免整秒值停滞。
     // 优先使用快照秒数：它与服务器时钟同源，可规避浏览器与服务器时钟偏差；
     // 快照缺失时才退回目标时间推导，两者都没有时返回 null 交由调用方显示“待确认”。
-    function resolveTimerRemainingSeconds(timer, nowMs, snapshotAtMs) {
+    // 使用后端给的 snapshotServerMs 反推补偿量。
+    function resolveTimerRemainingSeconds(timer, nowMs, snapshotAtMs, snapshotServerMs) {
         if (!timer) return null;
         const now = Number(nowMs || Date.now());
 
@@ -66,7 +67,22 @@
                 if (!Number.isFinite(snapshot) || snapshot <= 0) {
                     return Math.max(0, numeric);
                 }
-                const elapsedSeconds = Math.max(0, Math.floor((now - snapshot) / 1000));
+
+                // 服务端快照时刻（秒级时间戳）与本地到达时刻共同估算链路耗时。
+                const serverMs = toEpochMs(snapshotServerMs);
+                let compensationMs = 0;
+                if (serverMs !== null && serverMs > 0) {
+                    // 链路耗时 = 本地到达时刻 - 服务器构建时刻，夹在合理区间防止时钟漂移。
+                    const latencyMs = snapshot - serverMs;
+                    if (Number.isFinite(latencyMs)) {
+                        compensationMs = Math.min(Math.max(latencyMs, 0), 5000);
+                    }
+                }
+
+                const elapsedSeconds = Math.max(
+                    0,
+                    Math.floor((now - snapshot + compensationMs) / 1000)
+                );
                 return Math.max(0, numeric - elapsedSeconds);
             }
         }
