@@ -8,6 +8,7 @@ from .config_service import ConfigService
 from .context_service import ContextService
 from .lifecycle_service import LifecycleService
 from .llm_service import LlmService
+from .log_export_service import LogExportService
 from .scheduler_service import SchedulerService
 from .sender_service import SenderService
 from .session_service import SessionService
@@ -18,6 +19,7 @@ __all__ = [
     "ContextService",
     "LifecycleService",
     "LlmService",
+    "LogExportService",
     "SchedulerService",
     "SenderService",
     "SessionService",
