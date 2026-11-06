@@ -117,13 +117,16 @@ function ConfigEditor() {
 
     // 默认选中第一个会话，避免会话模式初始为空。
     // 优先恢复上次选中的会话，只有它已不存在（会话被删除）时才回退到第一项。
+    // 恢复值来自缓存，因此不能简单地“有选中就跳过”，否则失效会话永远不会被纠正。
     useEffect(() => {
         if (sessions.length === 0) return;
-        if (selectedSession) return;
+        const exists = selectedSession
+            && sessions.some((item) => item && item.session === selectedSession);
+        if (exists) return;
         const saved = savedSessionRef.current;
-        const exists = saved && sessions.some((item) => item && item.session === saved);
-        const nextSession = exists ? saved : (sessions[0] && sessions[0].session);
-        if (nextSession) setSelectedSession(nextSession);
+        const savedExists = saved && sessions.some((item) => item && item.session === saved);
+        const nextSession = savedExists ? saved : (sessions[0] && sessions[0].session);
+        if (nextSession && nextSession !== selectedSession) setSelectedSession(nextSession);
     }, [sessions, selectedSession]);
 
     // 任何浏览上下文变化都写回缓存，供下次进入配置页时恢复。
@@ -293,15 +296,10 @@ function ConfigEditor() {
     // 撤销更改：成功后需要明确告诉用户草稿已丢弃，否则容易怀疑是否真的生效。
     const handleDiscardChanges = async () => {
         if (!window.confirm('确定要撤销所有未保存的更改吗？\n\n这将重新加载服务器上已保存的配置。')) return;
-        localStorage.removeItem(draft.getDraftKey());
-        try {
-            await loader.loadConfig(mode, selectedSession);
-            isDirtyRef.current = false;
-            if (window.Toast) window.Toast.success('未保存的更改已撤销', { title: '配置管理' });
-        } catch (e) {
-            const message = (e && e.message) || '撤销失败，请稍后重试';
-            if (window.Toast) window.Toast.error(message, { title: '撤销失败' });
-        }
+        const applied = await loader.loadConfig(mode, selectedSession);
+        if (!applied) return;
+        isDirtyRef.current = false;
+        if (window.Toast) window.Toast.success('未保存的更改已撤销', { title: '配置管理' });
     };
 
     if (loader.loading) {
