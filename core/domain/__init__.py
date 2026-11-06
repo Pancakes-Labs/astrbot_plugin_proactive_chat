@@ -18,7 +18,15 @@ from .persona_resolution import (
     PERSONA_SOURCE_SESSION_RULE,
     PersonaResolution,
 )
-from .prompt_block import PromptBlock, PromptBundle
+from .prompt_block import PromptBlock, PromptBundle, PromptExtra
+from .prompt_placeholders import (
+    PLACEHOLDER_CURRENT_TIME,
+    PLACEHOLDER_PLATFORM_HISTORY_LINES,
+    PLACEHOLDER_UNANSWERED_COUNT,
+    PLACEHOLDERS,
+    contains_placeholder,
+    render_placeholders,
+)
 from .prompt_templates import (
     LEGACY_PROMPT_KEY,
     MIGRATED_TEMPLATE_ID,
@@ -47,6 +55,10 @@ __all__ = [
     "LEGACY_PROMPT_KEY",
     "LlmOutcome",
     "MIGRATED_TEMPLATE_ID",
+    "PLACEHOLDERS",
+    "PLACEHOLDER_CURRENT_TIME",
+    "PLACEHOLDER_PLATFORM_HISTORY_LINES",
+    "PLACEHOLDER_UNANSWERED_COUNT",
     "PERSONA_SOURCE_BUILTIN",
     "PERSONA_SOURCE_CONVERSATION",
     "PERSONA_SOURCE_DEFAULT",
@@ -59,6 +71,7 @@ __all__ = [
     "ProactiveContext",
     "PromptBlock",
     "PromptBundle",
+    "PromptExtra",
     "SessionConfig",
     "SessionKey",
     "StageResult",
@@ -66,10 +79,12 @@ __all__ = [
     "TriggerSource",
     "build_templates_from_legacy",
     "contains_group_marker",
+    "contains_placeholder",
     "is_friend_type",
     "is_group_type",
     "is_group_umo",
     "normalize_templates",
+    "render_placeholders",
     "resolve_active_prompt",
     "resolve_active_template",
 ]
