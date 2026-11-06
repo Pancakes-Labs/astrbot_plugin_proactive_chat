@@ -233,7 +233,6 @@ async def invoke_provider(provider: Any, req: Any, *, max_tool_rounds: int = 1) 
     while (
         rounds < max_tool_rounds
         and getattr(response, "tools_call_name", None)
-        and not getattr(response, "completion_text", None)
     ):
         tool_calls_result = build_tool_calls_result(response)
         if tool_calls_result is None:
