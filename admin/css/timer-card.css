@@ -564,6 +564,8 @@ body.dark-theme .tcard-fact dt {
 /* 尊重系统“减少动态效果”偏好。 */
 @media (prefers-reduced-motion: reduce) {
     .tcard,
+    /* 紧急态描边动画挂在伪元素上，父选择器无法覆盖，必须显式点出。 */
+    .tcard.is-urgent::before,
     .tcard-hint,
     .tcard-hint-dot,
     .tcard-ring-bar {

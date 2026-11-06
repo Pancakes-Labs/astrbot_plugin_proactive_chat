@@ -501,6 +501,8 @@
     .boot-loader__logo,
     .boot-loader__progress-bar,
     .tcard,
+    /* 紧急态描边动画在伪元素上，必须单独列入才能被关闭。 */
+    .tcard.is-urgent::before,
     .tcard-hint,
     .tcard-hint-dot,
     .tcard-ring-bar,
