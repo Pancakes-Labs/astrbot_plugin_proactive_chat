@@ -28,9 +28,10 @@ from ..adapters.astrbot_event import (
     dispatch_event_hook,
     resolve_message_type,
 )
+from ..adapters.astrbot_ltm import read_group_history_settings, supports_max_messages
 from ..adapters.astrbot_platform import find_platform_by_id
 from ..domain.delivery_report import DeliveryReport
-from ..domain.session_key import is_group_umo
+from ..domain.session_key import is_group_type, is_group_umo, normalize_storage_umo
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -279,11 +280,15 @@ class SenderService:
         self,
         session_id: str,
         chain: MessageChain,
+        via_core_api: bool = False,
     ) -> None:
         """将主动消息补写入平台消息流水。
 
         主动消息不经过真实事件，平台侧不会自动落库，故在此显式补写；
         webchat 平台与缺少历史管理器时静默跳过。
+
+        via_core_api 为 True 表示消息已由核心 context.send_message 送出，
+        该接口在群聊场景下会自行落库，此时跳过补写以避免同键双写。
         """
         plugin = self.plugin
         try:
@@ -298,12 +303,11 @@ class SenderService:
         if not parsed:
             return
 
-        platform_id, _message_type, target_id = parsed
-        # 与 AstrBot 核心保持一致：核心以完整 UMO（str(session)）作为平台流水的
-        # user_id，插件此前使用裸会话 ID 补写，导致主动消息被写入独立的键空间，
-        # 读取侧按 UMO 查询时看不到群聊真实消息。
+        platform_id, message_type, target_id = parsed
+        # 与 AstrBot 核心保持一致：核心以完整 UMO（str(session)）作为平台流水的 user_id
+        # 消息类型段同时规范化为核心的存储形式，避免别名 UMO 写到另一个键空间。
         storage_user_id = (
-            session_id.strip()
+            normalize_storage_umo(session_id)
             if isinstance(session_id, str) and session_id.strip()
             else target_id
         )
@@ -312,6 +316,24 @@ class SenderService:
         history_mgr = getattr(plugin.context, "message_history_manager", None)
         if not history_mgr or message_chain_to_storage_message_parts is None:
             return
+
+        # 群聊补写必须跟随核心开关：关闭时核心从不写入真实群友消息，
+        # 单独补写只会留下核心查询侧不认的孤儿数据。
+        # 注意：核心 send_message 仅在群聊场景落库，私聊仍需插件补写。
+        max_messages: int | None = None
+        if is_group_type(message_type):
+            enabled, max_messages = read_group_history_settings(
+                plugin.context, storage_user_id
+            )
+            if not enabled:
+                logger.debug(
+                    "[主动消息] 核心未启用群聊消息持久化，跳过平台流水补写喵。"
+                )
+                return
+            # 核心已通过 send_message 落库，重复补写会让同一条消息存两份。
+            if via_core_api:
+                logger.debug("[主动消息] 消息已由核心 API 落库，跳过重复补写喵。")
+                return
 
         try:
             db = getattr(history_mgr, "db", None)
@@ -329,13 +351,18 @@ class SenderService:
             if not message_parts:
                 return
 
-            await history_mgr.insert(
-                platform_id=platform_id,
-                user_id=storage_user_id,
-                content={"type": "bot", "message": message_parts},
-                sender_id="bot",
-                sender_name="bot",
-            )
+            insert_kwargs: dict[str, Any] = {
+                "platform_id": platform_id,
+                "user_id": storage_user_id,
+                "content": {"type": "bot", "message": message_parts},
+                "sender_id": "bot",
+                "sender_name": "bot",
+            }
+            # 旧版核心 insert() 没有 max_messages 参数，传入会抛 TypeError。
+            if max_messages is not None and supports_max_messages(history_mgr):
+                insert_kwargs["max_messages"] = max_messages
+
+            await history_mgr.insert(**insert_kwargs)
             logger.debug(
                 f"[主动消息] 已将主动消息补写入平台 ({platform_id}) 的流水喵，会话标识为 {storage_user_id}。"
             )
@@ -382,7 +409,10 @@ class SenderService:
             session_obj = MS(platform_name=p_id, message_type=m_type, session_id=t_id)
             await target_platform.send_by_session(session_obj, chain)
             logger.debug(f"[主动消息] 消息将通过平台 {p_id} 送达喵")
-            await self.persist_proactive_message_to_platform_history(session_id, chain)
+            # 核心 send_message 在群聊场景下会自行落库，标记来源避免同键双写。
+            await self.persist_proactive_message_to_platform_history(
+                session_id, chain, via_core_api=True
+            )
             return True
         except Exception as e:
             logger.error(f"[主动消息] 通过平台 {p_id} 发送失败喵: {e}")
@@ -418,7 +448,10 @@ class SenderService:
             )
             return False
 
-        await self.persist_proactive_message_to_platform_history(session_id, chain)
+        # 核心 send_message 在群聊场景下会自行落库，标记来源避免同键双写。
+        await self.persist_proactive_message_to_platform_history(
+            session_id, chain, via_core_api=True
+        )
         return True
 
     async def send_chain(

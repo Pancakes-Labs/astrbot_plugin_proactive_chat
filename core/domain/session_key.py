@@ -116,3 +116,32 @@ class SessionKey:
     # ------------------------------------------------------------------
     def __str__(self) -> str:
         return f"{self.platform}:{self.message_type}:{self.target_id}"
+
+
+def normalize_storage_umo(umo: str) -> str:
+    """把 UMO 的消息类型段规范化为 AstrBot 核心使用的存储形式。
+
+    核心以 str(MessageSession) 落库，类型段固定为标准枚举值。配置里允许写
+    “platform:group:id”这类别名，直接用来查询只会命中一个独立的键空间，
+    导致读不到核心写入的群聊记录。已是标准形式时逐字符原样返回。
+    """
+    if not isinstance(umo, str):
+        return umo
+
+    text = umo.strip()
+    if not text:
+        return text
+
+    key = SessionKey.parse(text)
+    if key is None or key.message_type in KNOWN_MESSAGE_TYPES:
+        return text
+
+    lowered = key.message_type.lower()
+    if "group" in lowered or "guild" in lowered:
+        message_type = "GroupMessage"
+    elif "friend" in lowered or "private" in lowered:
+        message_type = "FriendMessage"
+    else:
+        return text
+
+    return f"{key.platform}:{message_type}:{key.target_id}"

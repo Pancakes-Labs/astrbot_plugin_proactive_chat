@@ -12,7 +12,9 @@ from astrbot.api import logger
 
 from ...utils.time_utils import format_current_time
 from ..adapters.astrbot_conversation import load_conversation_history
+from ..adapters.astrbot_ltm import read_group_history_settings
 from ..domain.content_text import reduce_segment_text
+from ..domain.session_key import is_group_umo, normalize_storage_umo
 
 # 群聊主动破冰的默认流水提示词模板。
 # 外部化后便于后续“多提示词模板注入”功能复用或覆盖，
@@ -293,18 +295,36 @@ class ContextService:
     ) -> tuple[list[Any], int]:
         """读取平台聊天流水记录。
 
-        依次尝试各候选 user_id，遇到首个非空结果即返回；全部失败返回空列表。
+        逐个候选键读取并按记录 ID 去重合并，而非命中即返回：升级前补写到
+        裸会话 ID 键下的主动消息仍会被纳入上下文，不会因切换键空间而丢失。
+        全部候选均无记录时返回空列表。
         """
         if limit <= 0:
             return [], 0
 
-        parsed = self.parse_umo_for_platform_history(session_id)
+        # 消息类型段先规范化为核心的存储形式，避免别名 UMO 查到独立键空间。
+        storage_session_id = normalize_storage_umo(session_id)
+
+        parsed = self.parse_umo_for_platform_history(storage_session_id)
         if not parsed:
             return [], 0
 
         platform_id, raw_user_key = parsed
+
+        # 核心开关关闭时读不到任何群友消息，提前告警并放弃本次读取。
+        if is_group_umo(storage_session_id) and platform_id != "webchat":
+            enabled, _ = read_group_history_settings(
+                self.plugin.context, storage_session_id
+            )
+            if not enabled:
+                logger.warning(
+                    "[主动消息] 平台流水中没有真实群友消息：AstrBot 核心的"
+                    "“持久化群聊消息记录”未启用，插件无法读取群聊上下文喵。"
+                )
+                return [], 0
+
         user_candidates = self.build_platform_history_user_candidates(
-            raw_user_key, raw_session_id=session_id
+            raw_user_key, raw_session_id=storage_session_id
         )
         if not user_candidates:
             return [], 0
@@ -316,6 +336,8 @@ class ContextService:
             )
             return [], 0
 
+        merged: list[Any] = []
+        seen_ids: set[Any] = set()
         for user_id in user_candidates:
             try:
                 records = await mgr.get(
@@ -324,9 +346,6 @@ class ContextService:
                     page=1,
                     page_size=limit,
                 )
-                normalized_records = list(records or [])
-                if normalized_records:
-                    return normalized_records, len(normalized_records)
             except Exception as e:
                 logger.warning(
                     f"[主动消息] 读取平台流水失败喵：平台标识为“{platform_id}”，用户标识为“{user_id}”，异常信息：{e}",
@@ -334,7 +353,38 @@ class ContextService:
                 )
                 continue
 
-        return [], 0
+            for record in records or []:
+                record_id = self.get_platform_record_field(record, "id", None)
+                # 缺少主键时按对象身份去重，避免同一记录重复注入。
+                marker = record_id if record_id is not None else id(record)
+                if marker in seen_ids:
+                    continue
+                seen_ids.add(marker)
+                merged.append(record)
+
+        if not merged:
+            return [], 0
+
+        # 核心 get() 已按时间倒序返回，合并后统一按 (created_at, id) 正序排列。
+        merged.sort(key=self._platform_record_sort_key)
+        return merged[-limit:], min(len(merged), limit)
+
+    @staticmethod
+    def _platform_record_sort_key(record: Any) -> tuple[str, int]:
+        """生成平台记录的时间正序排序键。"""
+        created_at = ""
+        record_id = 0
+        if isinstance(record, dict):
+            created_at = str(record.get("created_at") or "")
+            record_id = record.get("id") or 0
+        else:
+            created_at = str(getattr(record, "created_at", "") or "")
+            record_id = getattr(record, "id", 0) or 0
+        try:
+            record_id = int(record_id)
+        except (TypeError, ValueError):
+            record_id = 0
+        return created_at, record_id
 
     def get_platform_record_field(
         self,
