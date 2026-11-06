@@ -25,6 +25,24 @@ class EventHandlers:
         self.plugin = plugin
 
     # ------------------------------------------------------------------
+    # 内部辅助：Web 控制台状态广播
+    # ------------------------------------------------------------------
+    async def _notify_web_console(self, reason: str) -> None:
+        """通知 Web 控制台刷新计时器卡片。
+
+        此前群聊消息只重置后端计时器却从不广播，前端只能等通知中心的慢轮询
+        兜底，导致群内新消息要十几秒后卡片才响应。这里在事件处理完后立即广播。
+        广播本身是异步合并的，任何异常都不能影响消息主流程。
+        """
+        web = getattr(self.plugin, "web_admin_server", None)
+        if not web:
+            return
+        try:
+            await web._broadcast_update(reason)
+        except Exception as e:
+            logger.debug(f"[主动消息] 广播 {reason} 状态失败喵: {e}")
+
+    # ------------------------------------------------------------------
     # 内部辅助：会话键迁移（集中收敛原重复 4 次的逻辑）
     # ------------------------------------------------------------------
     def _migrate_raw_key(self, session_id: str, normalized_session_id: str) -> bool:
@@ -161,6 +179,8 @@ class EventHandlers:
         await self.plugin.scheduler_service.schedule_next_chat_and_save(
             normalized_session_id, reset_counter=True
         )
+        # 私聊有新消息同样会改变自动触发计时器，需立即同步到管理端。
+        await self._notify_web_console("friend_message")
 
     # ------------------------------------------------------------------
     # 群聊
@@ -347,6 +367,9 @@ class EventHandlers:
             if changed:
                 await self.plugin.storage_service.save_data()
 
+        # 群沉默计时器已在上面重置，立即广播让卡片刷新而不是等慢轮询。
+        await self._notify_web_console("group_message")
+
     # ------------------------------------------------------------------
     # 发送后
     # ------------------------------------------------------------------
@@ -402,6 +425,8 @@ class EventHandlers:
             )
             if normalized_session_id in self.plugin.session_temp_state:
                 del self.plugin.session_temp_state[normalized_session_id]
+            # Bot 发言后沉默计时器重新开始，需要同步给管理端。
+            await self._notify_web_console("after_message_sent")
         except Exception as e:
             logger.error(
                 f"[主动消息] {self.plugin.session_service.get_session_log_str(session_id)} 的 after_message_sent 处理异常喵: {e}"
