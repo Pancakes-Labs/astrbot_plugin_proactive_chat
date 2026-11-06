@@ -240,11 +240,13 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
         self.proactive_sent_chains.append(message)
 
         sent = False
+        via_core_api = False
         platform = self._resolve_platform()
         # 平台实例可用且运行中时优先直发。
         if platform is not None and platform.status == PlatformStatus.RUNNING:
             if MessageSession is None:  # pragma: no cover - 极旧版本
                 sent = await self._send_via_core_api(message)
+                via_core_api = sent
             else:
                 try:
                     session_obj = MessageSession(
@@ -263,6 +265,7 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
 
         if not sent:
             sent = await self._send_via_core_api(message)
+            via_core_api = sent
 
         if not sent:
             self.proactive_send_failed = True
@@ -270,7 +273,7 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
             return False
 
         self._has_send_oper = True
-        await self._persist_sent_chain(message)
+        await self._persist_sent_chain(message, via_core_api=via_core_api)
         return True
 
     async def _send_via_core_api(self, message: MessageChain) -> bool:
@@ -288,13 +291,27 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
             return False
         return True
 
-    async def _persist_sent_chain(self, message: MessageChain) -> None:
-        """调用注入的回调补写平台流水（回调缺失时静默跳过）。"""
+    async def _persist_sent_chain(
+        self, message: MessageChain, via_core_api: bool = False
+    ) -> None:
+        """调用注入的回调补写平台流水（回调缺失时静默跳过）。
+
+        via_core_api 交由回调判断，核心已落库时避免同键双写。
+        """
         callback = self._proactive_persist_history
         if callback is None:
             return
+
+        kwargs: dict[str, Any] = {}
+        # 先探测签名再传参，避免把回调内部的 TypeError 误当作签名不兼容。
         try:
-            await callback(self._proactive_umo, message)
+            if "via_core_api" in inspect.signature(callback).parameters:
+                kwargs["via_core_api"] = via_core_api
+        except (TypeError, ValueError):  # pragma: no cover - 不可内省回调
+            pass
+
+        try:
+            await callback(self._proactive_umo, message, **kwargs)
         except Exception as e:  # pragma: no cover - 取决于运行时
             logger.warning(f"[主动消息] 补写平台流水失败喵: {e}")
 
