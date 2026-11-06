@@ -50,6 +50,9 @@ class LifecycleService:
                 f"[主动消息] 配置验证发现问题喵: {e}，将继续使用默认设置喵。"
             )
 
+        # 配置装配必须在加载会话数据之前完成：后续调度会直接读取迁移后的配置。
+        await plugin.config_assembly_service.assemble()
+
         # 加载持久化的会话数据。
         async with plugin.data_lock:
             await plugin.storage_service.load_data()
