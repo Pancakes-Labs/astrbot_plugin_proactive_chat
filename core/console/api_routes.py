@@ -122,7 +122,7 @@ class ApiRoutes:
         # 运行状态总览（含计时器卡片与连接数）。
         @app.get("/api/status")
         async def get_status():
-            return state.build_status_payload()
+            return await state.build_status_payload()
 
         # 可浏览的 Markdown 文档列表。
         @app.get("/api/markdown-files")
@@ -176,6 +176,22 @@ class ApiRoutes:
                 "web_admin": web_admin,
                 "notification_settings": _config_group("notification_settings"),
                 "telemetry_config": _config_group("telemetry_config"),
+            }
+
+        # 可用人格列表：直接读 AstrBot 的 persona_manager，与 WebUI 保持同源。
+        @app.get("/api/personas")
+        async def list_personas():
+            personas = await plugin.context_service.list_available_personas()
+            return {
+                "personas": personas,
+                # 供前端在 select_persona 控件中渲染“继承/不使用”两个特殊选项。
+                "special_options": [
+                    {"value": "", "label": "跟随 AstrBot 当前人格"},
+                    {
+                        "value": "[%None]",
+                        "label": "不使用人格（仅用主动消息提示词）",
+                    },
+                ],
             }
 
         # 返回 _conf_schema.json 内容，供前端渲染配置表单。
@@ -307,6 +323,48 @@ class ApiRoutes:
                 "effective": plugin.config_service.get_session_config(normalized),
             }
 
+        # 预览某会话最终生效的人格与来源，使用独立前缀避免路径贪婪匹配。
+        @app.get("/api/persona-preview/{umo:path}")
+        async def preview_session_persona(umo: str):
+            normalized = plugin.session_service.normalize_session_id(umo)
+            # 解析对话人格需要真实对话对象，缺失时按 None 处理即可。
+            conversation = None
+            try:
+                conv_id = (
+                    await plugin.context.conversation_manager.get_curr_conversation_id(
+                        normalized
+                    )
+                )
+                if conv_id:
+                    conversation = (
+                        await plugin.context.conversation_manager.get_conversation(
+                            normalized, conv_id
+                        )
+                    )
+            except Exception as e:
+                logger.debug(f"[主动消息] 预览人格时读取对话失败喵: {e}")
+
+            service = plugin.context_service
+            resolution = await service.resolve_persona(normalized, conversation)
+            # 各来源原始取值一并返回，便于定位优先级遮蔽问题。
+            candidates = {
+                "plugin_config": service.get_plugin_persona_id(normalized),
+                "profile": service.get_profile_persona_id(normalized),
+                "session_rule": await service.get_session_rule_persona_id(normalized),
+                "conversation": service.get_conversation_persona_id(conversation),
+                "default": await service.get_default_persona_id(normalized),
+            }
+            return {
+                "session": normalized,
+                "persona_id": resolution.persona_id,
+                "persona_name": resolution.persona_name,
+                "persona_source": resolution.source,
+                "persona_source_label": resolution.source_label,
+                "has_prompt": bool(resolution.system_prompt),
+                "disabled": resolution.disabled,
+                "candidates": candidates,
+            }
+
         # 写入会话配置：mode=override 直接覆盖差异；否则按 effective 反推差异。
         @app.post("/api/session-config/{umo:path}")
         async def update_session_config(umo: str, payload: dict[str, Any]):
@@ -362,7 +420,7 @@ class ApiRoutes:
         # 调度任务列表。
         @app.get("/api/jobs")
         async def list_jobs():
-            return {"jobs": state.collect_jobs()}
+            return {"jobs": await state.collect_jobs_async()}
 
         # 手动重新调度下一次主动消息（不重置未回复计数）。
         @app.post("/api/jobs/{umo:path}/reschedule")
@@ -617,8 +675,8 @@ class ApiRoutes:
                     {
                         "type": "full_update",
                         "data": {
-                            "status": state.build_status_payload(),
-                            "jobs": state.collect_jobs(),
+                            "status": await state.build_status_payload(),
+                            "jobs": await state.collect_jobs_async(),
                             "sessions": state.list_known_session_summaries(),
                             "notifications": await state.build_notification_payload(),
                         },
@@ -649,8 +707,8 @@ class ApiRoutes:
                             {
                                 "type": "full_update",
                                 "data": {
-                                    "status": state.build_status_payload(),
-                                    "jobs": state.collect_jobs(),
+                                    "status": await state.build_status_payload(),
+                                    "jobs": await state.collect_jobs_async(),
                                     "sessions": state.list_known_session_summaries(),
                                     "notifications": await state.build_notification_payload(),
                                 },
