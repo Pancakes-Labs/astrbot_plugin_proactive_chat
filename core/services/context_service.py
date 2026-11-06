@@ -398,9 +398,6 @@ class ContextService:
         if not persona_id:
             return "", ""
 
-        if persona_id == "default":
-            return "default", BUILTIN_FALLBACK_PERSONA_PROMPT
-
         persona_manager = getattr(
             getattr(self.plugin, "context", None), "persona_manager", None
         )
@@ -443,6 +440,11 @@ class ContextService:
                         str(getattr(persona, "persona_id", "") or persona_id),
                         prompt,
                     )
+
+        # default 人格允许在 AstrBot 中被改写，因此必须等上面的查询全部落空后
+        # 才回落到内置提示词，否则会覆盖用户已保存的正文。
+        if persona_id == "default":
+            return "default", BUILTIN_FALLBACK_PERSONA_PROMPT
 
         return "", ""
 
@@ -642,13 +644,18 @@ class ContextService:
         except Exception as e:
             logger.debug(f"[主动消息] 读取人格列表失败喵: {e}")
 
-        # 内置默认人格不在 personas_v3 列表中，但可通过 ID "default" 命中，
-        # 因此单独补充，避免前端把已配置的 default 误判为“人格不存在”。
-        if "default" not in seen:
+        # 内置默认人格可能不在 personas_v3 中，也可能存在但正文为空。
+        # 两种情况都要用内置提示词补位，保证下拉项与解析路径取到同一份内容。
+        default_entry = next(
+            (item for item in personas if item["name"] == "default"), None
+        )
+        if default_entry is None:
             personas.insert(
                 0,
                 {"name": "default", "prompt": BUILTIN_FALLBACK_PERSONA_PROMPT},
             )
+        elif not default_entry["prompt"]:
+            default_entry["prompt"] = BUILTIN_FALLBACK_PERSONA_PROMPT
 
         return personas
 
