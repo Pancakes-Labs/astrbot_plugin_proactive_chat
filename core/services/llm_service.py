@@ -13,6 +13,7 @@ from astrbot.api import logger
 from ...utils.time_utils import format_current_time
 from ..adapters.astrbot_event import dispatch_event_hook
 from ..adapters.astrbot_provider import build_provider_request, invoke_provider
+from ..domain.prompt_templates import resolve_active_prompt
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -157,7 +158,8 @@ class LlmService:
         请求的模型，供后续按场景（压缩、降级、专用模型）分层调用复用。
         """
         plugin = self.plugin
-        motivation_template = session_config.get("proactive_prompt", "") or ""
+        # 提示词来源统一走模板解析：用户模板 > 旧字段 > 迁移留档，保证迁移前后无感。
+        motivation_template = resolve_active_prompt(session_config) or ""
         now_str = format_current_time(plugin.timezone)
         final_user_simulation_prompt = motivation_template.replace(
             "{{unanswered_count}}", str(unanswered_count)
