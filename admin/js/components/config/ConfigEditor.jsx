@@ -294,10 +294,12 @@ function ConfigEditor() {
     };
 
     // 撤销更改：成功后需要明确告诉用户草稿已丢弃，否则容易怀疑是否真的生效。
+    // 草稿必须在加载成功后再删除：失败时保留，用户还能找回未保存的修改。
     const handleDiscardChanges = async () => {
         if (!window.confirm('确定要撤销所有未保存的更改吗？\n\n这将重新加载服务器上已保存的配置。')) return;
         const applied = await loader.loadConfig(mode, selectedSession);
         if (!applied) return;
+        localStorage.removeItem(draft.getDraftKey());
         isDirtyRef.current = false;
         if (window.Toast) window.Toast.success('未保存的更改已撤销', { title: '配置管理' });
     };
