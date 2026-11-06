@@ -26,6 +26,8 @@ class OverrideStore:
         # 会话级专用人格，需允许覆写才能按会话差异化指定。
         "persona_id",
         "proactive_prompt",
+        # 多提示词模板：预留会话级覆写能力，便于后续按会话细分模板。
+        "prompt_templates",
         "context_settings",
         "auto_trigger_settings",
         "schedule_settings",
