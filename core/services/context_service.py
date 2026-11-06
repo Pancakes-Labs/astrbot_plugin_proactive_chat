@@ -14,7 +14,23 @@ from ...utils.time_utils import format_current_time
 from ..adapters.astrbot_conversation import load_conversation_history
 from ..adapters.astrbot_ltm import read_group_history_settings
 from ..domain.content_text import reduce_segment_text
+from ..domain.persona_resolution import (
+    BUILTIN_FALLBACK_PERSONA_PROMPT,
+    PERSONA_SOURCE_CONVERSATION,
+    PERSONA_SOURCE_DEFAULT,
+    PERSONA_SOURCE_DISABLED,
+    PERSONA_SOURCE_PLUGIN,
+    PERSONA_SOURCE_PROFILE,
+    PERSONA_SOURCE_SESSION_RULE,
+    PersonaResolution,
+)
 from ..domain.session_key import is_group_umo, normalize_storage_umo
+
+# AstrBot 的共享偏好存储用于读取会话级特殊规则（自定义规则）。
+try:  # pragma: no cover - 取决于 AstrBot 版本
+    from astrbot.api import sp
+except ImportError:  # pragma: no cover
+    sp = None  # type: ignore[assignment]
 
 # 群聊主动破冰的默认流水提示词模板。
 # 外部化后便于后续“多提示词模板注入”功能复用或覆盖，
@@ -221,6 +237,381 @@ class ContextService:
             "bot_identifiers": bot_identifiers,
             "platform_context_max_chars": max_chars,
         }
+
+    # ------------------------------------------------------------------
+    # 人格解析
+    # ------------------------------------------------------------------
+    def normalize_persona_id(self, value: Any) -> str:
+        """把配置里的人格值归一化为字符串；空值与占位值统一返回空串。"""
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        # AstrBot WebUI 对“未选择”会给 null / None 之类的字面量。
+        if text.lower() in {"none", "null", "undefined", "default_persona"}:
+            return ""
+        return text
+
+    def is_persona_none_marker(self, value: Any) -> bool:
+        """判断值是否为 AstrBot 表示“显式取消人格”的特殊标记。"""
+        if value is None:
+            return False
+        return str(value).strip().lower() == "[%none]"
+
+    def get_plugin_persona_id(self, session_id: str) -> str:
+        """读取插件配置（含会话差异覆写）中指定的人格 ID。"""
+        config_service = getattr(self.plugin, "config_service", None)
+        if config_service is None:
+            return ""
+        try:
+            session_config = config_service.get_session_config(session_id) or {}
+        except Exception:
+            return ""
+        if not isinstance(session_config, dict):
+            return ""
+        return self.normalize_persona_id(session_config.get("persona_id"))
+
+    def get_profile_persona_id(self, session_id: str) -> str:
+        """读取会话所绑定独立配置档案中的默认人格。
+
+        用 get_conf_info 判断该会话是否真的绑定了独立档案。
+        """
+        acm = getattr(getattr(self.plugin, "context", None), "astrbot_config_mgr", None)
+        if acm is None:
+            return ""
+
+        # 未绑定独立档案时直接返回空，交由后续候选继续解析。
+        get_info = getattr(acm, "get_conf_info", None)
+        if callable(get_info):
+            try:
+                info = get_info(session_id)
+                conf_id = ""
+                if isinstance(info, dict):
+                    conf_id = str(info.get("id") or "")
+                else:
+                    conf_id = str(getattr(info, "id", "") or "")
+                if not conf_id or conf_id == "default":
+                    return ""
+            except Exception as e:
+                logger.debug(f"[主动消息] 读取会话配置档案元信息失败喵: {e}")
+                return ""
+
+        try:
+            conf = acm.get_conf(session_id)
+            provider_settings = conf.get("provider_settings", {}) or {}
+            return self.normalize_persona_id(
+                provider_settings.get("default_personality")
+            )
+        except Exception as e:
+            logger.debug(f"[主动消息] 解析配置档案人格失败喵: {e}")
+            return ""
+
+    def get_global_default_persona_id(self) -> str:
+        """读取 AstrBot 全局默认人格 ID（默认配置档案的 provider_settings）。"""
+        acm = getattr(getattr(self.plugin, "context", None), "astrbot_config_mgr", None)
+        if acm is not None:
+            try:
+                default_conf = getattr(acm, "default_conf", None) or acm.get_conf(None)
+                provider_settings = default_conf.get("provider_settings", {}) or {}
+                persona_id = self.normalize_persona_id(
+                    provider_settings.get("default_personality")
+                )
+                if persona_id:
+                    return persona_id
+            except Exception as e:
+                logger.debug(f"[主动消息] 读取全局默认人格失败喵: {e}")
+
+        # 回退到 persona_manager 在初始化时选定的默认人格。
+        persona_manager = getattr(
+            getattr(self.plugin, "context", None), "persona_manager", None
+        )
+        selected = getattr(persona_manager, "selected_default_persona_v3", None)
+        if selected:
+            try:
+                return self.normalize_persona_id(selected["name"])
+            except Exception:
+                return ""
+        return ""
+
+    async def get_session_rule_persona_id(self, session_id: str) -> str:
+        """读取 AstrBot 自定义规则（session_service_config）强制指定的人格。"""
+        if sp is None:
+            return ""
+        try:
+            session_service_config = (
+                await sp.get_async(
+                    scope="umo",
+                    scope_id=str(session_id),
+                    key="session_service_config",
+                    default={},
+                )
+                or {}
+            )
+        except Exception as e:
+            logger.debug(f"[主动消息] 读取会话自定义规则失败喵: {e}")
+            return ""
+        if not isinstance(session_service_config, dict):
+            return ""
+        raw = session_service_config.get("persona_id")
+        # [%None] 需要保留原样，交由上层判断为“显式禁用”。
+        return str(raw).strip() if raw else ""
+
+    def get_conversation_persona_id(self, conversation: Any) -> str:
+        """读取当前对话对象上绑定的人格 ID。"""
+        if conversation is None:
+            return ""
+        raw = getattr(conversation, "persona_id", None)
+        return self.normalize_persona_id(raw)
+
+    async def get_default_persona_id(self, session_id: str) -> str:
+        """读取“默认人格”候选 ID。
+
+        这里只取全局默认人格：会话绑定档案已作为独立候选参与解析。
+        """
+        global_id = self.get_global_default_persona_id()
+        if global_id:
+            return global_id
+
+        persona_manager = getattr(
+            getattr(self.plugin, "context", None), "persona_manager", None
+        )
+        if persona_manager is None:
+            return ""
+        try:
+            default_persona = await persona_manager.get_default_persona_v3(
+                umo=session_id
+            )
+        except Exception as e:
+            logger.debug(f"[主动消息] 读取默认人格失败喵: {e}")
+            return ""
+        if not default_persona:
+            return ""
+        return self.normalize_persona_id(default_persona["name"])
+
+    async def find_persona_prompt(self, persona_id: str) -> tuple[str, str]:
+        """按人格 ID 查找实际提示词，返回 (人格名, 系统提示词)。
+
+        依次尝试 v3 内存缓存、数据库 Persona 记录，最后回落到旧版接口，
+        兼容不同 AstrBot 版本的人格存储形态。
+        """
+        if not persona_id:
+            return "", ""
+
+        persona_manager = getattr(
+            getattr(self.plugin, "context", None), "persona_manager", None
+        )
+        if persona_manager is None:
+            return "", ""
+
+        # v3 内存缓存优先：plugins 与 Web 面板看到的是同一份数据。
+        try:
+            for persona in getattr(persona_manager, "personas_v3", []) or []:
+                if persona.get("name") == persona_id:
+                    prompt = persona.get("prompt") or ""
+                    if prompt:
+                        return persona_id, prompt
+                    break
+        except Exception:
+            pass
+
+        resolver = getattr(persona_manager, "get_persona_v3_by_id", None)
+        if callable(resolver):
+            try:
+                persona = resolver(persona_id)
+            except Exception:
+                persona = None
+            if persona:
+                prompt = persona.get("prompt") or ""
+                if prompt:
+                    return str(persona.get("name") or persona_id), prompt
+
+        # 再尝试数据库记录（旧版 / 未进入 v3 缓存的场景）。
+        getter = getattr(persona_manager, "get_persona", None)
+        if callable(getter):
+            try:
+                persona = await getter(persona_id)
+            except Exception:
+                persona = None
+            if persona:
+                prompt = getattr(persona, "system_prompt", "") or ""
+                if prompt:
+                    return (
+                        str(getattr(persona, "persona_id", "") or persona_id),
+                        prompt,
+                    )
+
+        return "", ""
+
+    async def resolve_persona(
+        self,
+        session_id: str,
+        conversation: Any = None,
+    ) -> PersonaResolution:
+        """解析该会话最终生效的人格（主动消息唯一人格入口）。
+
+        优先级（高 -> 低），对齐 AstrBot 原生 _ensure_persona 的先后关系：
+        插件配置/会话覆写 > 自定义规则 > 当前对话(/persona) > 会话绑定档案 > 全局默认
+
+        注意事项：
+        - 插件配置与自定义规则里的 [%None] 均表示不使用人格，直接返回 disabled。
+        - 对话人格为 [%None]（/persona unset）时仅跳过该候选，继续回落默认人格。
+        - 命中插件/规则、但会话同时绑定了独立档案时，打 warning 提示两套配置并存。
+        - 所有候选都取不到提示词时返回空 system_prompt，由调用方决定是否放弃。
+        """
+        candidates: list[tuple[str, str]] = []
+        profile_persona_id = self.get_profile_persona_id(session_id)
+
+        def _warn_shadowed(source_label: str, persona_id: str) -> None:
+            """命中高优先级来源且存在独立档案时提示用户，避免误以为档案没生效。"""
+            if not profile_persona_id or profile_persona_id == persona_id:
+                return
+            logger.warning(
+                f"[主动消息] {session_id} 同时存在独立配置档案人格 "
+                f"'{profile_persona_id}'，但本次由{source_label}人格 '{persona_id}' 生效喵。"
+            )
+
+        plugin_persona_id = self.get_plugin_persona_id(session_id)
+        if plugin_persona_id:
+            if self.is_persona_none_marker(plugin_persona_id):
+                logger.info(
+                    f"[主动消息] 插件配置已显式禁用 {session_id} 的人格，本次不注入系统提示词喵。"
+                )
+                return PersonaResolution(
+                    persona_id="",
+                    persona_name="",
+                    system_prompt="",
+                    source=PERSONA_SOURCE_DISABLED,
+                )
+            _warn_shadowed("插件配置", plugin_persona_id)
+            candidates.append((PERSONA_SOURCE_PLUGIN, plugin_persona_id))
+
+        rule_persona_id = await self.get_session_rule_persona_id(session_id)
+        if rule_persona_id:
+            if self.is_persona_none_marker(rule_persona_id):
+                # 与 AstrBot 原生行为一致：规则写了 [%None] 表示不注入人格，
+                # 且不再继续向下尝试默认人格，否则用户“取消人格”的设置会被无视。
+                logger.info(
+                    f"[主动消息] 自定义规则已将 {session_id} 的人格设为 [%None]，本次不注入人格喵。"
+                )
+                return PersonaResolution(
+                    persona_id="",
+                    persona_name="",
+                    system_prompt="",
+                    source=PERSONA_SOURCE_DISABLED,
+                )
+            _warn_shadowed("自定义规则", rule_persona_id)
+            candidates.append((PERSONA_SOURCE_SESSION_RULE, rule_persona_id))
+
+        conversation_persona_id = self.get_conversation_persona_id(conversation)
+        if conversation_persona_id and not self.is_persona_none_marker(
+            conversation_persona_id
+        ):
+            _warn_shadowed("当前对话", conversation_persona_id)
+            candidates.append((PERSONA_SOURCE_CONVERSATION, conversation_persona_id))
+
+        if profile_persona_id:
+            candidates.append((PERSONA_SOURCE_PROFILE, profile_persona_id))
+
+        default_persona_id = await self.get_default_persona_id(session_id)
+        if default_persona_id:
+            candidates.append((PERSONA_SOURCE_DEFAULT, default_persona_id))
+
+        # 去重后逐个尝试，命中第一个可用人格即生效。
+        seen: set[str] = set()
+        for source, persona_id in candidates:
+            if persona_id in seen:
+                continue
+            seen.add(persona_id)
+            persona_name, prompt = await self.find_persona_prompt(persona_id)
+            if prompt:
+                logger.debug(
+                    f"[主动消息] 人格解析命中来源：{source} 喵，使用人格：{persona_name}。"
+                )
+                return PersonaResolution(
+                    persona_id=persona_id,
+                    persona_name=persona_name,
+                    system_prompt=prompt,
+                    source=source,
+                )
+
+        logger.warning(
+            f"[主动消息] 会话 {session_id} 未解析到任何可用人格提示词喵，候选来源数：{len(candidates)} 个。"
+        )
+        return PersonaResolution()
+
+    async def resolve_personas_for_sessions(
+        self,
+        sessions: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """批量解析多个会话的生效人格，供管理端卡片展示。
+
+        返回 {session_id: 人格摘要}；单个会话解析失败不影响其它会话。
+        卡片场景不需要完整提示词，这里只回传标识、来源与是否禁用，
+        避免把人格正文带给前端造成无谓的传输与泄露面。
+        """
+        result: dict[str, dict[str, Any]] = {}
+        for session_id in sessions:
+            if not session_id or session_id in result:
+                continue
+            try:
+                resolution = await self.resolve_persona(session_id)
+                result[session_id] = {
+                    "persona_id": resolution.persona_id,
+                    "persona_name": resolution.persona_name,
+                    "persona_source": resolution.source,
+                    "persona_source_label": resolution.source_label,
+                    "disabled": resolution.disabled,
+                    "ok": resolution.ok,
+                }
+            except Exception as e:
+                logger.debug(
+                    f"[主动消息] 解析 {session_id} 的人格摘要失败喵: {e}"
+                )
+                result[session_id] = {
+                    "persona_id": "",
+                    "persona_name": "",
+                    "persona_source": "",
+                    "persona_source_label": "",
+                    "disabled": False,
+                    "ok": False,
+                }
+        return result
+
+    async def list_available_personas(self) -> list[dict[str, Any]]:
+        """列出可用于配置选择的人格（与 AstrBot WebUI 使用同一数据源）。"""
+        persona_manager = getattr(
+            getattr(self.plugin, "context", None), "persona_manager", None
+        )
+        if persona_manager is None:
+            return []
+
+        personas: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        try:
+            for persona in getattr(persona_manager, "personas_v3", []) or []:
+                name = str(persona.get("name") or "").strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                personas.append(
+                    {
+                        "name": name,
+                        "prompt": persona.get("prompt") or "",
+                    }
+                )
+        except Exception as e:
+            logger.debug(f"[主动消息] 读取人格列表失败喵: {e}")
+
+        # 内置默认人格不在 personas_v3 列表中，但可通过 ID "default" 命中，
+        # 因此单独补充，避免前端把已配置的 default 误判为“人格不存在”。
+        if "default" not in seen:
+            personas.insert(
+                0,
+                {"name": "default", "prompt": BUILTIN_FALLBACK_PERSONA_PROMPT},
+            )
+
+        return personas
 
     # ------------------------------------------------------------------
     # 平台流水读取
@@ -742,29 +1133,16 @@ class ContextService:
 
             pure_history_messages = await load_conversation_history(conversation)
 
-            # 优先使用会话绑定的人格，其次回退到默认人格。
-            original_system_prompt = ""
-            if conversation and conversation.persona_id:
-                persona = await plugin.context.persona_manager.get_persona(
-                    conversation.persona_id
-                )
-                if persona:
-                    original_system_prompt = persona.system_prompt
-                    logger.info(
-                        f"[主动消息] 使用会话人格: '{conversation.persona_id}' 喵"
-                    )
+            # 统一人格入口：插件配置 > 配置档案 > 自定义规则 > 对话人格 > 默认人格。
+            persona = await self.resolve_persona(effective_session_id, conversation)
+            original_system_prompt = persona.system_prompt
 
-            if not original_system_prompt:
-                default_persona = (
-                    await plugin.context.persona_manager.get_default_persona_v3(
-                        umo=effective_session_id
-                    )
+            if persona.disabled:
+                # 插件显式配置为不使用人格：按空提示词继续，而不是放弃本次任务。
+                logger.info(
+                    f"[主动消息] {plugin.session_service.get_session_log_str(effective_session_id)} 已禁用插件人格注入喵。"
                 )
-                if default_persona:
-                    original_system_prompt = default_persona["prompt"]
-                    logger.info("[主动消息] 使用默认人格设定喵")
-
-            if not original_system_prompt:
+            elif not original_system_prompt:
                 logger.error(
                     "[主动消息] 呜喵？！关键错误喵：无法加载任何人格设定，放弃喵。"
                 )
@@ -800,7 +1178,9 @@ class ContextService:
                 unanswered_count=current_unanswered_count,
             )
 
-            logger.info("[主动消息] 上下文与人格设定已准备完成喵。")
+            logger.info(
+                f"[主动消息] 上下文与人格设定已准备完成喵（人格来源：{persona.source_label}）。"
+            )
             if plugin.telemetry and plugin.telemetry.enabled:
                 plugin._track_task(
                     asyncio.create_task(
@@ -813,6 +1193,7 @@ class ContextService:
                                 ),
                                 "context_source_mode": context_settings["source_mode"],
                                 "has_persona": bool(original_system_prompt),
+                                "persona_source": persona.source,
                                 "has_platform_context": bool(platform_context),
                                 "is_new_conversation": effective_session_id
                                 == session_id
@@ -829,6 +1210,7 @@ class ContextService:
                 "system_prompt": original_system_prompt,
                 "session_id": effective_session_id,
                 "conversation": conversation,
+                "persona": persona,
             }
 
         except Exception as e:
