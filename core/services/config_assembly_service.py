@@ -116,11 +116,24 @@ class ConfigAssemblyService:
                 return
             for key, value in node.items():
                 full = path + [str(key)]
-                # 合并后的中间层只是路径容器，没有 type 标记，需要继续下钻；
-                # 带 type 的叶子才是真正声明的字段。
-                if isinstance(value, dict) and "type" not in value:
+                if not isinstance(value, dict):
+                    continue
+
+                # 嵌套 object 声明：先确认容器本身存在，再逐个子字段下钻校验。
+                if value.get("type") == "object" and isinstance(
+                    value.get("items"), dict
+                ):
+                    if not _exists(schema, full):
+                        missing.append(".".join(full))
+                        continue
+                    _walk(value["items"], full)
+                    continue
+
+                # 点号路径合并产生的中间层没有 type 标记，继续下钻。
+                if "type" not in value:
                     _walk(value, full)
                     continue
+
                 if not _exists(schema, full):
                     missing.append(".".join(full))
 
@@ -137,13 +150,15 @@ class ConfigAssemblyService:
         if not isinstance(config, dict):
             return
 
-        # 先补齐默认值：迁移逻辑依赖 prompt_templates 键存在。
+        # 顺序至关重要：迁移必须先于默认值补齐。
+        # 若先补齐，prompt_templates 会被填成空列表，迁移器据此判定"已迁移"，
+        # 导致旧 proactive_prompt 永远得不到留档（会话覆写不走补齐，形态会不一致）。
+        changed = config_migrator.migrate_config(config)
+
         defaults = self._feature_defaults
         added: list[str] = []
         if defaults:
             added = self._apply_defaults(config, defaults)
-
-        changed = config_migrator.migrate_config(config)
 
         migrated_sessions = await config_migrator.migrate_override_store(
             getattr(plugin, "session_override_manager", None)
