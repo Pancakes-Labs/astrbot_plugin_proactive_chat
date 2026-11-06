@@ -57,9 +57,7 @@
         }, [config, getDraftKey, contextKey]);
 
         // 记忆折叠 / 展开状态，让用户在大型 Schema 中保持稳定的浏览结构。
-        // 注意：上下文切换当帧不能写缓存。此时 expandedKeys 还是上一个上下文的残留
-        // （甚至是初始空数组），直接写入会把用户为该上下文记住的展开结构冲掉。
-        const expandedContextRef = React.useRef(contextKey);
+        const expandedContextRef = React.useRef(null);
         useEffect(() => {
             if (!schema) return;
             if (expandedContextRef.current !== contextKey) {
