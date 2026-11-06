@@ -23,6 +23,8 @@ class OverrideStore:
     ALLOWED_ROOT_KEYS = {
         "enable",
         "session_name",
+        # 会话级专用人格，需允许覆写才能按会话差异化指定。
+        "persona_id",
         "proactive_prompt",
         "context_settings",
         "auto_trigger_settings",
