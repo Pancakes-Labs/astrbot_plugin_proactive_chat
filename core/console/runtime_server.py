@@ -92,6 +92,8 @@ class WebConsoleServer:
         # 状态广播合并窗口：群聊消息连发时避免重复构建全量载荷。
         self._broadcast_task: asyncio.Task | None = None
         self._pending_broadcast_reason = ""
+        # 构建/发送阶段到达的新请求置位，flush 收尾后据此补跑一轮。
+        self._broadcast_dirty = False
 
         if FASTAPI_AVAILABLE:
             try:
@@ -209,13 +211,17 @@ class WebConsoleServer:
 
         新增合并窗口：群聊消息可能在短时间内连发，逐条构建全量载荷会
         同时拖慢事件处理与前端刷新，这里把 300ms 内的多次请求合并为一次。
+
+        注意构建阶段同样属于“任务未完成”，此期间到达的请求不能直接丢弃，
+        否则计时器变化既进不了当前载荷也不会触发下一轮，前端会一直显示旧状态。
         """
         if not self.realtime.connections:
             return
 
         self._pending_broadcast_reason = reason
-        # 已有等待中的合并任务时直接复用，保证一个窗口只构建一次载荷。
+        # 已有等待中的合并任务时打脏标记：本次状态变化必须由下一轮广播补上。
         if self._broadcast_task and not self._broadcast_task.done():
+            self._broadcast_dirty = True
             return
 
         self._broadcast_task = asyncio.create_task(self._flush_broadcast_update())
@@ -234,31 +240,39 @@ class WebConsoleServer:
             logger.debug(f"[主动消息] 状态广播失败喵: {e}")
 
     async def _flush_broadcast_update(self) -> None:
-        """等待合并窗口后构建并广播一次全量状态。"""
-        try:
-            await asyncio.sleep(0.3)
-        except asyncio.CancelledError:
-            return
+        """等待合并窗口后构建并广播全量状态，必要时补跑一轮。"""
+        while True:
+            try:
+                await asyncio.sleep(0.3)
+            except asyncio.CancelledError:
+                return
 
-        if not self.realtime.connections:
-            return
+            if not self.realtime.connections:
+                self._broadcast_dirty = False
+                return
 
-        reason = self._pending_broadcast_reason or "update"
-        # 先构建载荷再判空：构建期间连接可能断开，省掉无意义的发送。
-        status = await self.state_builder.build_status_payload()
-        jobs = await self.state_builder.collect_jobs_async()
+            reason = self._pending_broadcast_reason or "update"
+            # 构建开始前先清标记：构建期间的新请求会重新置位，触发下一轮。
+            self._broadcast_dirty = False
 
-        payload = {
-            "type": "update",
-            "reason": reason,
-            "data": {
-                "status": status,
-                "jobs": jobs,
-                "sessions": self.state_builder.list_known_session_summaries(),
-                "notifications": await self.state_builder.build_notification_payload(),
-            },
-        }
-        await self._broadcast_ws_payload(payload)
+            status = await self.state_builder.build_status_payload()
+            jobs = await self.state_builder.collect_jobs_async()
+
+            payload = {
+                "type": "update",
+                "reason": reason,
+                "data": {
+                    "status": status,
+                    "jobs": jobs,
+                    "sessions": self.state_builder.list_known_session_summaries(),
+                    "notifications": await self.state_builder.build_notification_payload(),
+                },
+            }
+            await self._broadcast_ws_payload(payload)
+
+            # 构建或发送期间又有状态变化时补跑一轮，避免这一轮载荷落后于真实状态。
+            if not self._broadcast_dirty:
+                return
 
     async def _broadcast_notification_meta_update(self, reason: str) -> None:
         """只广播通知元信息（未读数等），用于轻量刷新。"""
