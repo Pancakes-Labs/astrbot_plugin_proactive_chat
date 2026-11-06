@@ -31,7 +31,7 @@ from ..adapters.astrbot_event import (
 from ..adapters.astrbot_ltm import read_group_history_settings, supports_max_messages
 from ..adapters.astrbot_platform import find_platform_by_id
 from ..domain.delivery_report import DeliveryReport
-from ..domain.session_key import is_group_type, is_group_umo, normalize_storage_umo
+from ..domain.session_key import is_group_umo, normalize_storage_umo
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -303,8 +303,8 @@ class SenderService:
         if not parsed:
             return
 
-        platform_id, message_type, target_id = parsed
-        # 与 AstrBot 核心保持一致：核心以完整 UMO（str(session)）作为平台流水的 user_id
+        platform_id, _message_type, target_id = parsed
+        # 与 AstrBot 核心保持一致：核心以完整 UMO（str(session)）作为平台流水的 user_id。
         # 消息类型段同时规范化为核心的存储形式，避免别名 UMO 写到另一个键空间。
         storage_user_id = (
             normalize_storage_umo(session_id)
@@ -317,11 +317,15 @@ class SenderService:
         if not history_mgr or message_chain_to_storage_message_parts is None:
             return
 
+        # 群聊判定基于规范化后的 UMO：配置里允许写 “platform:group:id” 这类别名，
+        # 直接拿原始类型段做大小写敏感匹配会漏判，从而绕过下面的开关与去重检查。
+        is_group_session = is_group_umo(storage_user_id)
+
         # 群聊补写必须跟随核心开关：关闭时核心从不写入真实群友消息，
         # 单独补写只会留下核心查询侧不认的孤儿数据。
         # 注意：核心 send_message 仅在群聊场景落库，私聊仍需插件补写。
         max_messages: int | None = None
-        if is_group_type(message_type):
+        if is_group_session:
             enabled, max_messages = read_group_history_settings(
                 plugin.context, storage_user_id
             )
@@ -409,10 +413,9 @@ class SenderService:
             session_obj = MS(platform_name=p_id, message_type=m_type, session_id=t_id)
             await target_platform.send_by_session(session_obj, chain)
             logger.debug(f"[主动消息] 消息将通过平台 {p_id} 送达喵")
-            # 核心 send_message 在群聊场景下会自行落库，标记来源避免同键双写。
-            await self.persist_proactive_message_to_platform_history(
-                session_id, chain, via_core_api=True
-            )
+            # 此处走平台实例直发，不经过核心 send_message，核心不会落库，
+            # 必须由插件补写，否则主动消息不会出现在平台流水中。
+            await self.persist_proactive_message_to_platform_history(session_id, chain)
             return True
         except Exception as e:
             logger.error(f"[主动消息] 通过平台 {p_id} 发送失败喵: {e}")
