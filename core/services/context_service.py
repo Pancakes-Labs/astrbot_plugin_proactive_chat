@@ -398,6 +398,9 @@ class ContextService:
         if not persona_id:
             return "", ""
 
+        if persona_id == "default":
+            return "default", BUILTIN_FALLBACK_PERSONA_PROMPT
+
         persona_manager = getattr(
             getattr(self.plugin, "context", None), "persona_manager", None
         )
@@ -447,6 +450,7 @@ class ContextService:
         self,
         session_id: str,
         conversation: Any = None,
+        log_shadow: bool = True,
     ) -> PersonaResolution:
         """解析该会话最终生效的人格（主动消息唯一人格入口）。
 
@@ -454,16 +458,21 @@ class ContextService:
         插件配置/会话覆写 > 自定义规则 > 当前对话(/persona) > 会话绑定档案 > 全局默认
 
         注意事项：
-        - 插件配置与自定义规则里的 [%None] 均表示不使用人格，直接返回 disabled。
+        - 插件配置里的 [%None] 是最高优先级的显式禁用，直接返回 disabled。
+        - 规则里的 [%None] 仅在无更高优先级候选时生效；若插件已显式指定人格，
+          则跳过该规则而不是丢弃已选中的插件人格。
         - 对话人格为 [%None]（/persona unset）时仅跳过该候选，继续回落默认人格。
         - 命中插件/规则、但会话同时绑定了独立档案时，打 warning 提示两套配置并存。
         - 所有候选都取不到提示词时返回空 system_prompt，由调用方决定是否放弃。
+        - log_shadow=False 用于批量摘要与预览等高频路径，避免重复刷日志。
         """
         candidates: list[tuple[str, str]] = []
         profile_persona_id = self.get_profile_persona_id(session_id)
 
         def _warn_shadowed(source_label: str, persona_id: str) -> None:
             """命中高优先级来源且存在独立档案时提示用户，避免误以为档案没生效。"""
+            if not log_shadow:
+                return
             if not profile_persona_id or profile_persona_id == persona_id:
                 return
             logger.warning(
@@ -474,9 +483,10 @@ class ContextService:
         plugin_persona_id = self.get_plugin_persona_id(session_id)
         if plugin_persona_id:
             if self.is_persona_none_marker(plugin_persona_id):
-                logger.info(
-                    f"[主动消息] 插件配置已显式禁用 {session_id} 的人格，本次不注入系统提示词喵。"
-                )
+                if log_shadow:
+                    logger.info(
+                        f"[主动消息] 插件配置已显式禁用 {session_id} 的人格，本次不注入系统提示词喵。"
+                    )
                 return PersonaResolution(
                     persona_id="",
                     persona_name="",
@@ -489,19 +499,22 @@ class ContextService:
         rule_persona_id = await self.get_session_rule_persona_id(session_id)
         if rule_persona_id:
             if self.is_persona_none_marker(rule_persona_id):
-                # 与 AstrBot 原生行为一致：规则写了 [%None] 表示不注入人格，
-                # 且不再继续向下尝试默认人格，否则用户“取消人格”的设置会被无视。
-                logger.info(
-                    f"[主动消息] 自定义规则已将 {session_id} 的人格设为 [%None]，本次不注入人格喵。"
-                )
-                return PersonaResolution(
-                    persona_id="",
-                    persona_name="",
-                    system_prompt="",
-                    source=PERSONA_SOURCE_DISABLED,
-                )
-            _warn_shadowed("自定义规则", rule_persona_id)
-            candidates.append((PERSONA_SOURCE_SESSION_RULE, rule_persona_id))
+                # 规则的 [%None] 优先级低于插件配置：已有插件候选时忽略它，
+                # 否则用户显式选定的插件人格会被规则静默吞掉。
+                if not candidates:
+                    if log_shadow:
+                        logger.info(
+                            f"[主动消息] 自定义规则已将 {session_id} 的人格设为 [%None]，本次不注入人格喵。"
+                        )
+                    return PersonaResolution(
+                        persona_id="",
+                        persona_name="",
+                        system_prompt="",
+                        source=PERSONA_SOURCE_DISABLED,
+                    )
+            else:
+                _warn_shadowed("自定义规则", rule_persona_id)
+                candidates.append((PERSONA_SOURCE_SESSION_RULE, rule_persona_id))
 
         conversation_persona_id = self.get_conversation_persona_id(conversation)
         if conversation_persona_id and not self.is_persona_none_marker(
@@ -525,9 +538,10 @@ class ContextService:
             seen.add(persona_id)
             persona_name, prompt = await self.find_persona_prompt(persona_id)
             if prompt:
-                logger.debug(
-                    f"[主动消息] 人格解析命中来源：{source} 喵，使用人格：{persona_name}。"
-                )
+                if log_shadow:
+                    logger.debug(
+                        f"[主动消息] 人格解析命中来源：{source} 喵，使用人格：{persona_name}。"
+                    )
                 return PersonaResolution(
                     persona_id=persona_id,
                     persona_name=persona_name,
@@ -535,10 +549,31 @@ class ContextService:
                     source=source,
                 )
 
-        logger.warning(
-            f"[主动消息] 会话 {session_id} 未解析到任何可用人格提示词喵，候选来源数：{len(candidates)} 个。"
-        )
+        if log_shadow:
+            logger.warning(
+                f"[主动消息] 会话 {session_id} 未解析到任何可用人格提示词喵，候选来源数：{len(candidates)} 个。"
+            )
         return PersonaResolution()
+
+    async def get_current_conversation(self, session_id: str) -> Any:
+        """尽力读取会话当前对话对象，供人格解析补齐对话级人格。
+
+        对话不存在、管理器缺失或读取异常时统一返回 None，
+        调用方会自然跳过对话候选而继续回落后续来源。
+        """
+        conversation_manager = getattr(
+            getattr(self.plugin, "context", None), "conversation_manager", None
+        )
+        if conversation_manager is None:
+            return None
+        try:
+            conv_id = await conversation_manager.get_curr_conversation_id(session_id)
+            if not conv_id:
+                return None
+            return await conversation_manager.get_conversation(session_id, conv_id)
+        except Exception as e:
+            logger.debug(f"[主动消息] 读取 {session_id} 当前对话失败喵: {e}")
+            return None
 
     async def resolve_personas_for_sessions(
         self,
@@ -549,13 +584,19 @@ class ContextService:
         返回 {session_id: 人格摘要}；单个会话解析失败不影响其它会话。
         卡片场景不需要完整提示词，这里只回传标识、来源与是否禁用，
         避免把人格正文带给前端造成无谓的传输与泄露面。
+
+        必须一并考虑对话级人格：通过 /persona 绑定的会话若被忽略，
+        卡片展示的来源会与 prepare_llm_request 实际使用的人格不一致。
         """
         result: dict[str, dict[str, Any]] = {}
         for session_id in sessions:
             if not session_id or session_id in result:
                 continue
             try:
-                resolution = await self.resolve_persona(session_id)
+                conversation = await self.get_current_conversation(session_id)
+                resolution = await self.resolve_persona(
+                    session_id, conversation, log_shadow=False
+                )
                 result[session_id] = {
                     "persona_id": resolution.persona_id,
                     "persona_name": resolution.persona_name,
@@ -565,9 +606,7 @@ class ContextService:
                     "ok": resolution.ok,
                 }
             except Exception as e:
-                logger.debug(
-                    f"[主动消息] 解析 {session_id} 的人格摘要失败喵: {e}"
-                )
+                logger.debug(f"[主动消息] 解析 {session_id} 的人格摘要失败喵: {e}")
                 result[session_id] = {
                     "persona_id": "",
                     "persona_name": "",
