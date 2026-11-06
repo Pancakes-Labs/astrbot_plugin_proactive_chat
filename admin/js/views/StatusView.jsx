@@ -3,7 +3,7 @@
  * 文件职责：状态页视图，负责服务状态、计时器可视化与手动刷新交互展示。
  */
 
- const { Box, Typography, Chip } = MaterialUI;
+ const { Box, Typography } = MaterialUI;
 
 function StatusMetricRow({ label, value, emphasize = false, status = '' }) {
     return (
@@ -21,96 +21,77 @@ function StatusMetricRow({ label, value, emphasize = false, status = '' }) {
     );
 }
 
-function StatusTimerCard({ timer, displayTimezone, nowMs, snapshotAtMs, resetHint }) {
-    // 派生信息统一交给领域函数计算，视图只负责结构。
+function StatusTimerCard({ timer, displayTimezone, nowMs, snapshotAtMs, snapshotServerMs, resetHint, resetHintToken }) {
+    // 派生信息统一交给领域函数计算，视图只负责结构拼装。
     const meta = React.useMemo(
-        () => window.ProgressDomain.resolveStatusTimerCard(timer, nowMs, displayTimezone, snapshotAtMs),
-        [timer, nowMs, displayTimezone, snapshotAtMs]
+        () => window.ProgressDomain.resolveStatusTimerCard(
+            timer, nowMs, displayTimezone, snapshotAtMs, snapshotServerMs
+        ),
+        [timer, nowMs, displayTimezone, snapshotAtMs, snapshotServerMs]
     );
-    // 未回复次数大于 0 时用 warning 色，帮助管理员快速定位“机器人已被晾着”的会话。
-    const unansweredCount = Number(meta.unanswered_count !== undefined ? meta.unanswered_count : 0);
-    const chipColor = unansweredCount > 0 ? 'warning' : 'default';
+    const UI = window.TimerCardUI;
 
     return (
-        <div className={`card status-timer-card ${meta.accentClass} ${meta.status === 'urgent' ? 'is-urgent' : ''} ${meta.status === 'expired' ? 'is-expired' : ''} ${resetHint ? 'is-resetting' : ''}`}>
-            <div className="status-timer-card-top">
-                <div className="status-timer-title-block">
-                    <Typography variant="subtitle2" className="status-timer-kicker">
-                        {meta.sectionTitle}
-                    </Typography>
-                    <Typography
-                        variant="body1"
-                        className={`status-timer-session ${meta.hasAlias ? 'is-primary' : 'mono'}`}
-                    >
-                        {meta.sessionDisplayName}
-                    </Typography>
-                    {meta.sessionSubText ? (
-                        <Typography variant="caption" className="status-timer-session-sub mono">
-                            {`UMO · ${meta.sessionSubText}`}
-                        </Typography>
-                    ) : null}
-                </div>
-                <div className="status-timer-chip-stack">
-                    <div className={`status-timer-kind-badge ${meta.accentClass}`}>{meta.kindBadgeLabel}</div>
-                    <div className="status-timer-kind-badge">{meta.sourceModeLabel}</div>
-                    <Chip
-                        label={meta.unansweredLabel}
-                        size="small"
-                        color={chipColor}
-                        variant={unansweredCount > 0 ? 'filled' : 'outlined'}
-                    />
-                </div>
-            </div>
+        <div className={`card tcard ${meta.accentClass} ${meta.status === 'urgent' ? 'is-urgent' : ''} ${meta.status === 'expired' ? 'is-expired' : ''} ${resetHint ? 'is-resetting' : ''}`}>
+            <UI.TimerCardHint
+                show={resetHint}
+                token={resetHintToken}
+                text="群聊刚刚有新消息，沉默计时器已重新开始计时"
+            />
 
-            <div className="status-timer-meta-row">
-                <div className={`task-status-pill is-${meta.status}`}>{meta.statusLabel}</div>
-                <div className="status-timer-category-pill">{meta.categoryLabel}</div>
-            </div>
+            <UI.TimerCardIdentity
+                name={meta.sessionDisplayName}
+                umoText={meta.umoText}
+                badges={(
+                    <React.Fragment>
+                        <span className={`tcard-badge ${meta.accentClass}`}>{meta.kindBadgeLabel}</span>
+                        <span className={`task-status-pill is-${meta.status}`}>{meta.statusLabel}</span>
+                    </React.Fragment>
+                )}
+            />
 
-            {resetHint ? (
-                // 群聊出现新消息导致目标时间明显后移时，短暂显示“已重置”提示，帮助理解状态变化原因。
-                <div className="status-timer-reset-hint">
-                    <span className="status-timer-reset-dot"></span>
-                    群聊刚刚有新消息，沉默计时器已重新开始计时
-                </div>
-            ) : null}
+            <UI.TimerCardCountdown
+                percent={meta.progressPercent}
+                status={meta.status}
+                kicker={meta.heroLabel}
+                tokens={meta.countdownTokens}
+                emptyText={meta.statusLabel}
+                ringTitle={`${meta.progressLabel}，已等待 ${meta.elapsedText}`}
+                foot={(
+                    <React.Fragment>
+                        <UI.TimerCardFootItem
+                            label="预计创建时间："
+                            value={meta.targetClockText}
+                            title={`目标时间 ${meta.targetText}`}
+                        />
+                        <span className="tcard-foot-dot">·</span>
+                        <UI.TimerCardFootItem label={`已等待 ${meta.elapsedText}`} />
+                    </React.Fragment>
+                )}
+            />
 
-            <div className="status-timer-panel">
-                <div className="status-timer-primary-row">
-                    <div>
-                        <Typography variant="caption" className="status-timer-label">
-                            倒计时
-                        </Typography>
-                        <Typography variant="body2" className="status-timer-countdown">
-                            {meta.countdownText}
-                        </Typography>
-                    </div>
-                    <div className="status-timer-progress-value">{meta.progressPercent}%</div>
-                </div>
-                <div className="task-progress-track">
-                    {/* 宽度通过自定义属性传递，样式表统一声明 width，避免内联样式散落。 */}
-                    <div className={`task-progress-bar is-${meta.status}`} style={{ '--progress-width': `${meta.progressPercent}%` }}></div>
-                </div>
-            </div>
-
-            <div className="status-timer-info-grid">
-                <div className="status-timer-info-item">
-                    <Typography variant="caption" className="status-timer-info-label">
-                        目标时间
-                    </Typography>
-                    <Typography variant="body2" className="status-timer-info-value">
-                        {meta.targetText}
-                    </Typography>
-                </div>
-                <div className="status-timer-info-item">
-                    <Typography variant="caption" className="status-timer-info-label">
-                        计时窗口
-                    </Typography>
-                    <Typography variant="body2" className="status-timer-info-value">
-                        {meta.window_seconds ? formatDuration(meta.window_seconds, { compact: true, maxUnits: 2 }) : '--'}
-                    </Typography>
-                </div>
-            </div>
+            <UI.TimerCardFacts
+                facts={[
+                    {
+                        label: '生效人格',
+                        value: meta.personaText,
+                        sub: meta.personaSourceText,
+                        title: meta.personaTitle,
+                        personaState: meta.personaState,
+                    },
+                    { label: '上下文来源', value: meta.sourceModeLabel },
+                    { label: meta.triggerConfigLabel, value: meta.triggerConfigValue },
+                    {
+                        label: '未回复次数',
+                        value: meta.unansweredValueText,
+                        sub: meta.unansweredIsLimited
+                            ? `上限达到 ${meta.max_unanswered_times} 次后暂停`
+                            : '未设上限',
+                        title: meta.unansweredHintText,
+                        warning: meta.unansweredIsWarning,
+                    },
+                ]}
+            />
         </div>
     );
 }
@@ -121,7 +102,9 @@ function StatusView({ onRefresh }) {
     // 全局共享时钟，避免每个视图各起一个每秒 interval。
     const nowMs = useNow();
     // resetHintMap 记录哪些群沉默卡片当前需要显示“刚刚被重置”的短暂提示。
+    // 值从 true 改为递增序号，让连续重置能触发 DOM 重建并重播动画。
     const [resetHintMap, setResetHintMap] = React.useState({});
+    const resetHintSeqRef = React.useRef(0);
     // 手动刷新按钮的视觉反馈状态机：idle -> loading -> success / error。
     const [manualRefreshState, setManualRefreshState] = React.useState({ phase: 'idle', finishedAt: 0 });
     const previousTimerSnapshotRef = React.useRef({});
@@ -139,6 +122,10 @@ function StatusView({ onRefresh }) {
 
     // 状态快照的本地到达时刻：后端只给整秒值，需要配合本地时钟继续递增。
     const snapshotAtMs = Number(state.statusReceivedAt !== undefined ? state.statusReceivedAt : 0);
+    // 后端构建快照的服务器时刻（秒）：用于补偿构建与传输耗时，修正刷新后凭空少几秒的问题。
+    const snapshotServerMs = window.TimeDomain
+        ? window.TimeDomain.toEpochMs(status.timer_snapshot_at)
+        : null;
     // 统一把后端状态字段规整为前端友好的基础数字类型。
     const uptimeSeconds = Number(status.uptime_seconds !== undefined ? status.uptime_seconds : 0);
     // 运行时长在两次快照之间按本地流逝时间补足，避免整秒值半天不动。
@@ -212,18 +199,28 @@ function StatusView({ onRefresh }) {
                 status: currentStatus,
             };
 
-            // 真正的“被重置”应表现为：同一张群沉默卡片的剩余时间突然回升，且当前仍处于有效运行态。
+            // 判定“被重置”优先看目标时间是否后移：群消息会让沉默窗口整体往后推。
+            // 用剩余秒数做差会漏判——若距上次快照恰好过去同样时间，差值可能接近 0。
             const previousRemaining = previous ? Number(previous.remainingSeconds) : NaN;
+            const previousTarget = previous ? Number(previous.targetTime) : NaN;
+            const targetAdvanced = Number.isFinite(previousTarget)
+                && Number.isFinite(currentTarget)
+                && currentTarget - previousTarget > 2;
+            const remainingJumped = Number.isFinite(previousRemaining)
+                && currentRemaining !== null
+                && currentRemaining - previousRemaining > 3;
+
             const isGroupReset = timer.timer_kind === 'group_silence'
                 && previous
                 && currentStatus !== 'expired'
                 && currentStatus !== 'unknown'
                 && currentRemaining !== null
-                && Number.isFinite(previousRemaining)
-                && currentRemaining - previousRemaining > 3;
+                && (targetAdvanced || remainingJumped);
 
             if (isGroupReset) {
-                nextHints[key] = true;
+                // 递增序号保证即使提示正在显示中，节点也会重建从而重播动画。
+                resetHintSeqRef.current += 1;
+                nextHints[key] = resetHintSeqRef.current;
                 hintChanged = true;
                 if (resetHintTimersRef.current[key]) {
                     clearTimeout(resetHintTimersRef.current[key]);
@@ -259,7 +256,11 @@ function StatusView({ onRefresh }) {
                 }
                 return filtered;
             }
-            return Object.assign({}, filtered, nextHints);
+            const merged = Object.assign({}, filtered, nextHints);
+            // 序号相同说明内容没变，返回原对象以跳过无意义重渲染。
+            const isSame = Object.keys(merged).length === Object.keys(current).length
+                && Object.keys(merged).every((key) => merged[key] === current[key]);
+            return isSame ? current : merged;
         });
     }, [timerSnapshotKey]);
 
@@ -270,8 +271,16 @@ function StatusView({ onRefresh }) {
             // 手动刷新会回到入口层执行一次完整 loadAll，确保状态、会话、配置、任务全部同步。
             await onRefresh();
             setManualRefreshState({ phase: 'success', finishedAt: Date.now() });
+            if (window.Toast) {
+                window.Toast.success('控制台数据已刷新', { title: '运行状态' });
+            }
         } catch (e) {
             setManualRefreshState({ phase: 'error', finishedAt: Date.now() });
+            if (window.Toast) {
+                window.Toast.error(e && e.message ? e.message : '刷新失败，请检查服务连接', {
+                    title: '刷新失败',
+                });
+            }
         }
     };
 
@@ -430,7 +439,9 @@ function StatusView({ onRefresh }) {
                                                             displayTimezone={displayTimezone}
                                                             nowMs={nowMs}
                                                             snapshotAtMs={snapshotAtMs}
+                                                            snapshotServerMs={snapshotServerMs}
                                                             resetHint={Boolean(resetHintMap[`${timer.timer_kind}-${timer.session_id}`])}
+                                                            resetHintToken={resetHintMap[`${timer.timer_kind}-${timer.session_id}`] || 0}
                                                         />
                                                     ))}
                                                 </div>

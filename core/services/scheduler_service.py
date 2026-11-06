@@ -23,6 +23,23 @@ class SchedulerService:
         self.plugin = plugin
 
     # ------------------------------------------------------------------
+    # 内部辅助：Web 控制台状态广播
+    # ------------------------------------------------------------------
+    async def _notify_web_console(self, reason: str) -> None:
+        """通知 Web 控制台刷新计时器卡片。
+
+        计时器到期后若不广播，前端只能靠慢轮询发现，卡片会长期残留过期状态。
+        广播异常一律吞掉，不能影响调度主流程。
+        """
+        web = getattr(self.plugin, "web_admin_server", None)
+        if not web:
+            return
+        try:
+            await web._broadcast_update(reason)
+        except Exception as e:
+            logger.debug(f"[主动消息] 广播 {reason} 状态失败喵: {e}")
+
+    # ------------------------------------------------------------------
     # 自动触发
     # ------------------------------------------------------------------
     async def setup_auto_trigger(self, session_id: str, silent: bool = False) -> None:
@@ -722,6 +739,8 @@ class SchedulerService:
         finally:
             for timer_key in self.iter_related_auto_trigger_keys(session_id):
                 plugin.auto_trigger_timers.pop(timer_key, None)
+            # 计时器已从内存移除，卡片必须同步消失，否则会残留过期状态。
+            await self._notify_web_console("auto_trigger_finished")
 
     async def handle_group_silence_callback(
         self, session_id: str, idle_minutes: int | float
@@ -771,6 +790,8 @@ class SchedulerService:
             logger.info(
                 f"[主动消息] {plugin.session_service.get_session_log_str(session_id, current_config)} 已沉默 {idle_minutes} 分钟，开始计划主动消息喵。(当前未回复次数: {current_unanswered})"
             )
+            # 群沉默计时器已从 group_timers 移除，需立即通知前端清掉这张卡片。
+            await self._notify_web_console("group_silence_finished")
         except Exception as e:
             logger.error(f"[主动消息] 沉默倒计时回调函数执行失败喵: {e}")
 

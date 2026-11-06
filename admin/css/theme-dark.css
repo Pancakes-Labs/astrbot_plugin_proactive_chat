@@ -3,7 +3,61 @@
  * 颜色变量本身已在 tokens.css 的 html.theme-dark body 中覆写，
  * 这里只保留需要不同透明度、渐变或固定色值的规则。
  */
- 
+
+/* Toast 在暗色下需要独立底色：亮色的玻璃渐变会把卡片洗成灰白。 */
+body.dark-theme .app-toast {
+    border-color: rgb(var(--md-primary-rgb) / 0.16);
+    background:
+        linear-gradient(180deg, rgba(44, 41, 52, 0.92), rgba(28, 27, 31, 0.9)),
+        var(--md-sys-color-surface);
+    box-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.4),
+        0 14px 32px -10px rgba(0, 0, 0, 0.62),
+        0 28px 60px -24px rgba(0, 0, 0, 0.55),
+        inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+body.dark-theme .app-toast.is-success,
+body.dark-theme .app-toast.is-warning,
+body.dark-theme .app-toast.is-error {
+    border-color: rgb(var(--toast-accent-rgb) / 0.4);
+    background:
+        linear-gradient(180deg, rgba(44, 41, 52, 0.94), rgba(28, 27, 31, 0.92)),
+        var(--md-sys-color-surface);
+}
+
+body.dark-theme .app-toast:hover {
+    box-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.4),
+        0 18px 38px -10px rgba(0, 0, 0, 0.7),
+        0 34px 68px -26px rgba(0, 0, 0, 0.6),
+        inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+/* 暗色下浅色语义底会过亮，改用半透明同色底 + 描边。 */
+body.dark-theme .app-toast-icon {
+    background: rgb(var(--toast-accent-rgb) / 0.16);
+    box-shadow: inset 0 0 0 1px rgb(var(--toast-accent-rgb) / 0.24);
+}
+
+body.dark-theme .app-toast-close:hover {
+    background: rgb(var(--md-primary-rgb) / 0.18);
+}
+
+body.dark-theme .app-toast-action {
+    background: rgb(var(--toast-accent-rgb) / 0.14);
+}
+
+body.dark-theme .app-toast-action:hover {
+    background: rgb(var(--toast-accent-rgb) / 0.24);
+}
+
+body.dark-theme .app-toast.is-warning .app-toast-text {
+    /* 暗色下警告黄若直接用作正文色会偏刺眼，稍微压一层亮度。 */
+    color: var(--md-sys-color-warning);
+    opacity: 0.92;
+}
+
 body.dark-theme .sidebar-notification-badge {
     border-color: rgba(28, 27, 31, 0.42);
     box-shadow: 0 10px 22px rgba(255, 107, 107, 0.18);
@@ -234,13 +288,9 @@ body.dark-theme .notification-feed-actions .MuiButton-root.Mui-disabled {
 
 body.dark-theme .status-metric-label,
 body.dark-theme .status-timer-section-desc,
-body.dark-theme .status-timer-kicker,
-body.dark-theme .status-timer-session-sub,
 body.dark-theme .task-card-kicker,
 body.dark-theme .task-card-session-sub,
 body.dark-theme .task-next-run-label,
-body.dark-theme .status-timer-label,
-body.dark-theme .status-timer-info-label,
 body.dark-theme .tasks-header-subtitle,
 body.dark-theme .task-countdown-text,
 body.dark-theme .notifications-inline-meta-label,

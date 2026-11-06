@@ -83,6 +83,10 @@
     function useScrollRestore(containerRef, storageKey, options) {
         const enabled = !options || options.enabled !== false;
         const restoringRef = React.useRef(false);
+        // 每次 storageKey 变化（切换视图）都必须重新走一遍恢复流程。
+        // 主内容区在视图切换时复用同一个 DOM 节点，target 引用不会变，
+        // 若只依赖 target，恢复 effect 不会重跑，表现就是“位置永远是初始的”。
+        const restoreToken = String(storageKey || '');
         const target = useScrollTarget(containerRef);
 
         // 恢复阶段临时关闭平滑滚动，避免 scrollTop 赋值被动画接管。
@@ -90,7 +94,7 @@
             if (!target || !enabled) return undefined;
             const element = target.element;
 
-            const savedPos = window.ScrollDomain.readScrollTop(storageKey);
+            const savedPos = window.ScrollDomain.readScrollTop(restoreToken);
             if (savedPos <= 0) {
                 restoringRef.current = false;
                 element.scrollTop = 0;
@@ -101,30 +105,46 @@
             const previousBehavior = element.style.scrollBehavior;
             element.style.scrollBehavior = 'auto';
 
+            // 尝试把容器滚到记忆位置；返回 true 表示已经到位。
+            // 内容高度不足时浏览器会把 scrollTop 钳制住，此时需要稍后重试。
             const applyRestore = () => {
-                element.scrollTop = Math.min(
-                    savedPos,
-                    maxScrollTopOf(element, target.isWindow)
-                );
+                const maxTop = maxScrollTopOf(element, target.isWindow);
+                element.scrollTop = Math.min(savedPos, maxTop);
+                return maxTop >= savedPos;
             };
 
-            applyRestore();
-            // 内容异步撑开时再补一次，但不再依赖全局平滑滚动。
-            const raf = requestAnimationFrame(() => {
-                if (restoringRef.current) applyRestore();
-            });
-
-            const timer = window.setTimeout(() => {
-                restoringRef.current = false;
-                element.style.scrollBehavior = previousBehavior;
-            }, 320);
+            // 数据异步加载：刚挂载时内容还没撑开，这里在短窗口内逐帧重试，
+            // 等内容高度足够后再落位，避免位置被钳制后无法回到原处。
+            const deadline = Date.now() + 900;
+            let frame = 0;
+            const tick = () => {
+                frame = 0;
+                if (!restoringRef.current) return;
+                const reached = applyRestore();
+                if (reached || Date.now() > deadline) {
+                    restoringRef.current = false;
+                    element.style.scrollBehavior = previousBehavior;
+                    return;
+                }
+                frame = requestAnimationFrame(tick);
+            };
+            tick();
 
             return () => {
-                cancelAnimationFrame(raf);
-                window.clearTimeout(timer);
+                if (frame) cancelAnimationFrame(frame);
                 element.style.scrollBehavior = previousBehavior;
+                // layout cleanup 发生在 DOM 更新之前，此刻 scrollTop 仍是本 key 的最终值。
+                // 若恢复尚未完成（内容还没撑开），当前 scrollTop 只是被钳制的临时值，
+                // 此时应保留原记忆值，否则“滚到很下面后立刻切页”会记成很浅的位置。
+                if (restoringRef.current && element.scrollTop < savedPos) {
+                    window.ScrollDomain.writeScrollTop(restoreToken, savedPos);
+                } else {
+                    window.ScrollDomain.writeScrollTop(restoreToken, element.scrollTop);
+                }
+                restoringRef.current = false;
             };
-        }, [target, storageKey, enabled]);
+            // 显式依赖 restoreToken：视图切换时即使 DOM 节点复用也要重新恢复。
+        }, [target, restoreToken, enabled]);
 
         // 记录滚动位置；用户主动交互时立即终止恢复锁。
         React.useEffect(() => {
@@ -135,7 +155,7 @@
 
             let timeout = 0;
             const flushScrollTop = () => {
-                window.ScrollDomain.writeScrollTop(storageKey, element.scrollTop);
+                window.ScrollDomain.writeScrollTop(restoreToken, element.scrollTop);
             };
             const handleScroll = () => {
                 window.clearTimeout(timeout);
@@ -155,15 +175,14 @@
                 host.removeEventListener('wheel', stopRestoring);
                 host.removeEventListener('touchstart', stopRestoring);
                 host.removeEventListener('mousedown', stopRestoring);
-                // 待写入的位置不能随计时器一起丢弃：用户可能在 120ms 内切换视图，
-                // 那样这次滚动就永远不会被记录，下次进入会回退到更早的位置。
+                // 待写入的位置不会丢失：layout cleanup 已在 DOM 更新前落盘，
+                // 这里只需丢弃待触发的计时器，避免卸载后回写。
                 if (timeout) {
                     window.clearTimeout(timeout);
                     timeout = 0;
-                    flushScrollTop();
                 }
             };
-        }, [target, storageKey, enabled]);
+        }, [target, restoreToken, enabled]);
     }
 
     window.useScrollRestore = useScrollRestore;

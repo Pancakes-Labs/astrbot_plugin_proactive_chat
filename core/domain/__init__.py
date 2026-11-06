@@ -8,6 +8,16 @@ from .context_block import BlockKind, ContextBlock, ContextBundle
 from .delivery_report import DeliveryReport
 from .domain_enums import HookPoint, StageResult, TriggerSource
 from .llm_outcome import LlmOutcome, ToolCallRecord
+from .persona_resolution import (
+    PERSONA_SOURCE_BUILTIN,
+    PERSONA_SOURCE_CONVERSATION,
+    PERSONA_SOURCE_DEFAULT,
+    PERSONA_SOURCE_DISABLED,
+    PERSONA_SOURCE_PLUGIN,
+    PERSONA_SOURCE_PROFILE,
+    PERSONA_SOURCE_SESSION_RULE,
+    PersonaResolution,
+)
 from .prompt_block import PromptBlock, PromptBundle
 from .request_context import ProactiveContext
 from .session_config import SessionConfig
@@ -26,6 +36,14 @@ __all__ = [
     "DeliveryReport",
     "HookPoint",
     "LlmOutcome",
+    "PERSONA_SOURCE_BUILTIN",
+    "PERSONA_SOURCE_CONVERSATION",
+    "PERSONA_SOURCE_DEFAULT",
+    "PERSONA_SOURCE_DISABLED",
+    "PERSONA_SOURCE_PLUGIN",
+    "PERSONA_SOURCE_PROFILE",
+    "PERSONA_SOURCE_SESSION_RULE",
+    "PersonaResolution",
     "ProactiveContext",
     "PromptBlock",
     "PromptBundle",

@@ -12,6 +12,8 @@
         getStatus: () => HttpUtil.get('/api/status'),
         getConfig: () => HttpUtil.get('/api/config'),
         getConfigSchema: () => HttpUtil.get('/api/config-schema'),
+        // 人格列表与 AstrBot 人格库同源，用于 select_persona 特殊控件。
+        getPersonas: () => HttpUtil.get('/api/personas'),
         // 全局配置保存接口，传入完整 payload 由后端按分组白名单更新。
         updateConfig: (payload) => HttpUtil.post('/api/config', payload),
 
@@ -19,6 +21,8 @@
         listSessions: () => HttpUtil.get('/api/session-config/sessions'),
         // 会话 ID 可能包含特殊字符，路径参数必须先 encodeURIComponent。
         getSessionConfig: (session) => HttpUtil.get(`/api/session-config/${encodeURIComponent(session)}`),
+        // 预览该会话最终生效的人格与来源。
+        getSessionPersona: (session) => HttpUtil.get(`/api/persona-preview/${encodeURIComponent(session)}`),
         // 同一接口同时支持 override 与 effective 两种保存模式，由 payload.mode 区分。
         updateSessionConfig: (session, payload) => HttpUtil.post(`/api/session-config/${encodeURIComponent(session)}`, payload),
         resetSessionConfig: (session) => HttpUtil.del(`/api/session-config/${encodeURIComponent(session)}`),

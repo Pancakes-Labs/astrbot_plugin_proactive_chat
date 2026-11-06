@@ -14,10 +14,11 @@
     <link rel="preload" href="fonts/outfit-400.ttf" as="font" type="font/ttf" crossorigin>
     <link href="fonts/outfit.css" rel="stylesheet">
 
-    <!-- 样式按职责拆分为 7 个文件，加载顺序即层叠顺序，不可随意调整。 -->
+    <!-- 样式按职责拆分，加载顺序即层叠顺序，不可随意调整。-->
     <link rel="stylesheet" href="css/tokens.css">
     <link rel="stylesheet" href="css/boot.css">
     <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/timer-card.css">
     <link rel="stylesheet" href="css/status.css">
     <link rel="stylesheet" href="css/content.css">
     <link rel="stylesheet" href="css/theme-dark.css">
@@ -274,6 +275,8 @@
         window.ProactiveLoader.queueScript("js/hooks/useNow.js", false);
         window.ProactiveLoader.queueScript("js/hooks/useFeedback.js", false);
         window.ProactiveLoader.queueScript("js/hooks/useScrollRestore.js", false);
+        // Toast 浮层是全局能力，需早于各页面脚本注册。
+        window.ProactiveLoader.queueScript("js/hooks/useToast.js", true);
     </script>
 
     <script>
@@ -430,6 +433,7 @@
         window.ProactiveLoader.queueScript("js/context/AppContext.jsx", true);
         window.ProactiveLoader.queueScript("js/hooks/useApi.js", true);
         window.ProactiveLoader.queueScript("js/hooks/useWebSocket.js", true);
+        window.ProactiveLoader.queueScript("js/components/TimerCardUI.jsx", true);
         window.ProactiveLoader.queueScript("js/components/layout/Sidebar.jsx", true);
         window.ProactiveLoader.queueScript("js/components/layout/Header.jsx", true);
         window.ProactiveLoader.queueScript("js/views/StatusView.jsx", true);

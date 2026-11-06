@@ -39,6 +39,8 @@ class ContextStage(BaseStage):
         # 记录准备结果，供后续阶段消费。
         ctx.conversation_id = request_package["conv_id"]
         ctx.conversation = request_package.get("conversation")
+        # 人格解析结论一并落位，供后续阶段（如压缩、二次生成）直接复用。
+        ctx.persona = request_package.get("persona")
         # 仅移除本阶段此前写入的块，保留其他 CONTEXT 阶段（含更高优先级）的产物。
         ctx.contexts.remove_by_source(self.name)
         ctx.add_context(

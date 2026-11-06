@@ -11,6 +11,8 @@
         const [sessions, setSessions] = useState([]);
         const [sessionLoading, setSessionLoading] = useState(false);
         const [sessionConfigState, setSessionConfigState] = useState({ baseAvailable: true, message: '' });
+        // 会话模式下展示的“最终生效人格”预览，避免用户只能在日志里确认结果。
+        const [sessionPersona, setSessionPersona] = useState(null);
         const [config, setConfig] = useState(null);
         const loadConfigSeqRef = useRef(0);
 
@@ -25,6 +27,13 @@
                 return normalized;
             } catch (e) {
                 console.error('加载会话列表失败', e);
+                // 会话列表是下拉框数据源，失败需要明确提示，否则用户只会看到空列表。
+                if (window.Toast) {
+                    window.Toast.warning((e && e.message) || '会话列表加载失败', {
+                        title: '会话列表',
+                        key: 'config-sessions-load',
+                    });
+                }
                 return [];
             }
         }, [api]);
@@ -50,7 +59,14 @@
                         return false;
                     }
                     setSessionLoading(true);
+                    // 人格预览与配置读取互不阻塞：预览失败不应影响配置页可用性。
+                    const personaPromise = api.getSessionPersona(currentSession)
+                        .catch(() => null);
                     const sessionData = await api.getSessionConfig(currentSession);
+                    const personaData = await personaPromise;
+                    if (requestSeq === loadConfigSeqRef.current) {
+                        setSessionPersona(personaData);
+                    }
                     const hasBaseConfig = Boolean(sessionData && sessionData.base);
                     configData = (sessionData && (sessionData.effective || sessionData.override)) || {};
                     // 会话状态必须在序号检查之后再写：否则迟到的旧会话响应会覆盖新会话的
@@ -66,6 +82,7 @@
                     );
                 } else {
                     setSessionConfigState({ baseAvailable: true, message: '' });
+                    setSessionPersona(null);
                     configData = await api.getConfig();
                 }
 
@@ -79,6 +96,13 @@
                 if (requestSeq === loadConfigSeqRef.current) {
                     console.error('加载配置失败', e);
                     setConfig(null);
+                    // 页面此时只剩“无法加载配置”的静态空态，用 toast 说明具体原因。
+                    if (window.Toast) {
+                        window.Toast.error((e && e.message) || '配置加载失败，请稍后重试', {
+                            title: '配置加载失败',
+                            key: 'config-load-error',
+                        });
+                    }
                 }
                 return false;
             } finally {
@@ -101,6 +125,12 @@
                     await loadSessions();
                 } catch (e) {
                     console.error('初始化配置页失败', e);
+                    if (!disposed && window.Toast) {
+                        window.Toast.error((e && e.message) || '配置结构加载失败', {
+                            title: '配置页初始化失败',
+                            key: 'config-init-error',
+                        });
+                    }
                 } finally {
                     if (!disposed) setLoading(false);
                 }
@@ -118,6 +148,7 @@
             sessions: sessions,
             sessionLoading: sessionLoading,
             sessionConfigState: sessionConfigState,
+            sessionPersona: sessionPersona,
             loadConfig: loadConfig,
             loadSessions: loadSessions,
         };

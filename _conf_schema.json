@@ -15,6 +15,13 @@
                 "default": [],
                 "hint": "请输入完整的 UMO，可通过 /sid 指令快捷获取。格式: {platform_name}:{message_type}:{session_id}。{platform_name} 就是你在 WebUI 中的 机器人 一栏自定义的机器人名称。{message_type} 参数为 “FriendMessage”。例如 default:FriendMessage:123456789"
             },
+            "persona_id": {
+                "description": "🎭 主动消息专用人格",
+                "type": "string",
+                "_special": "select_persona",
+                "default": "",
+                "hint": "留空表示不干预，按“自定义规则 > /persona 会话人格 > 绑定档案默认人格 > 全局默认人格”的顺序自动解析，填写 [%None] 可让主动消息不使用任何人格。会话差异配置中可单独覆盖。"
+            },
             "auto_trigger_settings": {
                 "description": "🤖 自动主动消息设置",
                 "type": "object",
@@ -280,6 +287,13 @@
                 "type": "list",
                 "default": [],
                 "hint": "请输入完整的 UMO，可通过 /sid 指令快捷获取。格式: {platform_name}:{message_type}:{session_id}。{platform_name} 就是你在 WebUI 中的 机器人 一栏自定义的机器人名称。{message_type} 参数为“GroupMessage”。例如 default:GroupMessage:123456789"
+            },
+            "persona_id": {
+                "description": "🎭 主动消息专用人格",
+                "type": "string",
+                "_special": "select_persona",
+                "default": "",
+                "hint": "留空表示不干预，按“自定义规则 > /persona 会话人格 > 绑定档案默认人格 > 全局默认人格”的顺序自动解析，填写 [%None] 可让主动消息不使用任何人格。会话差异配置中可单独覆盖。"
             },
             "auto_trigger_settings": {
                 "description": "🤖 自动主动消息设置",

@@ -57,11 +57,16 @@
         }, [config, getDraftKey, contextKey]);
 
         // 记忆折叠 / 展开状态，让用户在大型 Schema 中保持稳定的浏览结构。
+        const expandedContextRef = React.useRef(null);
         useEffect(() => {
-            if (schema) {
-                localStorage.setItem(getExpandedKey(), JSON.stringify(expandedKeys || []));
+            if (!schema) return;
+            if (expandedContextRef.current !== contextKey) {
+                // 上下文刚切换，等待调用方恢复完展开态后再允许写回。
+                expandedContextRef.current = contextKey;
+                return;
             }
-        }, [expandedKeys, schema, getExpandedKey]);
+            localStorage.setItem(getExpandedKey(), JSON.stringify(expandedKeys || []));
+        }, [expandedKeys, schema, getExpandedKey, contextKey]);
 
         const restoreExpandedKeys = React.useCallback((currentMode, currentSession) => {
             const cached = localStorage.getItem(getExpandedKey(currentMode, currentSession));

@@ -30,6 +30,7 @@
         segmented_reply_settings: '🔪',
         enable: '✅',
         session_list: '📋',
+        persona_id: '🎭',
         proactive_prompt: '🧠',
         group_idle_trigger_minutes: '⏳',
         enable_auto_trigger: '✅',
@@ -67,6 +68,7 @@
         const rootKey = sessionType === 'group' ? 'group_settings' : 'friend_settings';
         const rootItems = (schema && schema[rootKey] && schema[rootKey].items) || {};
         const orderedKeys = [
+            'persona_id',
             'auto_trigger_settings',
             'group_idle_trigger_minutes',
             'proactive_prompt',
