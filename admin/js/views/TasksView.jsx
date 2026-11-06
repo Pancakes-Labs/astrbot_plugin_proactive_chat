@@ -3,39 +3,8 @@
  * 文件职责：任务页视图，负责调度任务列表、倒计时进度与任务操作入口展示。
  */
 
- const { Box, Typography, Button, Chip } = MaterialUI;
+ const { Box, Typography, Button } = MaterialUI;
 
-function formatQuietHoursText(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '未配置';
-
-    const matched = raw.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
-    if (!matched) return raw;
-
-    const startHour = Number(matched[1]);
-    const endHour = Number(matched[2]);
-    if (!Number.isInteger(startHour) || !Number.isInteger(endHour)) return raw;
-    if (startHour < 0 || startHour > 23 || endHour < 0 || endHour > 23) return raw;
-
-    return `${String(startHour).padStart(2, '0')}:00 - ${String(endHour).padStart(2, '0')}:00`;
-}
-
-function formatScheduleIntervalText(minMinutes, maxMinutes) {
-    const minValue = Number(minMinutes);
-    const maxValue = Number(maxMinutes);
-    const hasMin = Number.isFinite(minValue) && minValue > 0;
-    const hasMax = Number.isFinite(maxValue) && maxValue > 0;
-
-    if (!hasMin && !hasMax) return '未配置';
-    if (hasMin && hasMax) {
-        if (minValue > maxValue) {
-            return `配置异常：${minValue} > ${maxValue} 分钟`;
-        }
-        return `${minValue} - ${maxValue} 分钟`;
-    }
-    if (hasMin) return `${minValue} 分钟`;
-    return `${maxValue} 分钟`;
-}
 
 function TasksView({ onRefresh }) {
     const { state, dispatch } = useAppContext();
@@ -68,9 +37,19 @@ function TasksView({ onRefresh }) {
                     status: 'success',
                     text: '本次立即触发已完成，按钮已恢复可用',
                 });
+                // 触发过程可能较长，用户此时多半已离开该卡片，补一条浮层确认结果。
+                // 标题取派生出的会话显示名，并对同一任务使用固定 key 避免重复堆叠。
+                if (window.Toast) {
+                    const card = window.ProgressDomain.resolveScheduledCard(job, Date.now(), displayTimezone);
+                    window.Toast.success('立即触发已完成', {
+                        title: (card && card.sessionDisplayName) || job.id,
+                        key: `task-trigger-done-${job.id}`,
+                    });
+                }
             }
         });
-    }, [jobs, triggerFeedback.setFeedback]);
+        // displayTimezone 参与派生会话显示名，需一并纳入依赖避免闭包取到旧值。
+    }, [jobs, triggerFeedback.setFeedback, displayTimezone]);
 
     const triggerNow = async (session) => {
         triggerFeedback.setFeedback(session, { status: 'pending', text: '正在触发，等待 LLM 回复完成…' });
@@ -83,20 +62,26 @@ function TasksView({ onRefresh }) {
             });
             await onRefresh();
         } catch (e) {
+            const message = e.message || '触发任务失败，请稍后重试';
             triggerFeedback.setFeedback(session, {
                 status: 'error',
-                text: e.message || '触发任务失败，请稍后重试',
+                text: message,
             });
             dispatch({ type: 'SET_ERROR', payload: e.message || '触发任务失败' });
+            // 卡片反馈可能已滚出视口，用常驻短暂浮层保证失败一定被看到。
+            if (window.Toast) window.Toast.error(message, { title: '立即触发失败' });
         }
     };
 
     const cancelJob = async (session) => {
         try {
             await api.cancelJob(session);
+            if (window.Toast) window.Toast.success('调度任务已取消');
             await onRefresh();
         } catch (e) {
-            dispatch({ type: 'SET_ERROR', payload: e.message || '取消任务失败' });
+            const message = e.message || '取消任务失败';
+            dispatch({ type: 'SET_ERROR', payload: message });
+            if (window.Toast) window.Toast.error(message, { title: '取消任务失败' });
         }
     };
 
@@ -110,11 +95,13 @@ function TasksView({ onRefresh }) {
             });
             await onRefresh();
         } catch (e) {
+            const message = e.message || '重新调度失败，请稍后重试';
             rescheduleFeedback.setFeedback(session, {
                 status: 'error',
-                text: e.message || '重新调度失败，请稍后重试',
+                text: message,
             });
             dispatch({ type: 'SET_ERROR', payload: e.message || '重新调度失败' });
+            if (window.Toast) window.Toast.error(message, { title: '重新调度失败' });
         }
     };
 
@@ -142,13 +129,9 @@ function TasksView({ onRefresh }) {
             ) : (
                 <div className="tasks-grid-enhanced">
                     {jobs.map((job) => {
-                        // 每张任务卡在渲染前先推导出倒计时、状态与进度等派生信息。
-                        const task = window.ProgressDomain.resolveTaskProgress(job, nowMs, displayTimezone);
-                        const unansweredCount = Number(job.unanswered_count !== undefined ? job.unanswered_count : 0);
-                        const chipColor = unansweredCount > 0 ? 'warning' : 'default';
-                        const session = window.SessionDomain.resolveSessionDisplay(job);
-                        const sourceModeLabel = resolveSourceModeLabel(job.source_mode);
-                        const unansweredLabel = formatUnansweredLabel(job.unanswered_count, job.max_unanswered_times);
+                        // 与状态页共用同一套三段式卡片结构，派生文案统一走领域层。
+                        const task = window.ProgressDomain.resolveScheduledCard(job, nowMs, displayTimezone);
+                        const UI = window.TimerCardUI;
 
                         const isTriggerRunning = Boolean(job.manual_trigger_in_progress);
                         const currentTriggerFeedback = triggerFeedback.feedbackMap[job.id];
@@ -159,132 +142,85 @@ function TasksView({ onRefresh }) {
                             ? ((currentTriggerFeedback && currentTriggerFeedback.text) || '正在触发，等待 LLM 回复完成…')
                             : (currentTriggerFeedback && currentTriggerFeedback.text);
                         const rescheduleHelperText = currentRescheduleFeedback && currentRescheduleFeedback.text;
-                        const scheduleIntervalText = formatScheduleIntervalText(
-                            job.schedule_min_interval_minutes,
-                            job.schedule_max_interval_minutes,
-                        );
-                        const quietHoursText = formatQuietHoursText(job.quiet_hours);
+                        const triggerFeedbackStatus = currentTriggerFeedback ? currentTriggerFeedback.status : '';
+                        const rescheduleFeedbackStatus = currentRescheduleFeedback ? currentRescheduleFeedback.status : '';
 
                         return (
-                            <div className={`card task-card-enhanced ${task.status === 'urgent' ? 'is-urgent' : ''} ${task.status === 'expired' ? 'is-expired' : ''}`} key={job.id}>
-                                <div className="task-card-top is-overflow-visible">
-                                    <div className="task-card-title-block is-overflow-visible">
-                                        <Typography variant="subtitle2" className="task-card-kicker">
-                                            会话
-                                        </Typography>
-                                        <Typography
-                                            variant="body1"
-                                            className={`task-card-session ${session.hasAlias ? 'is-primary' : 'mono'}`}
-                                        >
-                                            {session.displayName}
-                                        </Typography>
-                                    </div>
-                                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1, flexShrink: 0 }}>
-                                        <Box className="task-source-mode-pill">
-                                            {sourceModeLabel}
-                                        </Box>
-                                        <Chip
-                                            label={unansweredLabel}
-                                            size="small"
-                                            color={chipColor}
-                                            variant={unansweredCount > 0 ? 'filled' : 'outlined'}
-                                        />
-                                    </Box>
-                                </div>
+                            <div className={`card tcard accent-primary ${task.status === 'urgent' ? 'is-urgent' : ''} ${task.status === 'expired' ? 'is-expired' : ''}`} key={job.id}>
+                                <UI.TimerCardIdentity
+                                    name={task.sessionDisplayName}
+                                    umoText={task.umoText}
+                                    badges={(
+                                        <React.Fragment>
+                                            <span className={`tcard-badge ${isTriggerRunning ? 'accent-auto-group' : ''}`}>
+                                                {isTriggerRunning ? '立即触发中' : '待执行'}
+                                            </span>
+                                            <span className={`task-status-pill is-${task.status}`}>{task.statusLabel}</span>
+                                        </React.Fragment>
+                                    )}
+                                />
 
-                                {session.subText ? (
-                                    <Typography
-                                        variant="caption"
-                                        className="task-card-session-sub mono"
-                                        sx={{
-                                            display: 'block',
-                                            width: '100%',
-                                            mt: -0.5,
-                                            mb: 0.5,
-                                            overflow: 'visible',
-                                            whiteSpace: 'nowrap',
-                                        }}
-                                    >
-                                        {`UMO · ${session.subText}`}
-                                    </Typography>
-                                ) : null}
+                                <UI.TimerCardCountdown
+                                    percent={task.progressPercent}
+                                    status={task.status}
+                                    kicker={task.heroLabel}
+                                    tokens={task.countdownTokens}
+                                    emptyText={task.statusLabel}
+                                    ringTitle={`${task.progressLabel}，已等待 ${task.elapsedText}`}
+                                    foot={(
+                                        <React.Fragment>
+                                            <UI.TimerCardFootItem
+                                                label="预计执行时间："
+                                                value={task.executeClockText}
+                                                title={`执行时间 ${task.executeFullText}`}
+                                            />
+                                            <span className="tcard-foot-dot">·</span>
+                                            <UI.TimerCardFootItem label={`已等待 ${task.elapsedText}`} />
+                                        </React.Fragment>
+                                    )}
+                                />
 
-                                <div className="task-next-run-panel">
-                                    <div className="task-next-run-primary-row">
-                                        <div>
-                                            <Typography variant="caption" className="task-next-run-label">
-                                                下一次执行时间
-                                            </Typography>
-                                            <Typography variant="body2" className="task-next-run-time">
-                                                {task.nextRun ? formatDateTime(task.nextRun, displayTimezone, { includeYear: true, includeSeconds: true }) : '--'}
-                                            </Typography>
+                                <UI.TimerCardFacts
+                                    facts={[
+                                        {
+                                            label: '生效人格',
+                                            value: task.personaText,
+                                            sub: task.personaSourceText,
+                                            title: task.personaTitle,
+                                            personaState: task.personaState,
+                                        },
+                                        { label: '上下文来源', value: task.sourceModeLabel },
+                                        { label: '调度间隔', value: task.intervalText },
+                                        { label: '免打扰时段', value: task.quietText },
+                                        {
+                                            label: '未回复次数',
+                                            value: task.unansweredValueText,
+                                            sub: task.unansweredIsLimited
+                                                ? `上限达到 ${task.max_unanswered_times} 次后暂停`
+                                                : '未设上限',
+                                            title: task.unansweredHintText,
+                                            warning: task.unansweredIsWarning,
+                                        },
+                                    ]}
+                                />
+
+                                <div className="tcard-actions">
+                                    {/* 反馈区整体在有文案时才渲染，空态完全不占高度，避免操作区顶上出现大块空白。 */}
+                                    {(triggerHelperText || rescheduleHelperText) ? (
+                                        <div className="tcard-feedback-stack">
+                                            {triggerHelperText ? (
+                                                <div className={`tcard-feedback ${triggerFeedbackStatus ? `is-${triggerFeedbackStatus}` : ''}`}>
+                                                    {triggerHelperText}
+                                                </div>
+                                            ) : null}
+                                            {rescheduleHelperText ? (
+                                                <div className={`tcard-feedback ${rescheduleFeedbackStatus ? `is-${rescheduleFeedbackStatus}` : ''}`}>
+                                                    {rescheduleHelperText}
+                                                </div>
+                                            ) : null}
                                         </div>
-                                        <div className={`task-status-pill is-${task.status}`}>
-                                            {task.statusLabel}
-                                        </div>
-                                    </div>
-                                    <Typography variant="body2" className="task-countdown-text">
-                                        {task.countdownText}
-                                    </Typography>
-                                    <div className="task-progress-track">
-                                        <div
-                                            className={`task-progress-bar is-${task.status}`}
-                                            style={{ '--progress-width': `${task.progressPercent}%` }}
-                                        ></div>
-                                    </div>
-                                </div>
-
-                                <Box className="task-meta-grid">
-                                    <Box className="task-meta-cell">
-                                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.4 }}>
-                                            调度间隔
-                                        </Typography>
-                                        <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
-                                            {scheduleIntervalText}
-                                        </Typography>
-                                    </Box>
-                                    <Box className="task-meta-cell">
-                                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.4 }}>
-                                            免打扰时段
-                                        </Typography>
-                                        <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
-                                            {quietHoursText}
-                                        </Typography>
-                                    </Box>
-                                </Box>
-
-                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mt: 'auto', pt: 1.5 }}>
-                                    {triggerHelperText ? (
-                                        <Typography
-                                            variant="caption"
-                                            sx={{
-                                                minHeight: 20,
-                                                color: currentTriggerFeedback && currentTriggerFeedback.status === 'error'
-                                                    ? 'error.main'
-                                                    : currentTriggerFeedback && currentTriggerFeedback.status === 'success'
-                                                        ? 'success.main'
-                                                        : 'text.secondary',
-                                            }}
-                                        >
-                                            {triggerHelperText}
-                                        </Typography>
                                     ) : null}
-                                    {rescheduleHelperText ? (
-                                        <Typography
-                                            variant="caption"
-                                            sx={{
-                                                minHeight: 20,
-                                                color: currentRescheduleFeedback.status === 'error'
-                                                    ? 'error.main'
-                                                    : currentRescheduleFeedback.status === 'success'
-                                                        ? 'success.main'
-                                                        : 'text.secondary',
-                                            }}
-                                        >
-                                            {rescheduleHelperText}
-                                        </Typography>
-                                    ) : null}
-                                    <Box sx={{ display: 'flex', gap: 1 }}>
+                                    <div className="tcard-button-row">
                                         <Button
                                             variant="outlined"
                                             size="small"
@@ -316,8 +252,8 @@ function TasksView({ onRefresh }) {
                                         >
                                             取消任务
                                         </Button>
-                                    </Box>
-                                </Box>
+                                    </div>
+                                </div>
                             </div>
                         );
                     })}

@@ -77,10 +77,67 @@
         return Array.from(merged.values());
     }
 
+    // 把剩余秒数拆成「数字 + 单位」片段，便于前端把数字放大、单位缩小排版。
+    function splitDurationTokens(totalSeconds, maxUnits) {
+        const limit = Number(maxUnits) || 3;
+        const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+        const units = [
+            { label: '天', size: 86400 },
+            { label: '小时', size: 3600 },
+            { label: '分', size: 60 },
+            { label: '秒', size: 1 },
+        ];
+
+        const tokens = [];
+        let rest = seconds;
+        units.forEach((unit, index) => {
+            if (tokens.length >= limit) return;
+            const value = Math.floor(rest / unit.size);
+            rest -= value * unit.size;
+            const isLastUnit = index === units.length - 1;
+            // 前导零单位（如 0天0小时）不展示，但秒必须有值，避免出现空倒计时。
+            if (value > 0 || tokens.length > 0 || isLastUnit) {
+                tokens.push({
+                    value: tokens.length > 0 ? String(value).padStart(2, '0') : String(value),
+                    unit: unit.label,
+                });
+            }
+        });
+
+        return tokens.slice(0, limit);
+    }
+
+
+    // 计时窗口的来源配置：字段名严格对齐配置页，数值直接复用窗口秒数。
+    function resolveTriggerSpec(isGroupSilence, windowSeconds) {
+        return {
+            configLabel: isGroupSilence ? '群聊沉默触发时间' : '自动触发等待时间',
+            configValue: windowSeconds > 0
+                ? window.formatDuration(windowSeconds, { compact: true, maxUnits: 3 })
+                : '未配置',
+        };
+    }
+
+    // 未回复计数说明：对齐「最大未回复次数上限」配置项，0 表示不限制。
+    function resolveUnansweredSpec(timer) {
+        const current = Math.max(0, Number(timer.unanswered_count) || 0);
+        const max = Math.max(0, Number(timer.max_unanswered_times) || 0);
+        return {
+            current: current,
+            max: max,
+            isLimited: max > 0,
+            isWarning: current > 0,
+            valueText: max > 0 ? `${current} / ${max} 次` : `${current} 次`,
+            hintText: max > 0
+                ? `连续 ${max} 次主动消息无人回复后会暂停发送，当前已累计 ${current} 次。`
+                : '未设置最大未回复次数上限，会持续主动发送。',
+        };
+    }
+
     // 状态页计时器卡片：把后端字段换算成可直接渲染的文案与样式字段。
-    function resolveStatusTimerCard(timer, nowMs, displayTimezone, snapshotAtMs) {
+    function resolveStatusTimerCard(timer, nowMs, displayTimezone, snapshotAtMs, snapshotServerMs) {
         const targetTime = window.TimeDomain.toDate(timer.target_time);
-        const remainingSeconds = window.TimeDomain.resolveTimerRemainingSeconds(timer, nowMs, snapshotAtMs);
+        const remainingSeconds = window.TimeDomain.resolveTimerRemainingSeconds(timer, nowMs, snapshotAtMs, snapshotServerMs);
         // 只要剩余秒数可推导即可展示倒计时，target_time 仅用于展示目标时间文本。
         const hasLiveRemaining = remainingSeconds !== null && Number.isFinite(remainingSeconds);
         const windowSeconds = Math.max(0, Number(timer.window_seconds !== undefined ? timer.window_seconds : 0));
@@ -102,7 +159,7 @@
                 future: '稳定运行',
                 soon: '正常计时',
                 urgent: '即将结束',
-                expired: '待刷新',
+                expired: '等待刷新',
                 unknown: '待确认',
             }
         );
@@ -117,12 +174,21 @@
             : (isGroupSession ? 'accent-auto-group' : 'accent-auto-friend');
         const kindBadgeLabel = isGroupSilence
             ? '沉默重置型'
-            : (isGroupSession ? '群自动触发' : '私聊自动触发');
+            : (isGroupSession ? '群聊自动触发' : '私聊自动触发');
 
         const session = window.SessionDomain.resolveSessionDisplay({
             session: timer.session_id,
             session_name: timer.session_display_name || timer.session_name,
         });
+
+        const triggerSpec = resolveTriggerSpec(isGroupSilence, windowSeconds);
+        const unansweredSpec = resolveUnansweredSpec(timer);
+        const personaDisplay = window.resolvePersonaDisplay(timer.persona);
+
+        // 已等待时长由窗口与剩余时间反推，比裸露的“目标时间”更贴近用户感受。
+        const elapsedSeconds = windowSeconds > 0 && hasLiveRemaining
+            ? Math.max(0, windowSeconds - remainingSeconds)
+            : 0;
 
         return Object.assign({}, timer, {
             startedAt: window.TimeDomain.toDate(timer.started_at),
@@ -136,19 +202,108 @@
             sectionTitle: sectionTitle,
             accentClass: accentClass,
             kindBadgeLabel: kindBadgeLabel,
-            sourceModeLabel: window.resolveSourceModeLabel(timer.source_mode),
-            unansweredLabel: window.formatUnansweredLabel(timer.unanswered_count, timer.max_unanswered_times),
-            countdownText: hasLiveRemaining
-                ? (remainingSeconds > 0
-                    ? `${window.formatDuration(remainingSeconds, { compact: true, maxUnits: 3 })} 后到期`
-                    : '等待下一轮刷新确认')
-                : '暂无有效目标时间',
             sessionDisplayName: session.displayName,
             sessionSubText: session.subText,
             hasAlias: session.hasAlias,
+            umoText: session.sessionId || '--',
+            // 倒计时文案：主数字 + 说明。
+            countdownTokens: hasLiveRemaining && remainingSeconds > 0
+                ? splitDurationTokens(remainingSeconds, 3)
+                : [],
+            heroLabel: hasLiveRemaining && remainingSeconds > 0
+                ? '距离创建待执行的主动消息任务还有'
+                : '当前计时状态',
+            progressLabel: `已等待 ${progressPercent}%`,
+            elapsedSeconds: elapsedSeconds,
+            elapsedText: window.formatDuration(elapsedSeconds, { compact: true, maxUnits: 3 }),
+            // 预计创建时间只给时分秒，日期放在 title 里避免占宽。
+            targetClockText: targetTime
+                ? window.formatDateTime(targetTime, displayTimezone, { includeYear: false, includeSeconds: true }).trim()
+                : '--',
             targetText: targetTime
                 ? window.formatDateTime(targetTime, displayTimezone, { includeYear: true, includeSeconds: true })
                 : '--',
+            triggerConfigLabel: triggerSpec.configLabel,
+            triggerConfigValue: triggerSpec.configValue,
+            unansweredValueText: unansweredSpec.valueText,
+            unansweredHintText: unansweredSpec.hintText,
+            unansweredIsLimited: unansweredSpec.isLimited,
+            unansweredIsWarning: unansweredSpec.isWarning,
+            sourceModeLabel: window.resolveSourceModeLabel(timer.source_mode),
+            personaText: personaDisplay.name,
+            personaSourceText: personaDisplay.sourceLabel || '',
+            personaState: personaDisplay.state,
+            personaTitle: personaDisplay.title,
+        });
+    }
+
+    // 任务页卡片展示数据：与计时器卡片复用同一套三段式结构，文案口径保持一致。
+    function resolveScheduledCard(job, nowMs, displayTimezone) {
+        // 复用计时卡片的状态、倒计时与进度推导，避免两处阈值不一致。
+        const progress = resolveTaskProgress(job, nowMs, displayTimezone);
+        const session = window.SessionDomain.resolveSessionDisplay(job);
+        const personaDisplay = window.resolvePersonaDisplay(job.persona);
+        const unansweredSpec = resolveUnansweredSpec(job);
+        const remainingSeconds = Number(progress.remainingSeconds) || 0;
+        const progressPercent = clampPercent(progress.progressPercent);
+
+        // 已等待时长 = 调度窗口（随机区间） - 剩余时间，比裸露的执行时刻更直观。
+        const windowSeconds = Math.max(0, Number(job.last_schedule_random_interval_seconds) || 0);
+        const elapsedSeconds = windowSeconds > 0
+            ? Math.max(0, windowSeconds - remainingSeconds)
+            : 0;
+
+        // 调度间隔取配置项口径，与配置页「最小/最大间隔」文案对齐。
+        const minMinutes = Number(job.schedule_min_interval_minutes) || 0;
+        const maxMinutes = Number(job.schedule_max_interval_minutes) || 0;
+        const intervalText = (minMinutes > 0 && maxMinutes > 0)
+            ? `${minMinutes} - ${maxMinutes} 分钟`
+            : (minMinutes > 0 ? `${minMinutes} 分钟` : (maxMinutes > 0 ? `${maxMinutes} 分钟` : '未配置'));
+
+        // 免打扰时段统一成 02:00 - 06:00 形式，非法值原样展示便于排查配置错误。
+        const quietRaw = String(job.quiet_hours || '').trim();
+        const quietMatched = quietRaw.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+        let quietText = quietRaw || '未配置';
+        if (quietMatched) {
+            const startHour = Number(quietMatched[1]);
+            const endHour = Number(quietMatched[2]);
+            if (startHour >= 0 && startHour <= 23 && endHour >= 0 && endHour <= 23) {
+                quietText = `${String(startHour).padStart(2, '0')}:00 - ${String(endHour).padStart(2, '0')}:00`;
+            }
+        }
+
+        return Object.assign({}, job, {
+            status: progress.status,
+            statusLabel: progress.statusLabel,
+            progressPercent: progressPercent,
+            progressLabel: `已等待 ${progressPercent}%`,
+            sessionDisplayName: session.displayName,
+            umoText: session.sessionId || '--',
+            // 倒计时正文：主数字 + 单位，与计时器卡片完全一致。
+            countdownTokens: remainingSeconds > 0
+                ? splitDurationTokens(remainingSeconds, 3)
+                : [],
+            // 任务卡是「待执行」，因此 kicker 用执行语义而非创建语义。
+            heroLabel: remainingSeconds > 0 ? '距离执行这次主动消息还有' : '当前执行状态',
+            elapsedSeconds: elapsedSeconds,
+            elapsedText: window.formatDuration(elapsedSeconds, { compact: true, maxUnits: 3 }),
+            executeClockText: progress.nextRun
+                ? window.formatDateTime(progress.nextRun, displayTimezone, { includeYear: false, includeSeconds: true }).trim()
+                : '--',
+            executeFullText: progress.nextRun
+                ? window.formatDateTime(progress.nextRun, displayTimezone, { includeYear: true, includeSeconds: true })
+                : '--',
+            sourceModeLabel: window.resolveSourceModeLabel(job.source_mode),
+            personaText: personaDisplay.name,
+            personaSourceText: personaDisplay.sourceLabel || '',
+            personaState: personaDisplay.state,
+            personaTitle: personaDisplay.title,
+            unansweredValueText: unansweredSpec.valueText,
+            unansweredHintText: unansweredSpec.hintText,
+            unansweredIsLimited: unansweredSpec.isLimited,
+            unansweredIsWarning: unansweredSpec.isWarning,
+            intervalText: intervalText,
+            quietText: quietText,
         });
     }
 
@@ -228,6 +383,7 @@
         clampPercent: clampPercent,
         dedupeTimerCards: dedupeTimerCards,
         resolveStatusTimerCard: resolveStatusTimerCard,
+        resolveScheduledCard: resolveScheduledCard,
         resolveTaskProgress: resolveTaskProgress,
     });
 })();
