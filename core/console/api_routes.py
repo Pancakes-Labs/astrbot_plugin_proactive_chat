@@ -345,7 +345,10 @@ class ApiRoutes:
                 logger.debug(f"[主动消息] 预览人格时读取对话失败喵: {e}")
 
             service = plugin.context_service
-            resolution = await service.resolve_persona(normalized, conversation)
+            # 预览属于调试路径，高频调用不应反复刷人格遮蔽日志。
+            resolution = await service.resolve_persona(
+                normalized, conversation, log_shadow=False
+            )
             # 各来源原始取值一并返回，便于定位优先级遮蔽问题。
             candidates = {
                 "plugin_config": service.get_plugin_persona_id(normalized),
