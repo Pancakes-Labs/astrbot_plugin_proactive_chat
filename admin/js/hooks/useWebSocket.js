@@ -21,6 +21,10 @@ const WS_PONG_TIMEOUT_MS = WS_HEARTBEAT_INTERVAL_MS * 2.5;
 let __nextReconnectDelayMs = WS_RECONNECT_BASE_DELAY_MS;
 // 最近一次确认链路可用的时间戳（open 或收到 pong 时刷新）。
 let __lastPongAt = 0;
+// 只在“曾经连上过又断开”时提示，避免首屏尚未连上就弹错误。
+let __wsEverConnected = false;
+// 断开提示是否已经展示过，防止后台反复重连失败时重复刷屏。
+let __wsDisconnectNotified = false;
 
 function setConnected(value) {
     if (__wsConnected === value) return;
@@ -32,6 +36,26 @@ function setConnected(value) {
             // 单个订阅者异常不影响其它组件。
         }
     });
+
+    // 实时通道状态变化使用同 key 覆盖，保证一段时间内只留一条提示。
+    if (value) {
+        __wsEverConnected = true;
+        if (__wsDisconnectNotified && window.Toast) {
+            __wsDisconnectNotified = false;
+            window.Toast.success('实时连接已恢复，数据将自动同步', {
+                title: 'WebSocket',
+                key: 'ws-connection',
+            });
+        }
+        return;
+    }
+    if (__wsEverConnected && !__wsDisconnectNotified && window.Toast) {
+        __wsDisconnectNotified = true;
+        window.Toast.warning('实时连接已断开，正在自动重连（已降级为轮询刷新）', {
+            title: 'WebSocket',
+            key: 'ws-connection',
+        });
+    }
 }
 
 function clearReconnectTimer() {
