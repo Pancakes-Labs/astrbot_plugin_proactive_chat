@@ -187,12 +187,30 @@
         gap: 8px 10px;
     }
 
-    .status-timer-info-grid {
-        grid-template-columns: 1fr;
-    }
 
     .status-panel-card {
         min-height: auto;
+    }
+
+    /* 移动端顶栏不再吸顶，Toast 改为贴边横向铺满，避免超出可视宽度。 */
+    .app-toast-stack {
+        top: 12px;
+        right: 12px;
+        left: 12px;
+        width: auto;
+        max-width: none;
+        gap: 10px;
+    }
+
+    .app-toast {
+        padding: 12px 12px 14px 12px;
+        border-radius: 14px;
+    }
+
+    .app-toast-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 9px;
     }
 
     .tasks-grid-enhanced {
@@ -321,8 +339,7 @@
     }
 
     .task-next-run-primary-row,
-    .task-card-top,
-    .status-timer-primary-row {
+    .task-card-top {
         flex-direction: column;
         align-items: flex-start;
     }
@@ -360,15 +377,6 @@
     .notification-feed-actions-inside {
         right: 12px;
         bottom: 10px;
-    }
-
-    .status-timer-card-top {
-        grid-template-columns: 1fr;
-    }
-
-    .status-timer-chip-stack {
-        justify-content: flex-start;
-        max-width: none;
     }
 
     .status-action-tooltip-bubble {
@@ -470,10 +478,32 @@
 
 /* 尊重系统“减少动态效果”偏好，关闭高频动画，提升无障碍体验。 */
 @media (prefers-reduced-motion: reduce) {
+    .app-toast {
+        animation: none !important;
+        transition: none !important;
+    }
+
+    .app-toast.is-leaving {
+        /* 关掉动画后仍需立即隐藏，避免残留条目卡在列表里。 */
+        opacity: 0 !important;
+        animation: none !important;
+    }
+
+    /* 进度条依赖位移动画表达剩余时间，低动态模式下直接隐藏。 */
+    .app-toast-progress {
+        display: none;
+    }
+
+    .app-toast.is-loading .app-toast-icon svg {
+        animation-duration: 2.4s !important;
+    }
+
     .boot-loader__logo,
     .boot-loader__progress-bar,
-    .status-timer-reset-dot,
-    .status-timer-reset-hint,
+    .tcard,
+    .tcard-hint,
+    .tcard-hint-dot,
+    .tcard-ring-bar,
     .status-panel-card,
     .task-card-enhanced,
     .status-timer-card,
@@ -493,8 +523,8 @@
         animation: none !important;
     }
 
-    /* 提示条本身靠 status-reset-hint-fade 淡入，关掉动画后必须补上静态可见状态。 */
-    .status-timer-reset-hint {
+    /* 提示条靠动画淡入，关掉动画后必须补上静态可见状态。 */
+    .tcard-hint {
         animation: none !important;
         opacity: 1;
         transform: none;
