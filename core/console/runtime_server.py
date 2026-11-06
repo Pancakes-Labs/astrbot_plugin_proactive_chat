@@ -89,6 +89,9 @@ class WebConsoleServer:
         # 记录 Web 端可用性及初始化失败原因。
         self._web_admin_available = False
         self._web_admin_init_error: str | None = None
+        # 状态广播合并窗口：群聊消息连发时避免重复构建全量载荷。
+        self._broadcast_task: asyncio.Task | None = None
+        self._pending_broadcast_reason = ""
 
         if FASTAPI_AVAILABLE:
             try:
@@ -195,23 +198,62 @@ class WebConsoleServer:
             logger.warning(f"[主动消息] 未找到管理端静态目录喵: {admin_dir}")
 
     # ------------------------------------------------------------------
-    # 广播（供通知中心与路由复用）
+    # 广播（供通知中心、路由与消息事件复用）
     # ------------------------------------------------------------------
     async def _broadcast_ws_payload(self, payload: dict[str, Any]) -> None:
         """通过实时通道向所有连接广播任意载荷。"""
         await self.realtime.broadcast_ws_payload(payload)
 
     async def _broadcast_update(self, reason: str) -> None:
-        """广播一份全量状态刷新载荷（无连接时直接跳过）。"""
+        """广播一份全量状态刷新载荷（无连接时直接跳过）。
+
+        新增合并窗口：群聊消息可能在短时间内连发，逐条构建全量载荷会
+        同时拖慢事件处理与前端刷新，这里把 300ms 内的多次请求合并为一次。
+        """
         if not self.realtime.connections:
             return
+
+        self._pending_broadcast_reason = reason
+        # 已有等待中的合并任务时直接复用，保证一个窗口只构建一次载荷。
+        if self._broadcast_task and not self._broadcast_task.done():
+            return
+
+        self._broadcast_task = asyncio.create_task(self._flush_broadcast_update())
+        # 任务结束时清理引用，避免持有已完成的 Task 造成对象无法回收。
+        self._broadcast_task.add_done_callback(self._clear_broadcast_task)
+
+    def _clear_broadcast_task(self, task: Any) -> None:
+        """广播任务收尾：清理引用并吞掉异常，防止 asyncio 打未检索告警。"""
+        if self._broadcast_task is task:
+            self._broadcast_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"[主动消息] 状态广播失败喵: {e}")
+
+    async def _flush_broadcast_update(self) -> None:
+        """等待合并窗口后构建并广播一次全量状态。"""
+        try:
+            await asyncio.sleep(0.3)
+        except asyncio.CancelledError:
+            return
+
+        if not self.realtime.connections:
+            return
+
+        reason = self._pending_broadcast_reason or "update"
+        # 先构建载荷再判空：构建期间连接可能断开，省掉无意义的发送。
+        status = await self.state_builder.build_status_payload()
+        jobs = await self.state_builder.collect_jobs_async()
 
         payload = {
             "type": "update",
             "reason": reason,
             "data": {
-                "status": self.state_builder.build_status_payload(),
-                "jobs": self.state_builder.collect_jobs(),
+                "status": status,
+                "jobs": jobs,
                 "sessions": self.state_builder.list_known_session_summaries(),
                 "notifications": await self.state_builder.build_notification_payload(),
             },
