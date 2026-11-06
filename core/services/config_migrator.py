@@ -30,15 +30,15 @@ def _migrate_section(section: Any, section_name: str) -> bool:
     existing = section.get(PROMPT_TEMPLATES_KEY)
     legacy = section.get(LEGACY_PROMPT_KEY)
 
-    # 已经是列表结构：只做归一化清洗，补齐 enabled / weight。
-    if isinstance(existing, list):
+    if isinstance(existing, list) and existing:
+        # 已有模板内容：只做归一化清洗，补齐缺省字段，不动已有条目。
         normalized = normalize_templates(existing)
         if normalized != existing:
             section[PROMPT_TEMPLATES_KEY] = normalized
             return True
         return False
 
-    # 尚未迁移且存在旧字符串：转成单条模板，同时保留旧字段以便回滚。
+    # 空列表或缺失：都视为尚未迁移。
     templates = build_templates_from_legacy(legacy)
     if not templates:
         return False
