@@ -4,13 +4,14 @@
 配置为若干条模板，每条专注一件事，可单独启停并设置注入权重，
 每轮主动消息按权重抽取一条使用（不拼接多条）。
 
-生效优先级（保迁移前后完全一致，用户无感）：
-1. 用户自己创建的模板（id 不为 MIGRATED_TEMPLATE_ID）中启用项；
-2. 旧字段 proactive_prompt（保持旧版可编辑性，改了立刻生效）;
-3. 迁移自动生成的模板（id 为 MIGRATED_TEMPLATE_ID）。
+生效优先级（同时保证「迁移无感」与「会话覆写更具体者优先」）：
+1. 会话或全局里用户自建的模板（id 不为 MIGRATED_TEMPLATE_ID）；
+2. 旧字段 proactive_prompt；
+3. 迁移自动生成的留档模板（id 为 MIGRATED_TEMPLATE_ID）。
 
-这样自动迁移只是把旧文本复制一份留档，不会抢走旧字段的控制权；
-等后续 WebUI 真正编辑模板时，新模板自成一组并优先生效。
+从外优先选择被显式覆写的一侧的提示词来源。
+自动迁移只是把旧文本复制一份留档，且留档项永远排在最后，
+因此不会抢走旧字段的控制权；等后续 WebUI 真正编辑模板时，新模板自成一组并优先生效。
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ DEFAULT_TEMPLATE_WEIGHT = 100
 DEFAULT_TEMPLATE_ROLE = "task"
 # 迁移器生成的模板使用固定 id，用于与用户自建模板区分优先级。
 MIGRATED_TEMPLATE_ID = "legacy"
+# 由 config_service 写入的会话覆写字段名列表，用于判断「哪一侧更具体」。
+OVERRIDE_KEYS_META = "_override_keys"
 
 
 def normalize_template(raw: Any) -> dict[str, Any] | None:
@@ -146,6 +149,64 @@ def pick_template(
     return candidates[-1]
 
 
+def _legacy_as_template(legacy: str) -> dict[str, Any]:
+    """把旧字段包装成与模板同构的结构。"""
+    return {
+        "id": "",
+        "name": "",
+        "role": DEFAULT_TEMPLATE_ROLE,
+        "text": legacy,
+        "enabled": True,
+        "weight": DEFAULT_TEMPLATE_WEIGHT,
+    }
+
+
+def _pick_legacy(section: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+    """解析旧字段。
+
+    Returns:
+        (是否命中, 模板结构)。命中禁用意图时返回 (True, None)。
+    """
+    if LEGACY_PROMPT_KEY not in section:
+        return False, None
+
+    legacy = section.get(LEGACY_PROMPT_KEY)
+    if isinstance(legacy, str) and legacy.strip():
+        return True, _legacy_as_template(legacy)
+
+    # 键存在但为空 = 用户主动清空提示词，属明确禁用意图。
+    # 必须命中并返回 None，绝不能回退到迁移留档，否则清空的旧文本会复活。
+    return True, None
+
+
+def _pick_user_templates(
+    section: dict[str, Any],
+    *,
+    weighted: bool,
+    rng: random.Random | None,
+) -> dict[str, Any] | None:
+    return pick_template(
+        user_templates(section.get(PROMPT_TEMPLATES_KEY)), weighted=weighted, rng=rng
+    )
+
+
+def _pick_archived(
+    section: dict[str, Any],
+    *,
+    weighted: bool,
+    rng: random.Random | None,
+) -> dict[str, Any] | None:
+    return pick_template(
+        [
+            item
+            for item in enabled_templates(section.get(PROMPT_TEMPLATES_KEY))
+            if item["id"] == MIGRATED_TEMPLATE_ID
+        ],
+        weighted=weighted,
+        rng=rng,
+    )
+
+
 def resolve_active_template(
     section: Any,
     *,
@@ -154,44 +215,38 @@ def resolve_active_template(
 ) -> dict[str, Any] | None:
     """解析当前生效模板的完整结构（含 id / name / role / weight）。
 
-    优先级见模块说明：用户模板 > 旧字段 > 迁移留档模板。
+    优先级见模块说明：用户模板 > 旧字段 > 迁移留档，
+    并受 _override_keys 指示的「显式覆写侧」修正。
     返回 None 表示该配置段没有任何可用提示词。
     """
     if not isinstance(section, dict):
         return None
 
-    raw_templates = section.get(PROMPT_TEMPLATES_KEY)
+    override_keys = section.get(OVERRIDE_KEYS_META)
+    overrides_templates = isinstance(override_keys, list) and (
+        PROMPT_TEMPLATES_KEY in override_keys
+    )
+    overrides_legacy = isinstance(override_keys, list) and (
+        LEGACY_PROMPT_KEY in override_keys
+    )
 
-    picked = pick_template(user_templates(raw_templates), weighted=weighted, rng=rng)
+    # 会话显式覆写了旧字段、却没有覆写模板：
+    # 该字段比继承来的全局模板更具体，应优先使用。
+    if overrides_legacy and not overrides_templates:
+        hit, template = _pick_legacy(section)
+        if hit:
+            return template
+
+    picked = _pick_user_templates(section, weighted=weighted, rng=rng)
     if picked is not None:
         return picked
 
-    # 旧字段优先于迁移留档，保证用户在面板里改 proactive_prompt 依然立即生效。
-    legacy = section.get(LEGACY_PROMPT_KEY)
-    if isinstance(legacy, str):
-        if legacy.strip():
-            return {
-                "id": "",
-                "name": "",
-                "role": DEFAULT_TEMPLATE_ROLE,
-                "text": legacy,
-                "enabled": True,
-                "weight": DEFAULT_TEMPLATE_WEIGHT,
-            }
-        # 键存在但为空串 = 用户主动清空提示词，属明确禁用意图。
-        # 此时必须直接返回 None，绝不能回退到迁移留档，否则清空的旧文本会复活。
-        return None
+    hit, template = _pick_legacy(section)
+    if hit:
+        return template
 
-    # 完全没有旧字段（键不存在）：只在此情况下回退迁移留档，兼容回滚场景。
-    return pick_template(
-        [
-            item
-            for item in enabled_templates(raw_templates)
-            if item["id"] == MIGRATED_TEMPLATE_ID
-        ],
-        weighted=weighted,
-        rng=rng,
-    )
+    # 完全没有旧字段（键不存在）：回退迁移留档，兼容回滚场景。
+    return _pick_archived(section, weighted=weighted, rng=rng)
 
 
 def resolve_active_prompt(
@@ -233,6 +288,7 @@ __all__ = [
     "DEFAULT_TEMPLATE_WEIGHT",
     "LEGACY_PROMPT_KEY",
     "MIGRATED_TEMPLATE_ID",
+    "OVERRIDE_KEYS_META",
     "PROMPT_TEMPLATES_KEY",
     "build_templates_from_legacy",
     "enabled_templates",
