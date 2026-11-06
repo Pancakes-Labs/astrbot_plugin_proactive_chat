@@ -76,8 +76,17 @@ function NotificationsView({ onRefresh }) {
             dispatch({ type: 'SET_NOTIFICATIONS', payload: payload.items || [] });
             dispatch({ type: 'SET_NOTIFICATIONS_META', payload: payload.meta || null });
             await onRefresh();
+            const total = payload && payload.meta ? payload.meta.total_count : null;
+            if (window.Toast) {
+                window.Toast.success(
+                    total === null || total === undefined ? '通知已从服务端同步' : `通知已同步，当前共 ${total} 条`,
+                    { title: '通知中心' }
+                );
+            }
         } catch (e) {
-            dispatch({ type: 'SET_ERROR', payload: e.message || '刷新通知失败' });
+            const message = e.message || '刷新通知失败';
+            dispatch({ type: 'SET_ERROR', payload: message });
+            if (window.Toast) window.Toast.error(message, { title: '同步通知失败' });
         } finally {
             setBusyAction('');
         }
@@ -96,7 +105,9 @@ function NotificationsView({ onRefresh }) {
                 ),
             });
         } catch (e) {
-            dispatch({ type: 'SET_ERROR', payload: e.message || '标记已读失败' });
+            const message = e.message || '标记已读失败';
+            dispatch({ type: 'SET_ERROR', payload: message });
+            if (window.Toast) window.Toast.error(message, { title: '标记已读失败' });
         } finally {
             setBusyAction('');
         }
@@ -112,8 +123,11 @@ function NotificationsView({ onRefresh }) {
                 // 全部已读时直接把当前列表统一标成已读，保证交互即时反馈。
                 payload: notifications.map((item) => ({ ...item, _read: true })),
             });
+            if (window.Toast) window.Toast.success('全部通知已标记为已读', { title: '通知中心' });
         } catch (e) {
-            dispatch({ type: 'SET_ERROR', payload: e.message || '全部已读失败' });
+            const message = e.message || '全部已读失败';
+            dispatch({ type: 'SET_ERROR', payload: message });
+            if (window.Toast) window.Toast.error(message, { title: '全部已读失败' });
         } finally {
             setBusyAction('');
         }
