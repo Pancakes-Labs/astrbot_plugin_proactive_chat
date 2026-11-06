@@ -98,6 +98,7 @@ async def dispatch_event_hook(
     event: Any,
     hook_type: Any,
     *args: Any,
+    propagate_errors: bool = False,
     **kwargs: Any,
 ) -> bool:
     """派发 AstrBot 标准事件钩子。
@@ -114,6 +115,8 @@ async def dispatch_event_hook(
         )
     except Exception as e:  # pragma: no cover - 防御性兜底
         logger.debug(f"[主动消息] 获取事件钩子列表失败喵: {e}")
+        if propagate_errors:
+            raise
         return False
 
     for handler in handlers or []:
@@ -128,6 +131,8 @@ async def dispatch_event_hook(
                 continue
             await handler.handler(event, *args, **kwargs)
         except Exception as e:
+            if propagate_errors:
+                raise
             logger.error(
                 f"[主动消息] 执行钩子失败喵！来源: {handler_name}, "
                 f"错误类型: {type(e).__name__}, 错误详情: {e}\n"

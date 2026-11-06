@@ -16,6 +16,8 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..domain.domain_enums import TriggerSource
+
 # 注意：WebSocket / FileResponse / JSONResponse 必须在模块全局命名空间可用。
 try:  # pragma: no cover - 取决于是否安装 FastAPI
     from fastapi import WebSocket, WebSocketDisconnect
@@ -553,7 +555,11 @@ class ApiRoutes:
 
             plugin.manual_trigger_sessions.add(normalized)
             # 纳入统一任务登记，插件终止时可被一并取消，避免游离后台任务。
-            plugin._track_task(asyncio.create_task(plugin.check_and_chat(normalized)))
+            plugin._track_task(
+                asyncio.create_task(
+                    plugin.check_and_chat(normalized, trigger=TriggerSource.MANUAL)
+                )
+            )
             await _broadcast_web_update("jobs")
             return {
                 "ok": True,

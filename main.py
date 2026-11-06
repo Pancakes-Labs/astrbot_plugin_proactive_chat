@@ -259,6 +259,8 @@ class ProactiveChatPlugin(star.Star):
     # ==================================================================
     # 主动消息主流程
     # ==================================================================
-    async def check_and_chat(self, session_id: str) -> None:
-        """由定时任务触发的核心函数，完成一次完整的主动消息流程。"""
-        await self.orchestrator.run(session_id, TriggerSource.SCHEDULE)
+    async def check_and_chat(
+        self, session_id: str, trigger: TriggerSource = TriggerSource.SCHEDULE
+    ) -> None:
+        """保留真实触发来源，完成一次完整的主动消息流程。"""
+        await self.orchestrator.run(session_id, trigger)

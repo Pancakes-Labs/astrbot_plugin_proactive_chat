@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import inspect
+import json
 from typing import Any
 
-from astrbot.api.provider import ProviderRequest
+from astrbot.api import logger
+from astrbot.api.provider import LLMResponse, ProviderRequest
 
 
 def provider_request_fields() -> set[str] | None:
@@ -108,18 +110,84 @@ def supported_provider_kwargs(provider: Any) -> tuple[set[str], bool] | None:
     return keyword_names, accepts_any
 
 
-async def invoke_provider(provider: Any, req: Any) -> Any:
-    """调用 Provider，并按运行时能力裁剪不支持的可选参数。
+# 主动消息链路不参与框架工具循环，模型若请求调用工具必须被明确拒绝一次，
+# 否则该轮响应既无文本也无消息链，会被上游判定为失败而静默丢弃。
+TOOL_UNAVAILABLE_NOTICE = (
+    "当前为主动消息场景，无法执行工具调用。请忽略工具请求，"
+    "基于已有上下文直接使用纯文本作答，不要再次调用任何工具。"
+)
 
-    先组装候选参数，再依据 text_chat 签名过滤，保证兼容旧版本 Provider。
-    可选参数仅在取到有效值时才传入，避免覆盖 Provider 自身的默认行为。
+
+def serialize_tool_arguments(arguments: Any) -> str:
+    """把工具参数统一成 JSON 字符串。
+
+    Provider 返回的 tools_call_args 是 dict 列表，而 ToolCall.FunctionBody
+    的 arguments 字段只接受字符串或 None，直接传 dict 会触发校验异常。
     """
+    if arguments is None:
+        return "{}"
+    if isinstance(arguments, str):
+        return arguments or "{}"
+    try:
+        return json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "{}"
+
+
+def build_tool_calls_result(llm_response: Any) -> Any:
+    """把模型的工具调用请求包装为不可用回执，供下一轮请求回灌。"""
+    from astrbot.core.agent.message import (
+        AssistantMessageSegment,
+        ToolCall,
+        ToolCallMessageSegment,
+    )
+    from astrbot.core.provider.entities import ToolCallsResult
+
+    names = list(getattr(llm_response, "tools_call_name", None) or [])
+    args = list(getattr(llm_response, "tools_call_args", None) or [])
+    call_ids = list(getattr(llm_response, "tools_call_ids", None) or [])
+    extra_content = getattr(llm_response, "tools_call_extra_content", None) or {}
+
+    tool_calls = [
+        ToolCall(
+            id=str(call_id or f"proactive-unavailable-{index}"),
+            extra_content=extra_content.get(call_id),
+            function=ToolCall.FunctionBody(
+                name=function_name,
+                arguments=serialize_tool_arguments(
+                    args[index] if index < len(args) else None
+                ),
+            ),
+        )
+        for index, (function_name, call_id) in enumerate(zip(names, call_ids or names))
+    ]
+    if not tool_calls:
+        return None
+
+    return ToolCallsResult(
+        tool_calls_info=AssistantMessageSegment(tool_calls=tool_calls),
+        tool_calls_result=[
+            ToolCallMessageSegment(
+                role="tool",
+                tool_call_id=tool_call.id,
+                content=TOOL_UNAVAILABLE_NOTICE,
+            )
+            for tool_call in tool_calls
+        ],
+    )
+
+
+async def _call_text_chat(provider: Any, req: Any) -> Any:
+    """按 Provider 运行时能力组装参数并调用一次 text_chat。"""
     call_kwargs: dict[str, Any] = {
         "prompt": getattr(req, "prompt", None),
         "contexts": getattr(req, "contexts", None),
         "system_prompt": getattr(req, "system_prompt", None),
         "func_tool": getattr(req, "func_tool", None),
     }
+    tool_calls_result = getattr(req, "tool_calls_result", None)
+    if tool_calls_result:
+        call_kwargs["tool_calls_result"] = tool_calls_result
     extra_parts = getattr(req, "extra_user_content_parts", None)
     if extra_parts:
         call_kwargs["extra_user_content_parts"] = extra_parts
@@ -145,3 +213,37 @@ async def invoke_provider(provider: Any, req: Any) -> Any:
             }
 
     return await provider.text_chat(**call_kwargs)
+
+
+async def invoke_provider(provider: Any, req: Any, *, max_tool_rounds: int = 1) -> Any:
+    """调用 Provider，并按运行时能力裁剪不支持的可选参数。
+
+    先组装候选参数，再依据 text_chat 签名过滤，保证兼容旧版本 Provider。
+    可选参数仅在取到有效值时才传入，避免覆盖 Provider 自身的默认行为。
+
+    主动消息链路不进入框架工具循环；若模型仍请求工具，这里回灌一次
+    “工具不可用”回执并摘除工具，使其在下一次请求中给出纯文本回复，
+    避免整轮响应因无文本而被判定失败。
+    """
+    response = await _call_text_chat(provider, req)
+    if isinstance(response, str):
+        response = LLMResponse(role="assistant", completion_text=response)
+
+    rounds = 0
+    while rounds < max_tool_rounds and getattr(response, "tools_call_name", None):
+        tool_calls_result = build_tool_calls_result(response)
+        if tool_calls_result is None:
+            break
+
+        rounds += 1
+        logger.info(
+            f"[主动消息] 模型请求调用工具 {list(response.tools_call_name)}，"
+            "主动消息场景不支持执行，已回灌不可用提示并重试纯文本生成喵。"
+        )
+        req.func_tool = None
+        req.tool_calls_result = tool_calls_result
+        response = await _call_text_chat(provider, req)
+        if isinstance(response, str):
+            response = LLMResponse(role="assistant", completion_text=response)
+
+    return response
