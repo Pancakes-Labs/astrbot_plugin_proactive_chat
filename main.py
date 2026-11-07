@@ -113,6 +113,8 @@ class ProactiveChatPlugin(star.Star):
         # 自动触发的计时起点：由「重新计时」写入，用于区分用户是否真说过话。
         self.auto_trigger_baselines: dict[str, float] = {}
         self.auto_trigger_timers: dict[str, asyncio.TimerHandle] = {}
+        # 与生命周期解耦的后台任务（如插件重载），terminate 时不可取消。
+        self._detached_tasks: set[asyncio.Task[None]] = set()
         self.plugin_start_time = time.time()
         self.first_message_logged: set[str] = set()
         self._cleanup_counter = 0
@@ -139,6 +141,20 @@ class ProactiveChatPlugin(star.Star):
             return None
         self._telemetry_tasks.add(task)
         task.add_done_callback(self._telemetry_tasks.discard)
+        return task
+
+    def _track_detached_task(
+        self, task: asyncio.Task[None] | None
+    ) -> asyncio.Task[None] | None:
+        """登记与插件生命周期解耦的后台任务，避免被任务释放。
+
+        插件重载会先触发 terminate，而 terminate 会取消并等待遥测任务集合。
+        重载任务本身必须存活到旧实例销毁之后，因此单独存放、不参与清理。
+        """
+        if task is None:
+            return None
+        self._detached_tasks.add(task)
+        task.add_done_callback(self._detached_tasks.discard)
         return task
 
     async def _cleanup_telemetry_tasks(self) -> None:

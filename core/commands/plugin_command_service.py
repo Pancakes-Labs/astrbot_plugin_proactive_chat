@@ -748,8 +748,9 @@ class PluginCommandService:
 
         async def _dispatch() -> None:
             # 立即返回独立任务，绝不在请求上下文内等待重载完成。
-            # 必须登记引用：事件循环只持有弱引用，未登记的任务可能被 GC 打断。
-            self.plugin._track_task(asyncio.create_task(_run_reload()))
+            # 登记到 detached 集合：重载会触发 terminate，而 terminate 会取消
+            # 遥测任务集合，用 _track_task 等于让重载任务自己取消自己。
+            self.plugin._track_detached_task(asyncio.create_task(_run_reload()))
 
         background_tasks.add_task(_dispatch)
         return "正在重载主动消息插件，请稍候…"
