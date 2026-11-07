@@ -110,6 +110,8 @@ class ProactiveChatPlugin(star.Star):
         self.last_bot_message_time = 0
         self.session_temp_state: dict[str, dict] = {}
         self.last_message_times: dict[str, float] = {}
+        # 自动触发的计时起点：由「重新计时」写入，用于区分用户是否真说过话。
+        self.auto_trigger_baselines: dict[str, float] = {}
         self.auto_trigger_timers: dict[str, asyncio.TimerHandle] = {}
         self.plugin_start_time = time.time()
         self.first_message_logged: set[str] = set()
