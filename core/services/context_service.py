@@ -400,7 +400,9 @@ class ContextService:
     def extract_platform_message_text(self, content: Any) -> str:
         """宽松提取平台消息文本。
 
-        兼容字符串、结构化 parts 列表与字典三种形态；图片/语音等非文本部分
+        兼容字符串、结构化 parts 列表与字典三种形态；分段同时支持扁平的
+        `{"type": "plain", "text": ...}` 与 `MessageSegment.to_dict()` 产出的
+        嵌套 `{"type": "text", "data": {"text": ...}}`。图片/语音等非文本部分
         以占位符替代，保证渲染出的流水可读。
         """
         if content is None:
@@ -435,13 +437,30 @@ class ContextService:
             if not isinstance(part, dict):
                 continue
 
+            # 平台流水的分段有两种落库形态，都要认：
+            #   扁平：message_history_manager 写入的 {"type": "plain", "text": "..."}
+            #   嵌套：MessageSegment.to_dict() 写入的
+            #         {"type": "text", "data": {"text": "..."}}
+            # 只读扁平字段会让嵌套形态的正文整段丢失，真人消息只剩 [回复]。
+            payload = part.get("data")
+            if not isinstance(payload, dict):
+                payload = {}
+
             part_type = str(part.get("type") or "").lower()
             if part_type in {"plain", "text"}:
                 text = part.get("text")
-                if isinstance(text, str):
+                if not isinstance(text, str) or not text:
+                    text = payload.get("text")
+                if isinstance(text, str) and text:
                     texts.append(text)
             elif part_type == "file":
-                name = part.get("name") or part.get("filename") or ""
+                name = (
+                    part.get("name")
+                    or part.get("filename")
+                    or payload.get("name")
+                    or payload.get("filename")
+                    or ""
+                )
                 if name:
                     texts.append(
                         self.PLATFORM_FILE_PLACEHOLDER_TEMPLATE.format(name=name)
