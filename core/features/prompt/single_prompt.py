@@ -30,10 +30,10 @@ class DeliberateStage(BaseStage):
         session_id = ctx.session_id
         session_config = plugin.config_service.get_session_config(session_id) or {}
 
-        # 提示词与运行时附加块均由 PROMPT 阶段产出，这里只负责传递。
-        # 未装配 PROMPT 阶段时传 None，交由 llm_service 走旧路径自行拼装。
+        # 正文与附加块各自独立判定：任一存在即视为 PROMPT 阶段已装配，
+        prompt_assembled = bool(ctx.prompts.blocks or ctx.prompts.extras)
         prepared_prompt = ctx.prompts.merge_text() if ctx.prompts.blocks else None
-        extra_parts = ctx.prompts.extra_parts if ctx.prompts.blocks else None
+        extra_parts = ctx.prompts.extra_parts if prompt_assembled else None
 
         (
             llm_response,
