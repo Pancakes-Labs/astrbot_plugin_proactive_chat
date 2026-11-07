@@ -169,7 +169,10 @@ class FlowOrchestrator:
             return False, "session_disabled"
 
         schedule_conf = session_config.get("schedule_settings", {})
-        if is_quiet_time(schedule_conf.get("quiet_hours", "1-7"), plugin.timezone):
+        # 免打扰开关缺省视为开启，保持旧配置行为不变。
+        if schedule_conf.get("enable_quiet_hours", True) and is_quiet_time(
+            schedule_conf.get("quiet_hours", "1-7"), plugin.timezone
+        ):
             return False, "quiet_hours"
 
         return True, "allowed"

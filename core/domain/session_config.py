@@ -16,6 +16,9 @@ WEB_ADMIN_KEY = "web_admin"
 NOTIFICATION_SETTINGS_KEY = "notification_settings"
 TELEMETRY_CONFIG_KEY = "telemetry_config"
 
+# 会话内二级配置段
+SCHEDULE_SETTINGS_KEY = "schedule_settings"
+
 # 会话类型标签
 SESSION_TYPE_FRIEND = "friend"
 SESSION_TYPE_GROUP = "group"
@@ -59,3 +62,12 @@ class SessionConfig:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.raw.get(key, default)
+
+    @property
+    def schedule_settings(self) -> dict[str, Any]:
+        return self.section(SCHEDULE_SETTINGS_KEY)
+
+    @property
+    def quiet_hours_enabled(self) -> bool:
+        """是否启用免打扰时段；未显式配置时按启用处理，兼容旧配置。"""
+        return bool(self.schedule_settings.get("enable_quiet_hours", True))
