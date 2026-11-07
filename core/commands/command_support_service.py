@@ -271,7 +271,11 @@ class CommandSupportService:
 
     @staticmethod
     def parse_switch(token: str | None) -> bool | None:
-        """解析开关参数；返回 None 表示“切换当前状态”。"""
+        """解析开关参数；返回 None 表示“未提供，切换当前状态”。
+
+        注意：无法识别的词同样会得到 None，调用方必须先判断
+        参数是否为空，否则拼错一个字母就会静默反转开关状态。
+        """
         raw = str(token or "").strip().lower()
         if not raw:
             return None
@@ -280,6 +284,11 @@ class CommandSupportService:
         if raw in {"off", "关", "关闭", "禁用", "false", "0", "no"}:
             return False
         return None
+
+    @classmethod
+    def is_switch_token(cls, token: str | None) -> bool:
+        """判断参数是否为可识别的开关词（未提供与拼错都返回 False）。"""
+        return cls.parse_switch(token) is not None
 
     @staticmethod
     def format_quiet_hours(schedule_settings: dict) -> str:

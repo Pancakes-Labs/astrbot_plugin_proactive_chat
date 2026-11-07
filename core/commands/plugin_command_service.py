@@ -29,7 +29,7 @@ from .command_support_service import (
     SCOPE_SESSION,
     CommandSupportService,
 )
-from .forward_helper import FORWARD_NAME, send_forward_blocks
+from .forward_helper import FORWARD_FAILED, FORWARD_NAME, send_forward_blocks
 
 # 提示语前缀常量，避免多处手写不一致。
 _DENY = "🚫 权限不足：此命令仅限管理员使用。"
@@ -41,6 +41,8 @@ class PluginCommandService:
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
         self.support = CommandSupportService(plugin)
+        # 全局开关会连带重排大量会话任务，必须串行化避免交错。
+        self._global_toggle_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # 内部辅助
@@ -129,7 +131,8 @@ class PluginCommandService:
         sent = await send_forward_blocks(
             self.plugin, event, blocks, header=header, name=FORWARD_NAME
         )
-        if sent:
+        if sent != FORWARD_FAILED:
+            # 全部送达或已送达部分内容，重复回退会造成刷屏。
             return
         # 平台不支持合并转发时回退普通文本，保证帮助内容可达。
         yield event.plain_result(header + "\n\n" + "\n\n".join(blocks))
@@ -316,7 +319,7 @@ class PluginCommandService:
         sent = await send_forward_blocks(
             self.plugin, event, blocks, header=header, name=FORWARD_NAME
         )
-        if sent:
+        if sent != FORWARD_FAILED:
             return
         yield event.plain_result(header + "\n\n" + "\n\n".join(blocks))
 
@@ -427,7 +430,10 @@ class PluginCommandService:
 
         override = plugin.session_override_manager.get_override(session_id)
         override["enable"] = enabled
-        await plugin.session_override_manager.set_override(session_id, override)
+        saved = await plugin.session_override_manager.set_override(session_id, override)
+        if not saved:
+            # 内存已改但落盘失败，重启后会回退，必须让用户知道。
+            return "会话开关已应用到内存，但保存到磁盘失败，请检查日志后重试。"
 
         if enabled:
             # 群聊由沉默计时驱动，不注册持久化定时任务，否则会多出一条主动消息。
@@ -475,12 +481,20 @@ class PluginCommandService:
                 payload.pop("last_scheduled_at", None)
             await plugin.storage_service.save_data()
 
-    async def _set_global_enable(self, enabled: bool) -> list[str]:
+    async def _set_global_enable(self, enabled: bool) -> tuple[list[str], bool]:
         """切换 friend_settings / group_settings 两个总开关。
 
+        全局切换会连带改动大量会话的计时器与任务，多步操作必须串行，
+        否则两位管理员的相反操作可能交错，最终状态与活动任务不一致。
+
         Returns:
-            实际发生变化的配置分组名列表。
+            (实际发生变化的配置分组名列表, 是否成功落盘)。
         """
+        async with self._global_toggle_lock:
+            return await self._apply_global_enable(enabled)
+
+    async def _apply_global_enable(self, enabled: bool) -> tuple[list[str], bool]:
+        """_set_global_enable 的实际执行体，需在锁内调用。"""
         plugin = self.plugin
         changed: list[str] = []
         # 关闭前先快照会话清单：配置一旦置为 False，list_enabled_sessions 会立刻返回空。
@@ -499,16 +513,34 @@ class PluginCommandService:
             changed.append(scope_key)
 
         if not changed:
-            return changed
+            return changed, True
 
+        saved = True
         try:
             plugin.config.save_config()
-        except Exception as e:  # noqa: BLE001 - 内存已改，落盘失败仅告警
+        except Exception as e:  # noqa: BLE001 - 内存已改，需要把失败上报给调用方
             logger.error(f"[主动消息] 保存全局开关失败喵: {e}")
+            saved = False
+
+        # 落盘失败时不再重排期：避免磁盘与内存分叉后产生不可解释的任务。
+        # 内存回滚到切换前状态，让返回值与真实持久化状态保持一致。
+        if not saved:
+            for scope_key in changed:
+                settings = plugin.config.get(scope_key)
+                if isinstance(settings, dict):
+                    settings["enable"] = not enabled
+            return [], False
 
         if enabled:
+            # 先建自动触发计时器，再排持久任务；回调里已有持久任务校验，
+            # 不会在既有任务之外重复登记。
             await plugin.scheduler_service.setup_auto_triggers_for_enabled_sessions()
             for session_id in self.support.list_enabled_sessions():
+                session_config = plugin.config_service.get_session_config(session_id)
+                # 全局开启不代表所有列出的会话都该排期：会话级 enable 覆写
+                # 可能已把它单独关闭，为它排期只会产生发不出去的任务。
+                if not session_config or not session_config.get("enable", False):
+                    continue
                 if self.support.is_group_session(session_id):
                     await plugin.scheduler_service.reset_group_silence_timer(session_id)
                 else:
@@ -519,7 +551,7 @@ class PluginCommandService:
             for session_id in known_sessions:
                 await self._cancel_session_schedule(session_id)
 
-        return changed
+        return changed, True
 
     async def handle_toggle(
         self,
@@ -527,23 +559,33 @@ class PluginCommandService:
         scope_token: str | None = None,
         switch_token: str | None = None,
     ):
-        """开启或关闭指定作用域的主动消息推送。"""
+        """开启或关闭指定作用域的主动消息推送。
+
+        参数支持两种写法：作用域在前（全局 on）、作用域在后（on 全局）都会
+        按同一语义解析。未提供的开关词表示“切换”，拼错的词直接拒绝，
+        绝不能当成“切换”处理，否则一个错别字就会反转状态。
+        """
         if await self._admin_denied(event):
             yield event.plain_result(_DENY)
             return
 
-        # 允许省略作用域直接写开关词：/主动消息开关 off
-        first_is_switch = self.support.parse_switch(scope_token) is not None
+        usage = (
+            "用法：/主动消息开关 [当前会话|全局|<会话UMO>] [on|off]\n"
+            "例：/主动消息开关 全局 on"
+        )
+
+        # 两个参数谁承担“作用域”、谁承担“开关词”，先判定再解析。
+        first_is_switch = self.support.is_switch_token(scope_token)
+        second_is_switch = self.support.is_switch_token(switch_token)
+
         if first_is_switch:
-            scope_token, switch_token = None, scope_token
-        elif self.support.parse_switch(switch_token) is not None:
-            # 参数写反了（/主动消息开关 on 全局）：无法判断用户本意是
-            # 「当前会话 + 开启」还是「全局 + 开启」，直接提示正确用法，
-            # 不做任何状态变更，避免静默丢弃作用域参数。
+            # 开关词在前：剩余参数整体作为作用域，避免丢掉「on 全局」里的全局。
+            scope_token, switch_token = switch_token, scope_token
+
+        # 到这里 switch_token 为空表示“切换”，非空则必须能识别。
+        if switch_token and not second_is_switch and not first_is_switch:
             yield event.plain_result(
-                "❌ 参数顺序有误：开关词应写在作用域之后。\n"
-                "用法：/主动消息开关 [当前会话|全局|<会话UMO>] [on|off]\n"
-                "例：/主动消息开关 全局 on"
+                f"❌ 无法识别的开关参数「{switch_token}」，仅支持 on / off。\n{usage}"
             )
             return
 
@@ -586,7 +628,14 @@ class PluginCommandService:
         else:
             enabled = requested
 
-        changed = await self._set_global_enable(enabled)
+        changed, saved = await self._set_global_enable(enabled)
+        if not saved:
+            yield event.plain_result(
+                "❌ 全局开关已改到内存，但保存到磁盘失败：已回滚到原状态。\n"
+                "请检查配置文件权限后重试。"
+            )
+            return
+
         await self._broadcast("config")
 
         state_text = "开启" if enabled else "关闭"
@@ -699,7 +748,8 @@ class PluginCommandService:
 
         async def _dispatch() -> None:
             # 立即返回独立任务，绝不在请求上下文内等待重载完成。
-            asyncio.create_task(_run_reload())
+            # 必须登记引用：事件循环只持有弱引用，未登记的任务可能被 GC 打断。
+            self.plugin._track_task(asyncio.create_task(_run_reload()))
 
         background_tasks.add_task(_dispatch)
         return "正在重载主动消息插件，请稍候…"

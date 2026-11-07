@@ -54,6 +54,13 @@ def build_forward_nodes(
     return nodes
 
 
+# 发送结果：全部送达 / 部分送达 / 完全未送达。
+# 部分送达必须单独区分，否则调用方会重发全文，接收方看到重复内容。
+FORWARD_SENT = "sent"
+FORWARD_PARTIAL = "partial"
+FORWARD_FAILED = "failed"
+
+
 async def send_forward_blocks(
     plugin: Any,
     event: Any,
@@ -62,15 +69,16 @@ async def send_forward_blocks(
     header: str | None = None,
     name: str = FORWARD_NAME,
     max_nodes: int = MAX_NODES_PER_FORWARD,
-) -> bool:
+) -> str:
     """把文本块作为合并转发发送到当前会话。
 
     Returns:
-        True 表示已成功走合并转发；False 表示无内容或发送失败，
-        调用方应自行回退纯文本。
+        FORWARD_SENT：全部批次送达；
+        FORWARD_PARTIAL：至少一批已送达但后续失败，调用方不得重发全文；
+        FORWARD_FAILED：完全未送达，调用方可回退纯文本。
     """
     if not blocks and not header:
-        return False
+        return FORWARD_FAILED
 
     # 合并转发是主动发送，若后续不再 yield 结果会误触发 LLM 回退，
     # 因此发送前先标记已处理。
@@ -80,41 +88,56 @@ async def send_forward_blocks(
         logger.debug(f"[主动消息] 标记阻止默认 LLM 请求失败喵: {exc}")
 
     total = len(blocks)
+    sent_batches = 0
     try:
-        # 首批带 header，后续批次不带，避免头部重复。
         batches: list[Any] = []
         if total == 0:
             nodes = build_forward_nodes([], event=event, header=header, name=name)
             if nodes is not None:
                 batches.append(nodes)
-        for start in range(0, total, max_nodes):
-            batch_blocks = blocks[start : start + max_nodes]
-            nodes = build_forward_nodes(
-                batch_blocks,
-                event=event,
-                header=header if start == 0 else None,
-                name=name,
-            )
-            if nodes is not None:
-                batches.append(nodes)
+        else:
+            index = 0
+            first_batch = True
+            while index < total:
+                # 首批要给 header 预留一个节点，否则满额区块加标题会超限被拒。
+                size = max(1, max_nodes - 1) if (first_batch and header) else max_nodes
+                chunk = blocks[index : index + size]
+                nodes = build_forward_nodes(
+                    chunk,
+                    event=event,
+                    header=header if first_batch else None,
+                    name=name,
+                )
+                if nodes is not None:
+                    batches.append(nodes)
+                index += size
+                first_batch = False
 
         if not batches:
-            return False
+            return FORWARD_FAILED
 
         for nodes in batches:
-            await plugin.context.send_message(
+            # 核心发送返回 False 表示找不到匹配平台，属于未送达，必须感知。
+            result = await plugin.context.send_message(
                 event.unified_msg_origin, MessageChain([nodes])
             )
-    except Exception as exc:  # noqa: BLE001 - 交给调用方回退纯文本
+            if result is False:
+                logger.warning("[主动消息] 合并转发未能找到匹配平台，消息未送达喵。")
+                return FORWARD_PARTIAL if sent_batches else FORWARD_FAILED
+            sent_batches += 1
+    except Exception as exc:  # noqa: BLE001 - 已送达部分不能重发
         logger.warning(f"[主动消息] 合并转发发送失败喵: {exc}")
-        return False
+        return FORWARD_PARTIAL if sent_batches else FORWARD_FAILED
 
-    logger.debug(f"[主动消息] 合并转发已发送 {len(batches)} 批 / 共 {total} 块喵。")
-    return True
+    logger.debug(f"[主动消息] 合并转发已发送 {sent_batches} 批 / 共 {total} 块喵。")
+    return FORWARD_SENT
 
 
 __all__ = [
+    "FORWARD_FAILED",
     "FORWARD_NAME",
+    "FORWARD_PARTIAL",
+    "FORWARD_SENT",
     "MAX_NODES_PER_FORWARD",
     "build_forward_nodes",
     "send_forward_blocks",
