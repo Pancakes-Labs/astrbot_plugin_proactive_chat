@@ -11,6 +11,7 @@ from typing import Any
 from .context.conversation_source import ConversationSourceFeature
 from .deliver.split_delivery import SplitDeliveryFeature
 from .gating_feature import GatingFeature
+from .prompt.prompt_stage import PromptFeature
 from .prompt.single_prompt import SinglePromptFeature
 from .record.history_writer import HistoryWriterFeature
 from .review_feature import ReviewFeature
@@ -28,6 +29,8 @@ def build_default_features(orchestrator: Any) -> list:
     return [
         GatingFeature(orchestrator),
         ConversationSourceFeature(orchestrator),
+        # PROMPT 在前拼好提示词，DELIBERATE 只负责调用模型。
+        PromptFeature(orchestrator),
         SinglePromptFeature(orchestrator),
         ReviewFeature(orchestrator),
         SplitDeliveryFeature(orchestrator),

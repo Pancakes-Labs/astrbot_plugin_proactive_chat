@@ -24,6 +24,7 @@ from ..domain.persona_resolution import (
     PERSONA_SOURCE_SESSION_RULE,
     PersonaResolution,
 )
+from ..domain.prompt_placeholders import render_placeholders
 from ..domain.session_key import is_group_umo, normalize_storage_umo
 
 # AstrBot 的共享偏好存储用于读取会话级特殊规则（自定义规则）。
@@ -991,11 +992,12 @@ class ContextService:
             if not prompt_template:
                 prompt_template = DEFAULT_PLATFORM_HISTORY_PROMPT
 
-            now_str = format_current_time(self.plugin.timezone)
-            content = (
-                prompt_template.replace("{{platform_history_lines}}", body)
-                .replace("{{unanswered_count}}", str(unanswered_count))
-                .replace("{{current_time}}", now_str)
+            # 占位符替换与 PROMPT 阶段共用同一实现，避免两处规则漂移。
+            content = render_placeholders(
+                prompt_template,
+                current_time=format_current_time(self.plugin.timezone),
+                unanswered_count=unanswered_count,
+                platform_history_lines=body,
             )
             if dropped_hint:
                 content = f"{dropped_hint}{content}"
