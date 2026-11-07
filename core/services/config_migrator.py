@@ -111,10 +111,12 @@ async def migrate_override_store(store: Any) -> int:
             patched = _migrate_override(current, session_id)
             if patched is None:
                 continue
+            # 只统计真正落盘成功的会话。
             if not await store.set_override(session_id, patched):
                 logger.warning(
                     f"[主动消息] 迁移会话 {session_id} 的差异配置时落盘失败喵。"
                 )
+                continue
             changed_sessions += 1
         except Exception as e:
             logger.warning(f"[主动消息] 迁移会话 {session_id} 的覆写配置失败喵: {e}")
