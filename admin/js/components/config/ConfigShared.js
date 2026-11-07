@@ -19,6 +19,7 @@
 
     // 为常见配置组与字段定义 emoji 图标，提升配置页的可扫读性。
     const CONFIG_ICONS = {
+        admin_users: '🔐',
         friend_settings: '👤',
         group_settings: '👥',
         web_admin: '🌐',
@@ -98,8 +99,9 @@
         return entries;
     }
 
-    // 全局配置保存时提交的分组白名单必须与后端保持一致。
+    // 全局配置保存时提交的键白名单必须与后端保持一致。
     const GLOBAL_CONFIG_KEYS = Object.freeze([
+        'admin_users',
         'friend_settings',
         'group_settings',
         'web_admin',

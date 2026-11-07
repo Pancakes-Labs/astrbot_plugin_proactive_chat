@@ -8,6 +8,9 @@
 (function () {
     const HttpUtil = window.HttpUtil;
 
+    // 运维接口要求自定义头：后端据此拒绝跨站页面发起的重启/重载请求。
+    const OPS_HEADERS = { 'X-Requested-With': 'AstrBotProactiveChatConsole' };
+
     const ApiClient = Object.freeze({
         getStatus: () => HttpUtil.get('/api/status'),
         getConfig: () => HttpUtil.get('/api/config'),
@@ -45,8 +48,9 @@
             {},
         ),
         // 运维快捷操作：重载插件与重启 AstrBot，等价于对应的聊天指令。
-        reloadPlugin: () => HttpUtil.post('/api/plugin/reload', {}),
-        restartAstrbot: () => HttpUtil.post('/api/astrbot/restart', {}),
+        // 必须带自定义头：后端据此拒绝跨站页面发起的运维请求。
+        reloadPlugin: () => HttpUtil.post('/api/plugin/reload', {}, OPS_HEADERS),
+        restartAstrbot: () => HttpUtil.post('/api/astrbot/restart', {}, OPS_HEADERS),
         // “立即触发”接口无参，body 传空对象保持请求格式统一。
         triggerJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/trigger`, {}),
         cancelJob: (session) => HttpUtil.del(`/api/jobs/${encodeURIComponent(session)}`),

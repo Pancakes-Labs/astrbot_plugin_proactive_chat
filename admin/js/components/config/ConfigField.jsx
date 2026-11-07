@@ -420,9 +420,18 @@ function QuietHoursField({ schema, fieldKey, value, onChange, depth = 1 }) {
     };
 
     const handleCellPointerDown = (hour) => (event) => {
+        // 阻止文本选中；触屏上必须释放隐式指针捕获，
         event.preventDefault();
-        // 每次起手都以当前真实配置为基线，再进入涂抹累积模式
-        gridRef.current = buildHourGrid(parseQuietHours(value).ranges);
+        if (typeof event.currentTarget.releasePointerCapture === 'function') {
+            try {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+            } catch (e) {
+                // 部分浏览器在未捕获时抛错，忽略即可。
+            }
+        }
+        // 基线与渲染保持一致
+        const baselineValue = value !== undefined ? value : schema.default;
+        gridRef.current = buildHourGrid(parseQuietHours(baselineValue).ranges);
         const targetValue = !gridRef.current[hour];
         paintRef.current = targetValue;
         applyCell(hour, targetValue);
