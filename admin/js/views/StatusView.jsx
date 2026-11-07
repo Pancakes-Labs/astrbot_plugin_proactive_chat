@@ -3,7 +3,7 @@
  * 文件职责：状态页视图，负责服务状态、计时器可视化与手动刷新交互展示。
  */
 
- const { Box, Typography } = MaterialUI;
+ const { Box, Typography, Button } = MaterialUI;
 
 function StatusMetricRow({ label, value, emphasize = false, status = '' }) {
     return (
@@ -21,7 +21,7 @@ function StatusMetricRow({ label, value, emphasize = false, status = '' }) {
     );
 }
 
-function StatusTimerCard({ timer, displayTimezone, nowMs, snapshotAtMs, snapshotServerMs, resetHint, resetHintToken }) {
+function StatusTimerCard({ timer, displayTimezone, nowMs, snapshotAtMs, snapshotServerMs, resetHint, resetHintToken, actions }) {
     // 派生信息统一交给领域函数计算，视图只负责结构拼装。
     const meta = React.useMemo(
         () => window.ProgressDomain.resolveStatusTimerCard(
@@ -92,12 +92,15 @@ function StatusTimerCard({ timer, displayTimezone, nowMs, snapshotAtMs, snapshot
                     },
                 ]}
             />
+
+            {actions}
         </div>
     );
 }
 
 function StatusView({ onRefresh }) {
     const { state } = useAppContext();
+    const api = useApi();
     const status = state.status || {};
     // 全局共享时钟，避免每个视图各起一个每秒 interval。
     const nowMs = useNow();
@@ -107,6 +110,11 @@ function StatusView({ onRefresh }) {
     const resetHintSeqRef = React.useRef(0);
     // 手动刷新按钮的视觉反馈状态机：idle -> loading -> success / error。
     const [manualRefreshState, setManualRefreshState] = React.useState({ phase: 'idle', finishedAt: 0 });
+    // 运维快捷操作状态机：reload 重载插件、restart 重启 AstrBot。
+    const [reloadState, setReloadState] = React.useState({ phase: 'idle' });
+    const [restartState, setRestartState] = React.useState({ phase: 'idle' });
+    // 计时器卡片操作反馈：按“类型-会话”记录，与任务页的 job.id 键互不干扰。
+    const timerFeedback = useFeedbackMap(3200);
     const previousTimerSnapshotRef = React.useRef({});
     const resetHintTimersRef = React.useRef({});
     const displayTimezone = state.config?.displayTimezone || 'Asia/Shanghai';
@@ -264,6 +272,56 @@ function StatusView({ onRefresh }) {
         });
     }, [timerSnapshotKey]);
 
+    // 重载插件：等价于 /主动消息重启。重载期间控制台会短暂断开，属预期行为。
+    const handleReloadPlugin = async () => {
+        if (reloadState.phase === 'loading') return;
+        const confirmed = window.confirm(
+            '确定要重载主动消息插件吗？\n重载期间 Web 管理端会短暂断开连接，稍后自动恢复。'
+        );
+        if (!confirmed) return;
+
+        setReloadState({ phase: 'loading' });
+        try {
+            const result = await api.reloadPlugin();
+            setReloadState({ phase: 'success' });
+            if (window.Toast) {
+                window.Toast.success(
+                    (result && result.message) || '已提交重载请求，插件正在重启',
+                    { title: '重载插件' }
+                );
+            }
+        } catch (e) {
+            setReloadState({ phase: 'error' });
+            const message = e && e.message ? e.message : '重载插件失败，请查看服务端日志';
+            if (window.Toast) window.Toast.error(message, { title: '重载插件失败' });
+        }
+    };
+
+    // 重启 AstrBot：等价于 /重启AstrBot。进程会在数秒后整体重启。
+    const handleRestartAstrbot = async () => {
+        if (restartState.phase === 'loading') return;
+        const confirmed = window.confirm(
+            '确定要重启整个 AstrBot 进程吗？\n所有插件与平台连接都会中断，进程将在数秒后重新启动。'
+        );
+        if (!confirmed) return;
+
+        setRestartState({ phase: 'loading' });
+        try {
+            const result = await api.restartAstrbot();
+            setRestartState({ phase: 'success' });
+            if (window.Toast) {
+                window.Toast.success(
+                    (result && result.message) || '已触发 AstrBot 重启',
+                    { title: '重启 AstrBot' }
+                );
+            }
+        } catch (e) {
+            setRestartState({ phase: 'error' });
+            const message = e && e.message ? e.message : '重启 AstrBot 失败，请查看服务端日志';
+            if (window.Toast) window.Toast.error(message, { title: '重启 AstrBot 失败' });
+        }
+    };
+
     const handleManualRefresh = async () => {
         if (manualRefreshState.phase === 'loading') return;
         setManualRefreshState((current) => ({ ...current, phase: 'loading' }));
@@ -281,6 +339,43 @@ function StatusView({ onRefresh }) {
                     title: '刷新失败',
                 });
             }
+        }
+    };
+
+    // 立即结束：只让计时器退场并把下一次主动消息交给调度器，不会真正发送消息。
+    const handleFinishTimer = async (timer) => {
+        const key = `${timer.timer_kind}-${timer.session_id}`;
+        timerFeedback.setFeedback(key, { status: 'pending', text: '正在结束计时器并转入调度任务…' });
+        try {
+            await api.finishTimer(timer.session_id, timer.timer_kind);
+            timerFeedback.setFeedback(key, { status: 'success', text: '已结束计时器，下一次主动消息已进入任务管理页' });
+            // 卡片随后会从状态页消失，卡片内反馈看不到，必须补一条常驻短暂浮层。
+            if (window.Toast) {
+                window.Toast.success('已结束计时器，下一次主动消息已进入任务管理页', {
+                    title: timer.session_display_name || timer.session_id,
+                    key: `timer-finish-${timer.timer_kind}-${timer.session_id}`,
+                });
+            }
+            await onRefresh();
+        } catch (e) {
+            const message = e && e.message ? e.message : '结束计时器失败，请稍后重试';
+            timerFeedback.setFeedback(key, { status: 'error', text: message });
+            if (window.Toast) window.Toast.error(message, { title: '结束计时器失败' });
+        }
+    };
+
+    // 重置计时：按当前配置重新开始计时，不发送消息也不改动未回复计数。
+    const handleResetTimer = async (timer) => {
+        const key = `${timer.timer_kind}-${timer.session_id}`;
+        timerFeedback.setFeedback(key, { status: 'pending', text: '正在按当前配置重新开始计时…' });
+        try {
+            await api.resetTimer(timer.session_id, timer.timer_kind);
+            timerFeedback.setFeedback(key, { status: 'success', text: '已重新开始计时' });
+            await onRefresh();
+        } catch (e) {
+            const message = e && e.message ? e.message : '重置计时器失败，请稍后重试';
+            timerFeedback.setFeedback(key, { status: 'error', text: message });
+            if (window.Toast) window.Toast.error(message, { title: '重置计时器失败' });
         }
     };
 
@@ -376,6 +471,44 @@ function StatusView({ onRefresh }) {
                                     {refreshNoteText}
                                 </div>
                             </div>
+
+                            <button
+                                type="button"
+                                className={`btn btn-action${reloadState.phase === 'loading' ? ' is-busy' : ''}`}
+                                onClick={handleReloadPlugin}
+                                disabled={reloadState.phase === 'loading'}
+                                title="等价于聊天指令 /主动消息重启"
+                            >
+                                <span className="status-action-icon">
+                                    {reloadState.phase === 'loading' ? '⏳' : reloadState.phase === 'success' ? '✅' : reloadState.phase === 'error' ? '⚠️' : '🔁'}
+                                </span>
+                                {reloadState.phase === 'loading'
+                                    ? '正在重载插件...'
+                                    : reloadState.phase === 'success'
+                                        ? '重载请求已提交'
+                                        : reloadState.phase === 'error'
+                                            ? '重载失败，请重试'
+                                            : '重载主动消息插件'}
+                            </button>
+
+                            <button
+                                type="button"
+                                className={`btn btn-action${restartState.phase === 'loading' ? ' is-busy' : ''}`}
+                                onClick={handleRestartAstrbot}
+                                disabled={restartState.phase === 'loading'}
+                                title="等价于聊天指令 /重启AstrBot"
+                            >
+                                <span className="status-action-icon">
+                                    {restartState.phase === 'loading' ? '⏳' : restartState.phase === 'success' ? '✅' : restartState.phase === 'error' ? '⚠️' : '♻️'}
+                                </span>
+                                {restartState.phase === 'loading'
+                                    ? '正在重启 AstrBot...'
+                                    : restartState.phase === 'success'
+                                        ? '重启请求已提交'
+                                        : restartState.phase === 'error'
+                                            ? '重启失败，请重试'
+                                            : '重启 AstrBot'}
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -432,18 +565,59 @@ function StatusView({ onRefresh }) {
                                                 </div>
                                             ) : (
                                                 <div className="status-timers-grid">
-                                                    {section.cards.map((timer) => (
-                                                        <StatusTimerCard
-                                                            key={`${timer.timer_kind}-${timer.session_id}`}
-                                                            timer={timer}
-                                                            displayTimezone={displayTimezone}
-                                                            nowMs={nowMs}
-                                                            snapshotAtMs={snapshotAtMs}
-                                                            snapshotServerMs={snapshotServerMs}
-                                                            resetHint={Boolean(resetHintMap[`${timer.timer_kind}-${timer.session_id}`])}
-                                                            resetHintToken={resetHintMap[`${timer.timer_kind}-${timer.session_id}`] || 0}
-                                                        />
-                                                    ))}
+                                                    {section.cards.map((timer) => {
+                                                        const UI = window.TimerCardUI;
+                                                        const actionKey = `${timer.timer_kind}-${timer.session_id}`;
+                                                        const currentFeedback = timerFeedback.feedbackMap[actionKey];
+                                                        const isBusy = Boolean(currentFeedback && currentFeedback.status === 'pending');
+
+                                                        return (
+                                                            <StatusTimerCard
+                                                                key={actionKey}
+                                                                timer={timer}
+                                                                displayTimezone={displayTimezone}
+                                                                nowMs={nowMs}
+                                                                snapshotAtMs={snapshotAtMs}
+                                                                snapshotServerMs={snapshotServerMs}
+                                                                resetHint={Boolean(resetHintMap[actionKey])}
+                                                                resetHintToken={resetHintMap[actionKey] || 0}
+                                                                actions={(
+                                                                    <UI.TimerCardActions
+                                                                        feedbacks={[
+                                                                            {
+                                                                                text: currentFeedback ? currentFeedback.text : '',
+                                                                                status: currentFeedback ? currentFeedback.status : '',
+                                                                            },
+                                                                        ]}
+                                                                        buttons={(
+                                                                            <React.Fragment>
+                                                                                <Button
+                                                                                    variant="outlined"
+                                                                                    size="small"
+                                                                                    fullWidth
+                                                                                    disabled={isBusy}
+                                                                                    onClick={() => handleFinishTimer(timer)}
+                                                                                    sx={{ borderRadius: 2.5 }}
+                                                                                >
+                                                                                    立即结束
+                                                                                </Button>
+                                                                                <Button
+                                                                                    variant="outlined"
+                                                                                    size="small"
+                                                                                    fullWidth
+                                                                                    disabled={isBusy}
+                                                                                    onClick={() => handleResetTimer(timer)}
+                                                                                    sx={{ borderRadius: 2.5 }}
+                                                                                >
+                                                                                    重置计时
+                                                                                </Button>
+                                                                            </React.Fragment>
+                                                                        )}
+                                                                    />
+                                                                )}
+                                                            />
+                                                        );
+                                                    })}
                                                 </div>
                                             )}
                                         </div>
