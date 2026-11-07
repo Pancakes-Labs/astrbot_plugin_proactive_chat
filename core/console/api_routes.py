@@ -20,9 +20,10 @@ from ..domain.domain_enums import TriggerSource
 
 # 注意：WebSocket / FileResponse / JSONResponse 必须在模块全局命名空间可用。
 try:  # pragma: no cover - 取决于是否安装 FastAPI
-    from fastapi import WebSocket, WebSocketDisconnect
+    from fastapi import BackgroundTasks, WebSocket, WebSocketDisconnect
     from fastapi.responses import FileResponse, JSONResponse
 except ImportError:  # pragma: no cover
+    BackgroundTasks = None  # type: ignore[assignment,misc]
     WebSocket = None  # type: ignore[assignment,misc]
     WebSocketDisconnect = Exception  # type: ignore[assignment,misc]
     FileResponse = None  # type: ignore[assignment,misc]
@@ -605,6 +606,49 @@ class ApiRoutes:
                     status_code=500,
                 )
 
+        # ------------------------------------------------------------------
+        # 运维快捷操作（等价于 /主动消息重启 与 /重启AstrBot 指令）
+        # ------------------------------------------------------------------
+        @app.post("/api/plugin/reload")
+        async def reload_plugin(background_tasks: BackgroundTasks):
+            """重载本插件。
+
+            BackgroundTasks 保证响应发送完成后才执行重载，避免销毁旧实例
+            与响应返回之间的竞态。
+            """
+            service = getattr(plugin, "command_service", None)
+            if service is None:
+                return JSONResponse({"error": "指令服务未就绪"}, status_code=503)
+
+            try:
+                message = service.register_reload_task(background_tasks)
+            except Exception as e:
+                logger.error(f"[主动消息] Web 端重载插件失败喵: {e}")
+                return JSONResponse(
+                    {"error": "重载插件失败", "message": str(e)}, status_code=500
+                )
+
+            return {"ok": True, "message": message}
+
+        @app.post("/api/astrbot/restart")
+        async def restart_astrbot():
+            """重启 AstrBot 进程，返回派发结果。"""
+            service = getattr(plugin, "command_service", None)
+            if service is None:
+                return JSONResponse({"error": "指令服务未就绪"}, status_code=503)
+
+            try:
+                ok, message = await service.web_restart_astrbot()
+            except Exception as e:
+                logger.error(f"[主动消息] Web 端重启 AstrBot 失败喵: {e}")
+                return JSONResponse(
+                    {"error": "重启 AstrBot 失败", "message": str(e)}, status_code=500
+                )
+
+            if not ok:
+                return JSONResponse({"error": message}, status_code=400)
+            return {"ok": True, "message": message}
+
         # 立即触发一次主动消息（异步执行，占用期间拒绝重复触发）。
         @app.post("/api/jobs/{umo:path}/trigger")
         async def trigger_job(umo: str):
@@ -662,6 +706,51 @@ class ApiRoutes:
 
             await _broadcast_web_update("jobs")
             return {"ok": True, "session": normalized, "removed": removed}
+
+        # 结束会话当前的计时器：只退场并登记下一次任务，不会真正发送主动消息。
+        @app.post("/api/timers/{umo:path}/finish")
+        async def finish_timer(umo: str, timer_kind: str = ""):
+            normalized = plugin.session_service.normalize_session_id(umo)
+            result = await plugin.scheduler_service.finish_timer(normalized, timer_kind)
+            await _broadcast_web_update("timers")
+            if not result.get("ok"):
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "session": normalized,
+                        "error": "该会话当前没有正在运行的计时器",
+                    },
+                    status_code=404,
+                )
+            return {
+                "ok": True,
+                "session": normalized,
+                "scheduled": bool(result.get("scheduled")),
+                "message": "已结束计时器，下一次主动消息已进入任务管理页",
+            }
+
+        # 按当前配置重新开始计时，不发送消息也不改动未回复计数。
+        @app.post("/api/timers/{umo:path}/reset")
+        async def reset_timer(umo: str, timer_kind: str = ""):
+            normalized = plugin.session_service.normalize_session_id(umo)
+            result = await plugin.scheduler_service.reset_timer(normalized, timer_kind)
+            await _broadcast_web_update("timers")
+            if not result.get("ok"):
+                reason = result.get("reason")
+                error = (
+                    "会话未启用或不存在，无法重置计时器"
+                    if reason == "disabled"
+                    else "该会话没有可重置的计时器配置"
+                )
+                return JSONResponse(
+                    {"ok": False, "session": normalized, "error": error},
+                    status_code=400,
+                )
+            return {
+                "ok": True,
+                "session": normalized,
+                "message": "已按当前配置重新开始计时",
+            }
 
         # WebSocket 实时通道：连接后先推送一次全量快照，之后响应 ping/refresh。
         @app.websocket("/ws")
