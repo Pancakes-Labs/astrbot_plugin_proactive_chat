@@ -34,6 +34,19 @@
         readNotification: (id) => HttpUtil.post('/api/notifications/read', { id }),
         readAllNotifications: () => HttpUtil.post('/api/notifications/read-all', {}),
         refreshNotifications: () => HttpUtil.post('/api/notifications/refresh', {}),
+        // 计时器控制：finish 只结束倒计时并转入调度任务，reset 按配置重新计时。
+        // timer_kind 走 query 参数，空值由后端自行探测类型。
+        finishTimer: (session, timerKind) => HttpUtil.post(
+            `/api/timers/${encodeURIComponent(session)}/finish${timerKind ? `?timer_kind=${encodeURIComponent(timerKind)}` : ''}`,
+            {},
+        ),
+        resetTimer: (session, timerKind) => HttpUtil.post(
+            `/api/timers/${encodeURIComponent(session)}/reset${timerKind ? `?timer_kind=${encodeURIComponent(timerKind)}` : ''}`,
+            {},
+        ),
+        // 运维快捷操作：重载插件与重启 AstrBot，等价于对应的聊天指令。
+        reloadPlugin: () => HttpUtil.post('/api/plugin/reload', {}),
+        restartAstrbot: () => HttpUtil.post('/api/astrbot/restart', {}),
         // “立即触发”接口无参，body 传空对象保持请求格式统一。
         triggerJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/trigger`, {}),
         cancelJob: (session) => HttpUtil.del(`/api/jobs/${encodeURIComponent(session)}`),
