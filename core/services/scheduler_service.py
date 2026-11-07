@@ -845,16 +845,32 @@ class SchedulerService:
                     self.iter_related_auto_trigger_keys(normalized_session_id)
                 )
                 if had_auto_timer or auto_settings.get("enable_auto_trigger", False):
-                    await self.cancel_auto_trigger(normalized_session_id)
-                    # 只清除自动触发自身的基准，用户发言时间保持原样。
-                    self._clear_auto_trigger_baseline(normalized_session_id)
-                    auto_result = await self.setup_auto_trigger_for_session_config(
-                        auto_settings, normalized_session_id
-                    )
-                    # existing / max_unanswered 表示没有真正重建计时器，
-                    # 此时不能向用户宣称“已重新开始计时”。
-                    if auto_result in {"created"}:
-                        reset_done = True
+                    # 先确认能否重建，再取消旧计时器：与 finish_timer 同序。
+                    # 否则 existing / max_unanswered 时旧计时器已丢、卡片也消失，
+                    # 接口却只返回一个 400。
+                    if not auto_settings.get("enable_auto_trigger", False):
+                        auto_result = "disabled"
+                    elif self.has_related_persisted_task(normalized_session_id):
+                        auto_result = "existing"
+                    else:
+                        schedule_conf = session_config.get("schedule_settings", {})
+                        max_unanswered = schedule_conf.get("max_unanswered_times", 3)
+                        unanswered_count = plugin.session_data.get(
+                            normalized_session_id, {}
+                        ).get("unanswered_count", 0)
+                        if max_unanswered > 0 and unanswered_count >= max_unanswered:
+                            auto_result = "max_unanswered"
+                        else:
+                            await self.cancel_auto_trigger(normalized_session_id)
+                            # 只清除自动触发自身的基准，用户发言时间保持原样。
+                            self._clear_auto_trigger_baseline(normalized_session_id)
+                            auto_result = (
+                                await self.setup_auto_trigger_for_session_config(
+                                    auto_settings, normalized_session_id
+                                )
+                            )
+                            if auto_result == "created":
+                                reset_done = True
 
             if not reset_done:
                 if auto_result == "max_unanswered":
