@@ -399,11 +399,12 @@ body.dark-theme .tcard-body {
     line-height: 1.1;
 }
 
+/* 仅数字用主题色：单位保持中性色，避免整段倒计时都抢眼。 */
 .tcard-countdown-num {
     font-size: 26px;
     font-weight: 800;
     letter-spacing: -0.8px;
-    color: var(--md-sys-color-on-surface);
+    color: var(--md-sys-color-primary);
     font-variant-numeric: tabular-nums;
 }
 
