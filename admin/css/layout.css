@@ -207,6 +207,7 @@ body.dark-theme .top-bar::before {
 
 /* 为前端的卡片提供统一的入场动画，减少页面首次渲染时的生硬感。 */
 .status-panel-card,
+.tcard,
 .task-card-enhanced,
 .status-timer-card,
 .status-timer-section-block,
@@ -226,6 +227,7 @@ body.dark-theme .top-bar::before {
 }
 
 .status-panel-card:nth-child(1),
+.tcard:nth-child(1),
 .task-card-enhanced:nth-child(1),
 .status-timer-card:nth-child(1),
 .status-timer-section-block:nth-child(1) {
@@ -233,6 +235,7 @@ body.dark-theme .top-bar::before {
 }
 
 .status-panel-card:nth-child(2),
+.tcard:nth-child(2),
 .task-card-enhanced:nth-child(2),
 .status-timer-card:nth-child(2),
 .status-timer-section-block:nth-child(2) {
@@ -389,6 +392,253 @@ body.dark-theme .top-bar::before {
 .config-inline-notice.is-error .config-inline-notice-text {
     color: var(--md-sys-color-error);
 }
+
+/* ===== 全局 Toast 浮层 ===== */
+/* 固定右上角堆叠，按语义色区分成功 / 警告 / 错误 / 信息 / 加载中。
+   每条 toast 自带进入、离场、进度条三段动画，悬停时整体暂停。 */
+.app-toast-stack {
+    position: fixed;
+    top: calc(var(--top-bar-height) + 12px);
+    right: 24px;
+    z-index: 2000;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 12px;
+    width: min(400px, calc(100vw - 48px));
+    pointer-events: none;
+}
+
+.app-toast {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    width: 100%;
+    padding: 14px 14px 16px 14px;
+    border-radius: 16px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.14);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.72)),
+        var(--md-sys-color-surface);
+    box-shadow:
+        0 1px 2px rgb(15 23 42 / 0.06),
+        0 12px 28px -8px rgb(15 23 42 / 0.18),
+        0 24px 56px -20px rgb(15 23 42 / 0.16),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(18px) saturate(1.35);
+    -webkit-backdrop-filter: blur(18px) saturate(1.35);
+    overflow: hidden;
+    pointer-events: auto;
+    /* 不使用 fill-mode：动画结束后回到常规样式，hover 的位移才能正常生效。 */
+    animation: app-toast-in 320ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition:
+        box-shadow var(--interactive-transition-duration) var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        transform var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.app-toast:hover {
+    transform: translateY(-1px);
+    box-shadow:
+        0 1px 2px rgb(15 23 42 / 0.06),
+        0 16px 34px -8px rgb(15 23 42 / 0.22),
+        0 30px 64px -22px rgb(15 23 42 / 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+/* 离场：向右侧水平滑出并淡出，时长与 JS 中的 EXIT_DURATION 保持一致。 */
+.app-toast.is-leaving {
+    animation: app-toast-out 240ms cubic-bezier(0.4, 0, 1, 1) forwards;
+    pointer-events: none;
+}
+
+/* 悬停 / 聚焦暂停时，进度条同时暂停由内联 animationPlayState 控制，这里补一层弱化。 */
+.app-toast.is-paused .app-toast-progress {
+    opacity: 0.9;
+}
+
+/* 语义色：用统一的 --toast-accent-rgb 变量驱动图标与进度条，避免逐条硬编码。 */
+.app-toast.is-success { --toast-accent-rgb: var(--md-success-rgb); }
+.app-toast.is-warning { --toast-accent-rgb: var(--md-warning-rgb); }
+.app-toast.is-error { --toast-accent-rgb: var(--md-error-rgb); }
+.app-toast.is-info { --toast-accent-rgb: var(--md-primary-rgb); }
+.app-toast.is-loading { --toast-accent-rgb: var(--md-primary-rgb); }
+
+.app-toast.is-success,
+.app-toast.is-warning,
+.app-toast.is-error {
+    border-color: rgb(var(--toast-accent-rgb) / 0.34);
+}
+
+/* 图标胶囊：语义色浅底 + 同色描边，比裸 emoji 更稳定也更精致。 */
+.app-toast-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border-radius: 10px;
+    color: rgb(var(--toast-accent-rgb));
+    background: rgb(var(--toast-accent-rgb) / 0.12);
+    box-shadow: inset 0 0 0 1px rgb(var(--toast-accent-rgb) / 0.18);
+}
+
+.app-toast-icon svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* 加载中的圆环缺口持续旋转，提示“仍在处理”。 */
+.app-toast.is-loading .app-toast-icon svg {
+    animation: app-toast-spin 900ms linear infinite;
+}
+
+.app-toast-body {
+    flex: 1;
+    min-width: 0;
+    padding-top: 1px;
+}
+
+.app-toast-title {
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.4;
+    letter-spacing: 0.01em;
+    margin-bottom: 3px;
+    color: var(--md-sys-color-on-surface);
+}
+
+.app-toast-text {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.6;
+    color: var(--md-sys-color-on-surface-variant);
+    word-break: break-word;
+}
+
+.app-toast-desc {
+    margin-top: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.55;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.78;
+    word-break: break-word;
+}
+
+.app-toast.is-success .app-toast-text { color: var(--md-sys-color-success); }
+.app-toast.is-warning .app-toast-text { color: var(--md-sys-color-warning); }
+.app-toast.is-error .app-toast-text { color: var(--md-sys-color-error); }
+.app-toast.is-loading .app-toast-text { color: var(--md-sys-color-primary); }
+
+/* 行内操作按钮（如“撤销 / 查看”），用幽灵按钮避免抢走正文视觉权重。 */
+.app-toast-action {
+    margin-top: 8px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid rgb(var(--toast-accent-rgb) / 0.28);
+    background: rgb(var(--toast-accent-rgb) / 0.08);
+    color: rgb(var(--toast-accent-rgb));
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.4;
+    cursor: pointer;
+    transition:
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        transform var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.app-toast-action:hover {
+    background: rgb(var(--toast-accent-rgb) / 0.16);
+    transform: translateY(-1px);
+}
+
+.app-toast-close {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    margin: -2px -2px 0 0;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.5;
+    cursor: pointer;
+    transition:
+        opacity var(--interactive-transition-duration) var(--theme-transition-easing),
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.app-toast-close svg {
+    width: 14px;
+    height: 14px;
+}
+
+.app-toast-close:hover {
+    opacity: 1;
+    background: rgb(var(--md-primary-rgb) / 0.1);
+}
+
+.app-toast-close:focus-visible {
+    opacity: 1;
+    outline: 2px solid rgb(var(--md-primary-rgb) / 0.45);
+    outline-offset: 1px;
+}
+
+/* 底部进度条：宽度收缩模拟剩余停留时间，暂停由内联 animationPlayState 控制。 */
+.app-toast-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    transform-origin: left center;
+    background: linear-gradient(90deg, rgb(var(--toast-accent-rgb) / 0.95), rgb(var(--toast-accent-rgb) / 0.45));
+    animation: app-toast-progress-shrink var(--toast-progress-duration, 3000ms) linear forwards;
+    pointer-events: none;
+}
+
+/* 纯水平位移：从右侧滑入，不做缩放，避免看上去像往右上角“缩”。 */
+@keyframes app-toast-in {
+    from {
+        opacity: 0;
+        transform: translate3d(36px, 0, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+/* 离场同样沿水平轴向右滑出，与入场方向一致。 */
+@keyframes app-toast-out {
+    from {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+    to {
+        opacity: 0;
+        transform: translate3d(36px, 0, 0);
+    }
+}
+
+@keyframes app-toast-progress-shrink {
+    from { transform: scaleX(1); }
+    to { transform: scaleX(0); }
+}
+
+@keyframes app-toast-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* 人格标注已改为卡片事实行的 tcard-fact-persona，原 .persona-badge 徽标样式已移除。 */
 
 .config-header {
     /* 配置头部固定在卡片顶部，确保模式切换、提示信息和标题不随表单滚走。 */

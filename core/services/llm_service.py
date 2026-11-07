@@ -13,6 +13,13 @@ from astrbot.api import logger
 from ...utils.time_utils import format_current_time
 from ..adapters.astrbot_event import dispatch_event_hook
 from ..adapters.astrbot_provider import build_provider_request, invoke_provider
+from ..domain.prompt_placeholders import (
+    PLACEHOLDER_CURRENT_TIME,
+    PLACEHOLDER_UNANSWERED_COUNT,
+    contains_placeholder,
+    render_placeholders,
+)
+from ..domain.prompt_templates import resolve_active_prompt
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -71,11 +78,16 @@ class LlmService:
             if part is not None:
                 parts.append(part)
 
+        # 模板里已含对应占位符时不再重复注入同一信息。
         dynamic_text = self.build_dynamic_context_text(
             unanswered_count,
             session_config,
-            include_time="{{current_time}}" not in prompt_template,
-            include_unanswered="{{unanswered_count}}" not in prompt_template,
+            include_time=not contains_placeholder(
+                prompt_template, PLACEHOLDER_CURRENT_TIME
+            ),
+            include_unanswered=not contains_placeholder(
+                prompt_template, PLACEHOLDER_UNANSWERED_COUNT
+            ),
         )
         if dynamic_text:
             dynamic_part = self.plugin.context_service.make_temp_text_part(dynamic_text)
@@ -150,30 +162,46 @@ class LlmService:
         conversation: Any = None,
         platform_context: str = "",
         model: str | None = None,
+        prepared_prompt: str | None = None,
+        extra_parts: list | None = None,
     ) -> tuple[Any | None, str]:
         """统一 LLM 调用入口。
 
         model 为 None 时使用 Provider 自身的默认模型；传入非空值时仅覆盖本次
         请求的模型，供后续按场景（压缩、降级、专用模型）分层调用复用。
+
+        prepared_prompt / extra_parts 由 PROMPT 阶段预渲染后传入；
+        两者为 None 时退回本服务自行拼装，保持旧的调用契约可用。
         """
         plugin = self.plugin
-        motivation_template = session_config.get("proactive_prompt", "") or ""
-        now_str = format_current_time(plugin.timezone)
-        final_user_simulation_prompt = motivation_template.replace(
-            "{{unanswered_count}}", str(unanswered_count)
-        ).replace("{{current_time}}", now_str)
+        # 仅在缺少预渲染结果时才读取模板，避免重复解析配置。
+        motivation_template = ""
+        if prepared_prompt is None or extra_parts is None:
+            motivation_template = resolve_active_prompt(session_config) or ""
+
+        if prepared_prompt is None:
+            final_user_simulation_prompt = render_placeholders(
+                motivation_template,
+                current_time=format_current_time(plugin.timezone),
+                unanswered_count=unanswered_count,
+            )
+        else:
+            final_user_simulation_prompt = prepared_prompt
 
         logger.debug("[主动消息] 已生成包含动机和时间的 Prompt 喵。")
 
         history_messages = plugin.context_service.sanitize_history_content(
             history_messages or []
         )
-        extra_parts = self.build_extra_content_parts(
-            platform_context=platform_context,
-            prompt_template=motivation_template,
-            unanswered_count=unanswered_count,
-            session_config=session_config,
-        )
+        if extra_parts is None:
+            extra_parts = self.build_extra_content_parts(
+                platform_context=platform_context,
+                prompt_template=motivation_template,
+                unanswered_count=unanswered_count,
+                session_config=session_config,
+            )
+        else:
+            extra_parts = list(extra_parts)
 
         provider = await self.resolve_chat_provider(session_id)
         if not provider:

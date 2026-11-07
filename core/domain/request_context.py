@@ -14,6 +14,7 @@ from .context_block import BlockKind, ContextBlock, ContextBundle
 from .delivery_report import DeliveryReport
 from .domain_enums import TriggerSource
 from .llm_outcome import LlmOutcome
+from .persona_resolution import PersonaResolution
 from .prompt_block import PromptBundle
 from .session_config import SessionConfig
 from .session_key import SessionKey
@@ -35,6 +36,8 @@ class ProactiveContext:
     conversation: Any = None
     unanswered_count: int = 0
     started_at: float = field(default_factory=time.time)
+    # 本次生效人格的解析结论（供后续阶段复用，避免重复解析）。
+    persona: PersonaResolution | None = None
 
     # --- 各阶段产物 ---
     contexts: ContextBundle = field(default_factory=ContextBundle)

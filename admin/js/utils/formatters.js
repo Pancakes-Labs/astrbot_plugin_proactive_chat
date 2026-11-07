@@ -183,6 +183,40 @@ function formatUnansweredLabel(currentCount, maxCount) {
     return max > 0 ? `未回复次数: ${current}/${max}` : `未回复: ${current}`;
 }
 
+// 把后端返回的人格摘要整理成卡片可直接渲染的文案。
+// unknown 表示该会话尚未解析出人格，disabled 表示被显式配置为不使用人格。
+function resolvePersonaDisplay(persona) {
+    const payload = persona && typeof persona === 'object' ? persona : {};
+    const disabled = Boolean(payload.disabled);
+    const name = String(payload.persona_name || payload.persona_id || '').trim();
+    const sourceLabel = String(payload.persona_source_label || '').trim();
+
+    if (disabled) {
+        return {
+            state: 'disabled',
+            name: '不使用人格',
+            sourceLabel: sourceLabel || '显式禁用',
+            title: '该会话的主动消息被配置为不注入人格提示词',
+        };
+    }
+
+    if (!name) {
+        return {
+            state: 'unknown',
+            name: '人格未解析',
+            sourceLabel: sourceLabel,
+            title: '暂时无法解析该会话的生效人格，可能尚未创建对话',
+        };
+    }
+
+    return {
+        state: 'normal',
+        name: name,
+        sourceLabel: sourceLabel,
+        title: sourceLabel ? `人格来源：${sourceLabel}` : '生效人格',
+    };
+}
+
 // 统一挂到 window，供各页面和组件直接调用，无需额外模块系统。
 window.parseDateish = parseDateish;
 window.formatDateTime = formatDateTime;
@@ -190,4 +224,5 @@ window.formatFriendlyTime = formatFriendlyTime;
 window.formatDuration = formatDuration;
 window.resolveSourceModeLabel = resolveSourceModeLabel;
 window.formatUnansweredLabel = formatUnansweredLabel;
+window.resolvePersonaDisplay = resolvePersonaDisplay;
 

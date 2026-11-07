@@ -19,6 +19,7 @@
 
     // 为常见配置组与字段定义 emoji 图标，提升配置页的可扫读性。
     const CONFIG_ICONS = {
+        admin_users: '🔐',
         friend_settings: '👤',
         group_settings: '👥',
         web_admin: '🌐',
@@ -30,12 +31,14 @@
         segmented_reply_settings: '🔪',
         enable: '✅',
         session_list: '📋',
+        persona_id: '🎭',
         proactive_prompt: '🧠',
         group_idle_trigger_minutes: '⏳',
         enable_auto_trigger: '✅',
         auto_trigger_after_minutes: '⏱️',
         min_interval_minutes: '⏱️',
         max_interval_minutes: '⏱️',
+        enable_quiet_hours: '🔕',
         quiet_hours: '🌙',
         max_unanswered_times: '🛑',
         enable_tts: '💬',
@@ -67,6 +70,7 @@
         const rootKey = sessionType === 'group' ? 'group_settings' : 'friend_settings';
         const rootItems = (schema && schema[rootKey] && schema[rootKey].items) || {};
         const orderedKeys = [
+            'persona_id',
             'auto_trigger_settings',
             'group_idle_trigger_minutes',
             'proactive_prompt',
@@ -95,8 +99,9 @@
         return entries;
     }
 
-    // 全局配置保存时提交的分组白名单必须与后端保持一致。
+    // 全局配置保存时提交的键白名单必须与后端保持一致。
     const GLOBAL_CONFIG_KEYS = Object.freeze([
+        'admin_users',
         'friend_settings',
         'group_settings',
         'web_admin',

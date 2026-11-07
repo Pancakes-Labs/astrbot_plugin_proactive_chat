@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from astrbot.api import logger
+
 
 class StateBuilder:
     """构建运行状态、任务卡片、会话摘要与文档列表载荷。"""
@@ -138,6 +140,10 @@ class StateBuilder:
                     "max_unanswered_times": schedule_settings.get(
                         "max_unanswered_times", 0
                     ),
+                    "quiet_hours": schedule_settings.get("quiet_hours", ""),
+                    "quiet_hours_enabled": bool(
+                        schedule_settings.get("enable_quiet_hours", True)
+                    ),
                     "timer_kind": "auto_trigger",
                     "title": "自动触发检测",
                     "status": "running" if remaining_seconds is not None else "unknown",
@@ -200,6 +206,10 @@ class StateBuilder:
                     "max_unanswered_times": schedule_settings.get(
                         "max_unanswered_times", 0
                     ),
+                    "quiet_hours": schedule_settings.get("quiet_hours", ""),
+                    "quiet_hours_enabled": bool(
+                        schedule_settings.get("enable_quiet_hours", True)
+                    ),
                     "timer_kind": "group_silence",
                     "title": "群沉默检测",
                     "status": "running" if remaining_seconds is not None else "unknown",
@@ -252,15 +262,39 @@ class StateBuilder:
             }
         return await notification_center.get_payload()
 
-    def build_status_payload(self) -> dict[str, Any]:
+    async def build_persona_map(self, sessions: list[str]) -> dict[str, dict[str, Any]]:
+        """批量解析会话生效人格，供状态 / 任务卡片直接标注。
+
+        解析失败时返回空 dict，调用方按“未知”展示即可，不能因此让整个载荷失败。
+        """
+        unique_sessions = [s for s in dict.fromkeys(sessions) if s]
+        if not unique_sessions:
+            return {}
+        try:
+            return await self.plugin.context_service.resolve_personas_for_sessions(
+                unique_sessions
+            )
+        except Exception as e:
+            logger.debug(f"[主动消息] 构建人格摘要映射失败喵: {e}")
+            return {}
+
+    async def build_status_payload(self) -> dict[str, Any]:
         """构建运行状态载荷（版本、运行时长、任务计数与计时器卡片）。"""
         plugin = self.plugin
         now = time.time()
         uptime_sec = max(0, int(now - plugin.plugin_start_time))
         timer_cards = self.collect_timer_cards(now)
+        # 计时器卡片的会话集合，用于一次性批量解析生效人格。
+        persona_map = await self.build_persona_map(
+            [card["session_id"] for card in timer_cards["auto_trigger_cards"]]
+            + [card["session_id"] for card in timer_cards["group_timer_cards"]]
+        )
 
         return {
             "running": True,
+            # timer_snapshot_at 是 remaining_seconds 对应的服务器时刻。
+            # 前端据此扣除「构建 + 传输」耗时，否则刷新时会莫名少掉数秒。
+            "timer_snapshot_at": now,
             "version": getattr(plugin, "version", None)
             or getattr(plugin, "__version__", None)
             or self._metadata_version
@@ -277,15 +311,34 @@ class StateBuilder:
             "jobs_count": len(plugin.scheduler.get_jobs()) if plugin.scheduler else 0,
             "timer_cards_total": len(timer_cards["auto_trigger_cards"])
             + len(timer_cards["group_timer_cards"]),
-            "auto_trigger_cards": timer_cards["auto_trigger_cards"],
-            "group_timer_cards": timer_cards["group_timer_cards"],
+            # 把人格信息挂到每张卡片上，前端无需再逐会话请求。
+            "auto_trigger_cards": [
+                {**card, "persona": persona_map.get(card["session_id"], {})}
+                for card in timer_cards["auto_trigger_cards"]
+            ],
+            "group_timer_cards": [
+                {**card, "persona": persona_map.get(card["session_id"], {})}
+                for card in timer_cards["group_timer_cards"]
+            ],
             "ws_connections": self._connection_counter(),
             # 时间戳用于前端判断数据新鲜度或手动刷新完成时间。
             "timestamp": datetime.now().isoformat(),
         }
 
     def collect_jobs(self) -> list[dict[str, Any]]:
-        """收集 APScheduler 中已注册的主动消息任务摘要。"""
+        """收集 APScheduler 中已注册的主动消息任务摘要（不含人格，同步版）。"""
+        return self._collect_jobs_sync()
+
+    async def collect_jobs_async(self) -> list[dict[str, Any]]:
+        """收集任务摘要并附带生效人格标注。"""
+        jobs = self._collect_jobs_sync()
+        persona_map = await self.build_persona_map([job["id"] for job in jobs])
+        for job in jobs:
+            job["persona"] = persona_map.get(job["id"], {})
+        return jobs
+
+    def _collect_jobs_sync(self) -> list[dict[str, Any]]:
+        """任务摘要的同步构建实现，供异步版本复用。"""
         plugin = self.plugin
         if not plugin.scheduler:
             return []
@@ -339,6 +392,9 @@ class StateBuilder:
                         "max_interval_minutes"
                     ),
                     "quiet_hours": schedule_settings.get("quiet_hours", ""),
+                    "quiet_hours_enabled": bool(
+                        schedule_settings.get("enable_quiet_hours", True)
+                    ),
                 }
             )
         return jobs
