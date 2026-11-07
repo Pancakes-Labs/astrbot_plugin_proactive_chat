@@ -16,6 +16,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.core.config.astrbot_config import AstrBotConfig
 
 from .core.adapters.event_handlers import EventHandlers
+from .core.commands.plugin_command_service import PluginCommandService
 from .core.console.runtime_server import WebConsoleServer
 from .core.domain.domain_enums import TriggerSource
 from .core.pipeline.flow_orchestrator import FlowOrchestrator
@@ -73,6 +74,8 @@ class ProactiveChatPlugin(star.Star):
         self.lifecycle_service = LifecycleService(self)
         self.event_handlers = EventHandlers(self)
         self.orchestrator = FlowOrchestrator(self)
+        # 指令层：main.py 只保留 @filter.command 薄壳，业务收敛在服务内。
+        self.command_service = PluginCommandService(self)
 
         # 会话差异配置管理器
         self.session_override_manager = OverrideStore(self.data_dir)
@@ -258,6 +261,61 @@ class ProactiveChatPlugin(star.Star):
     async def on_after_message_sent(self, event: AstrMessageEvent) -> None:
         """消息发送后入口。"""
         await self.event_handlers.on_after_message_sent(event)
+
+    # ==================================================================
+    # 指令入口（薄壳：参数转交服务层处理）
+    # ==================================================================
+    @filter.command("主动消息")
+    async def cmd_help(self, event: AstrMessageEvent):
+        """显示插件帮助信息。"""
+        async for result in self.command_service.handle_help(event):
+            yield result
+
+    @filter.command("主动消息状态")
+    async def cmd_status(self, event: AstrMessageEvent, scope: str = ""):
+        """查询主动消息状态（当前会话 / 全局 / 指定 UMO）。"""
+        async for result in self.command_service.handle_status(event, scope):
+            yield result
+
+    @filter.command("主动消息发送")
+    async def cmd_send(self, event: AstrMessageEvent, scope: str = ""):
+        """立即发送主动消息（当前会话 / 全局 / 指定 UMO）。"""
+        async for result in self.command_service.handle_send(event, scope):
+            yield result
+
+    @filter.command("主动消息开关")
+    async def cmd_toggle(
+        self,
+        event: AstrMessageEvent,
+        scope: str = "",
+        switch: str = "",
+    ):
+        """开启或关闭主动消息推送（支持 on/off，缺省为切换）。"""
+        async for result in self.command_service.handle_toggle(event, scope, switch):
+            yield result
+
+    @filter.command("主动消息重启", alias={"主动消息重载"})
+    async def cmd_reload_plugin(self, event: AstrMessageEvent):
+        """重载本插件。"""
+        async for result in self.command_service.handle_reload_plugin(event):
+            yield result
+
+    @filter.command(
+        "重启AstrBot",
+        alias={
+            "重启 AstrBot",
+            "重启astrbot",
+            "重启 astrbot",
+            "重载 AstrBot",
+            "重载AstrBot",
+            "重载 astrbot",
+            "重载astrbot",
+        },
+    )
+    async def cmd_restart_astrbot(self, event: AstrMessageEvent):
+        """重启整个 AstrBot 进程。"""
+        async for result in self.command_service.handle_restart_astrbot(event):
+            yield result
 
     # ==================================================================
     # 主动消息主流程
