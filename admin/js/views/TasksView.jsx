@@ -153,7 +153,7 @@ function TasksView({ onRefresh }) {
                                     badges={(
                                         <React.Fragment>
                                             <span className={`tcard-badge ${isTriggerRunning ? 'accent-auto-group' : ''}`}>
-                                                {isTriggerRunning ? '立即触发中' : '待执行'}
+                                                {isTriggerRunning ? '立即触发中' : '待发送'}
                                             </span>
                                             <span className={`task-status-pill is-${task.status}`}>{task.statusLabel}</span>
                                         </React.Fragment>
@@ -170,9 +170,9 @@ function TasksView({ onRefresh }) {
                                     foot={(
                                         <React.Fragment>
                                             <UI.TimerCardFootItem
-                                                label="预计执行时间："
+                                                label="预计发送时间："
                                                 value={task.executeClockText}
-                                                title={`执行时间 ${task.executeFullText}`}
+                                                title={`发送时间 ${task.executeFullText}`}
                                             />
                                             <span className="tcard-foot-dot">·</span>
                                             <UI.TimerCardFootItem label={`已等待 ${task.elapsedText}`} />
@@ -204,56 +204,47 @@ function TasksView({ onRefresh }) {
                                     ]}
                                 />
 
-                                <div className="tcard-actions">
-                                    {/* 反馈区整体在有文案时才渲染，空态完全不占高度，避免操作区顶上出现大块空白。 */}
-                                    {(triggerHelperText || rescheduleHelperText) ? (
-                                        <div className="tcard-feedback-stack">
-                                            {triggerHelperText ? (
-                                                <div className={`tcard-feedback ${triggerFeedbackStatus ? `is-${triggerFeedbackStatus}` : ''}`}>
-                                                    {triggerHelperText}
-                                                </div>
-                                            ) : null}
-                                            {rescheduleHelperText ? (
-                                                <div className={`tcard-feedback ${rescheduleFeedbackStatus ? `is-${rescheduleFeedbackStatus}` : ''}`}>
-                                                    {rescheduleHelperText}
-                                                </div>
-                                            ) : null}
-                                        </div>
-                                    ) : null}
-                                    <div className="tcard-button-row">
-                                        <Button
-                                            variant="outlined"
-                                            size="small"
-                                            fullWidth
-                                            disabled={isTriggerRunning || isRescheduling}
-                                            onClick={() => triggerNow(job.id)}
-                                            sx={{ borderRadius: 2.5 }}
-                                        >
-                                            {triggerButtonLabel}
-                                        </Button>
-                                        <Button
-                                            variant="outlined"
-                                            size="small"
-                                            fullWidth
-                                            disabled={isTriggerRunning || isRescheduling}
-                                            onClick={() => rescheduleJob(job.id)}
-                                            sx={{ borderRadius: 2.5 }}
-                                        >
-                                            {isRescheduling ? '重新调度中…' : '重新调度'}
-                                        </Button>
-                                        <Button
-                                            variant="outlined"
-                                            color="error"
-                                            size="small"
-                                            fullWidth
-                                            disabled={isRescheduling}
-                                            onClick={() => cancelJob(job.id)}
-                                            sx={{ borderRadius: 2.5 }}
-                                        >
-                                            取消任务
-                                        </Button>
-                                    </div>
-                                </div>
+                                <UI.TimerCardActions
+                                    feedbacks={[
+                                        { text: triggerHelperText, status: triggerFeedbackStatus },
+                                        { text: rescheduleHelperText, status: rescheduleFeedbackStatus },
+                                    ]}
+                                    buttons={(
+                                        <React.Fragment>
+                                            <Button
+                                                variant="outlined"
+                                                size="small"
+                                                fullWidth
+                                                disabled={isTriggerRunning || isRescheduling}
+                                                onClick={() => triggerNow(job.id)}
+                                                sx={{ borderRadius: 2.5 }}
+                                            >
+                                                {triggerButtonLabel}
+                                            </Button>
+                                            <Button
+                                                variant="outlined"
+                                                size="small"
+                                                fullWidth
+                                                disabled={isTriggerRunning || isRescheduling}
+                                                onClick={() => rescheduleJob(job.id)}
+                                                sx={{ borderRadius: 2.5 }}
+                                            >
+                                                {isRescheduling ? '重新调度中…' : '重新调度'}
+                                            </Button>
+                                            <Button
+                                                variant="outlined"
+                                                color="error"
+                                                size="small"
+                                                fullWidth
+                                                disabled={isRescheduling}
+                                                onClick={() => cancelJob(job.id)}
+                                                sx={{ borderRadius: 2.5 }}
+                                            >
+                                                取消任务
+                                            </Button>
+                                        </React.Fragment>
+                                    )}
+                                />
                             </div>
                         );
                     })}

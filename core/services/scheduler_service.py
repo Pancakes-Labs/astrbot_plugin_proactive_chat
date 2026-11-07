@@ -21,6 +21,10 @@ class SchedulerService:
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
+        # 计时器代次表：旧回调据此判断自己是否已被替换。
+        self._timer_generations: dict[str, int] = {}
+        # Web 端 finish/reset 会同时操作计时器与任务，按会话串行更安全。
+        self._timer_locks: dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
     # 内部辅助：Web 控制台状态广播
@@ -42,6 +46,16 @@ class SchedulerService:
     # ------------------------------------------------------------------
     # 自动触发
     # ------------------------------------------------------------------
+    # 计时器代次：每次重建都递增，旧回调只认自己那一代，避免已被替换的
+    # 回调在新的计时器上生效（重置后提前触发或误删卡片）。
+    def _next_timer_generation(self, key: str) -> int:
+        current = self._timer_generations.get(key, 0) + 1
+        self._timer_generations[key] = current
+        return current
+
+    def _current_timer_generation(self, key: str) -> int:
+        return self._timer_generations.get(key, 0)
+
     async def setup_auto_trigger(self, session_id: str, silent: bool = False) -> None:
         """为指定会话设置自动主动消息触发器。"""
         plugin = self.plugin
@@ -77,7 +91,12 @@ class SchedulerService:
             finally:
                 del plugin.auto_trigger_timers[session_id]
 
-        def _auto_trigger_callback(captured_session_id=session_id):
+        generation = self._next_timer_generation(f"auto:{session_id}")
+
+        def _auto_trigger_callback(captured_session_id=session_id, token=generation):
+            # 已被重建的计时器回调直接作废，否则会作用到新的计时器上。
+            if self._current_timer_generation(f"auto:{captured_session_id}") != token:
+                return
             plugin._track_task(
                 asyncio.create_task(
                     self.handle_auto_trigger_callback(
@@ -656,8 +675,17 @@ class SchedulerService:
                     del plugin.group_timers[timer_key]
 
         idle_minutes = session_config.get("group_idle_trigger_minutes", 10)
+        generation = self._next_timer_generation(f"silence:{normalized_session_id}")
 
-        def _schedule_callback(captured_session_id=normalized_session_id):
+        def _schedule_callback(
+            captured_session_id=normalized_session_id, token=generation
+        ):
+            # 重置会重建计时器并递增代次，旧回调据此自动失效。
+            if (
+                self._current_timer_generation(f"silence:{captured_session_id}")
+                != token
+            ):
+                return
             plugin._track_task(
                 asyncio.create_task(
                     self.handle_group_silence_callback(
@@ -673,6 +701,199 @@ class SchedulerService:
             )
         except Exception as e:
             logger.error(f"[主动消息] 设置沉默倒计时失败喵: {e}")
+
+    # ------------------------------------------------------------------
+    # Web 管理端：在线结束 / 重置计时器
+    # ------------------------------------------------------------------
+    def _session_timer_lock(self, session_id: str) -> asyncio.Lock:
+        """取该会话的计时器操作锁，保证 finish/reset 不交错执行。"""
+        lock = self._timer_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._timer_locks[session_id] = lock
+        return lock
+
+    async def finish_timer(
+        self, session_id: str, timer_kind: str = ""
+    ) -> dict[str, Any]:
+        """结束计时器但不发送消息。
+
+        与真实到点回调的区别：不做触发条件校验，直接把计时器摘除，再按正常
+        流程登记下一次主动消息任务，使卡片消失、任务出现在任务管理页。
+        """
+        plugin = self.plugin
+        normalized_session_id = plugin.session_service.normalize_session_id(session_id)
+        # timer_kind 为空时两类都尝试，避免前端漏传导致点了没反应。
+        kinds = (
+            [timer_kind]
+            if timer_kind in {"group_silence", "auto_trigger"}
+            else ["group_silence", "auto_trigger"]
+        )
+
+        async with self._session_timer_lock(normalized_session_id):
+            # 先确认确有计时器可结束，避免“没东西可结束”却排了新任务。
+            has_group_timer = any(
+                key in plugin.group_timers
+                for key in (session_id, normalized_session_id)
+            )
+            has_auto_timer = bool(
+                self.iter_related_auto_trigger_keys(normalized_session_id)
+            )
+            finished = ("group_silence" in kinds and has_group_timer) or (
+                "auto_trigger" in kinds and has_auto_timer
+            )
+            if not finished:
+                return {"ok": False, "reason": "not_running"}
+
+            session_config = plugin.config_service.get_session_config(
+                normalized_session_id
+            )
+            can_reschedule = bool(
+                session_config and session_config.get("enable", False)
+            )
+
+            # 先登记替代任务再摘除计时器：排期失败时原计时器仍可继续工作，
+            # 不会出现“旧计时器已消失、新任务也不存在”的空窗。
+            if can_reschedule:
+                try:
+                    await self.schedule_next_chat_and_save(
+                        normalized_session_id, reset_counter=False
+                    )
+                except Exception as e:  # noqa: BLE001 - 需保留原计时器
+                    logger.error(
+                        f"[主动消息] 结束计时器时登记后续任务失败，保留原计时器喵: {e}"
+                    )
+                    return {"ok": False, "reason": "reschedule_failed"}
+
+            if "group_silence" in kinds:
+                for timer_key in (session_id, normalized_session_id):
+                    timer = plugin.group_timers.pop(timer_key, None)
+                    if timer is None:
+                        continue
+                    # 摘除后让旧回调失效，避免它再去改动新登记的任务。
+                    self._next_timer_generation(f"silence:{timer_key}")
+                    try:
+                        timer.cancel()
+                    except Exception as e:
+                        logger.warning(f"[主动消息] 取消沉默计时器时出错喵: {e}")
+
+            if "auto_trigger" in kinds and has_auto_timer:
+                await self.cancel_auto_trigger(normalized_session_id)
+                self._next_timer_generation(f"auto:{normalized_session_id}")
+
+            if can_reschedule:
+                logger.info(
+                    f"[主动消息] Web 管理端已结束 {plugin.session_service.get_session_log_str(normalized_session_id, session_config)} 的计时器并转入调度任务喵。"
+                )
+
+        await self._notify_web_console("timer_finished")
+        return {"ok": True, "scheduled": can_reschedule}
+
+    async def reset_timer(
+        self, session_id: str, timer_kind: str = ""
+    ) -> dict[str, Any]:
+        """按当前配置重新开始计时（不发送消息、不改动未回复计数）。
+
+        两类计时器的“起点”语义完全不同，必须分开处理：
+        群沉默以“用户最后发言时间”为起点，自动触发以“一直无消息”为前提。
+        自动触发不能复用 last_message_times，那是用户真实发言时间，
+        清零会让后续判定误以为用户从未说过话。
+        """
+        plugin = self.plugin
+        normalized_session_id = plugin.session_service.normalize_session_id(session_id)
+        session_config = plugin.config_service.get_session_config(normalized_session_id)
+        if not session_config or not session_config.get("enable", False):
+            return {"ok": False, "reason": "disabled"}
+
+        kinds = (
+            [timer_kind]
+            if timer_kind in {"group_silence", "auto_trigger"}
+            else ["group_silence", "auto_trigger"]
+        )
+
+        async with self._session_timer_lock(normalized_session_id):
+            reset_done = False
+            # 未显式指定类型时，只重置真实存在的那一类，凭空造计时器会多出卡片。
+            auto_result = ""
+
+            if "group_silence" in kinds:
+                has_group_timer = (
+                    normalized_session_id in plugin.group_timers
+                    or session_id in plugin.group_timers
+                )
+                idle_minutes = int(
+                    session_config.get("group_idle_trigger_minutes", 0) or 0
+                )
+                # 未指定类型（用户点“重新计时”）时要求确有计时器；
+                # 显式指定 group_silence 时允许按配置重建。
+                should_reset_group = (
+                    timer_kind == "group_silence" and idle_minutes > 0
+                ) or has_group_timer
+                if should_reset_group:
+                    now = time.time()
+                    # 群沉默的起点是“用户最后发言时间”，同步内存态与临时状态。
+                    plugin.last_message_times[normalized_session_id] = now
+                    plugin.session_temp_state.setdefault(normalized_session_id, {})[
+                        "last_user_time"
+                    ] = now
+                    await self.reset_group_silence_timer(normalized_session_id)
+                    reset_done = True
+
+            if "auto_trigger" in kinds:
+                auto_settings = session_config.get("auto_trigger_settings", {})
+                had_auto_timer = bool(
+                    self.iter_related_auto_trigger_keys(normalized_session_id)
+                )
+                if had_auto_timer or auto_settings.get("enable_auto_trigger", False):
+                    # 先确认能否重建，再取消旧计时器：与 finish_timer 同序。
+                    # 否则 existing / max_unanswered 时旧计时器已丢、卡片也消失，
+                    # 接口却只返回一个 400。
+                    if not auto_settings.get("enable_auto_trigger", False):
+                        auto_result = "disabled"
+                    elif self.has_related_persisted_task(normalized_session_id):
+                        auto_result = "existing"
+                    else:
+                        schedule_conf = session_config.get("schedule_settings", {})
+                        max_unanswered = schedule_conf.get("max_unanswered_times", 3)
+                        unanswered_count = plugin.session_data.get(
+                            normalized_session_id, {}
+                        ).get("unanswered_count", 0)
+                        if max_unanswered > 0 and unanswered_count >= max_unanswered:
+                            auto_result = "max_unanswered"
+                        else:
+                            await self.cancel_auto_trigger(normalized_session_id)
+                            # 只清除自动触发自身的基准，用户发言时间保持原样。
+                            self._clear_auto_trigger_baseline(normalized_session_id)
+                            auto_result = (
+                                await self.setup_auto_trigger_for_session_config(
+                                    auto_settings, normalized_session_id
+                                )
+                            )
+                            if auto_result == "created":
+                                reset_done = True
+
+            if not reset_done:
+                if auto_result == "max_unanswered":
+                    return {"ok": False, "reason": "max_unanswered"}
+                if auto_result == "existing":
+                    return {"ok": False, "reason": "already_scheduled"}
+                return {"ok": False, "reason": "no_timer_config"}
+
+            logger.info(
+                f"[主动消息] Web 管理端已重置 {plugin.session_service.get_session_log_str(normalized_session_id, session_config)} 的计时器喵。"
+            )
+
+        await self._notify_web_console("timer_reset")
+        return {"ok": True}
+
+    def _clear_auto_trigger_baseline(self, session_id: str) -> None:
+        """重置自动触发基准，但不触碰用户的真实发言时间。
+
+        自动触发判定用「上次发言时间是否早于本轮计时起点」来表达，
+        因此只需记录一个计时起点，不能把 last_message_times 清零。
+        """
+        plugin = self.plugin
+        plugin.auto_trigger_baselines[session_id] = time.time()
 
     async def handle_auto_trigger_callback(
         self, session_id: str, auto_trigger_minutes: int | float
@@ -703,12 +924,21 @@ class SchedulerService:
                     return
 
                 last_message_time = plugin.last_message_times.get(session_id, 0)
+                baseline = plugin.auto_trigger_baselines.get(session_id, 0)
                 current_time = time.time()
-                time_since_plugin_start = current_time - plugin.plugin_start_time
+                # 重置过计时器的会话以重置时刻为起点；否则仍以启动时刻为起点。
+                origin = baseline or plugin.plugin_start_time
 
-                if last_message_time != 0 or time_since_plugin_start < (
+                if last_message_time >= origin or current_time - origin < (
                     auto_trigger_minutes * 60
                 ):
+                    return
+
+                # 已有持久化任务时不再重复登记，避免覆盖已排好的发送时间。
+                if self.has_related_persisted_task(session_id):
+                    logger.debug(
+                        f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 已有持久化任务，跳过自动触发登记喵。"
+                    )
                     return
 
                 schedule_conf = current_config.get("schedule_settings", {})

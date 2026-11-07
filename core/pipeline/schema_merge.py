@@ -119,6 +119,7 @@ def merge_defaults_into(
 
 
 def _default_for(meta: dict[str, Any]) -> Any:
+    """取字段默认值；返回 None 表示该字段没有可落地的默认值。"""
     if "default" in meta:
         return copy.deepcopy(meta["default"])
     return copy.deepcopy(_TYPE_DEFAULTS.get(meta.get("type")))
@@ -130,6 +131,8 @@ def ensure_config_defaults(
     """按 schema 补齐缺失配置项，返回被补齐的点号路径列表。
 
     只补缺失与 None，不覆盖用户已有取值；object 节点会递归进入 items。
+    返回值只统计真正发生变化的项：默认值本身为 None（显式 null 或未知类型）
+    视为“不设默认值”，否则会在每次启动时把 None 原样写回并重复计入补齐。
     """
     added: list[str] = []
     if not isinstance(config, dict) or not isinstance(schema, dict):
@@ -156,7 +159,16 @@ def ensure_config_defaults(
         if key in config and config[key] is not None:
             continue
 
-        config[key] = _default_for(meta)
+        value = _default_for(meta)
+        if value is None:
+            # 显式 default:null 或未知类型：不写入任何值，也不记为补齐项。
+            continue
+
+        if key in config and config[key] == value:
+            # 已有内容与默认值一致，属于无变化，避免重复落盘与日志噪音。
+            continue
+
+        config[key] = value
         added.append(key_path)
 
     return added

@@ -301,7 +301,14 @@ body.dark-theme .notification-feed-time {
 
 body.dark-theme .status-timer-section-count,
 body.dark-theme .status-timers-summary-pill,
-body.dark-theme .header-clock-chip,
 body.dark-theme .connection-chip {
     color: var(--md-sys-color-on-surface);
+}
+
+/* 时间胶囊保留紫色种子：暗色下 primary 已是浅紫 #D0BCFF，
+   若沿用上面的 on-surface 会变成灰白，主题色就丢了。 */
+body.dark-theme .header-clock-chip {
+    color: var(--md-sys-color-primary);
+    background: rgb(var(--md-primary-rgb) / 0.10);
+    border-color: rgb(var(--md-primary-rgb) / 0.22);
 }

@@ -247,7 +247,7 @@
         const remainingSeconds = Number(progress.remainingSeconds) || 0;
         const progressPercent = clampPercent(progress.progressPercent);
 
-        // 已等待时长 = 调度窗口（随机区间） - 剩余时间，比裸露的执行时刻更直观。
+        // 已等待时长 = 调度窗口（随机区间） - 剩余时间，比裸露的发送时刻更直观。
         const windowSeconds = Math.max(0, Number(job.last_schedule_random_interval_seconds) || 0);
         const elapsedSeconds = windowSeconds > 0
             ? Math.max(0, windowSeconds - remainingSeconds)
@@ -260,16 +260,23 @@
             ? `${minMinutes} - ${maxMinutes} 分钟`
             : (minMinutes > 0 ? `${minMinutes} 分钟` : (maxMinutes > 0 ? `${maxMinutes} 分钟` : '未配置'));
 
-        // 免打扰时段统一成 02:00 - 06:00 形式，非法值原样展示便于排查配置错误。
+        // 免打扰支持多时段：拆分后逐段格式化，非法片段原样展示便于排查配置错误。
+        // 开关关闭时统一显示「未启用」，避免与时段配置产生歧义。
+        const quietEnabled = job.quiet_hours_enabled !== false;
         const quietRaw = String(job.quiet_hours || '').trim();
-        const quietMatched = quietRaw.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
-        let quietText = quietRaw || '未配置';
-        if (quietMatched) {
-            const startHour = Number(quietMatched[1]);
-            const endHour = Number(quietMatched[2]);
-            if (startHour >= 0 && startHour <= 23 && endHour >= 0 && endHour <= 23) {
-                quietText = `${String(startHour).padStart(2, '0')}:00 - ${String(endHour).padStart(2, '0')}:00`;
-            }
+        const formatQuietRange = (part) => {
+            const text = String(part || '').trim();
+            const matched = text.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+            if (!matched) return text;
+            const startHour = Number(matched[1]);
+            const endHour = Number(matched[2]);
+            if (startHour < 0 || startHour > 23 || endHour < 0 || endHour > 24) return text;
+            return `${String(startHour).padStart(2, '0')}:00 - ${String(endHour).padStart(2, '0')}:00`;
+        };
+        let quietText = '未启用';
+        if (quietEnabled) {
+            const parts = quietRaw.split(/[,，、]/).map((item) => item.trim()).filter(Boolean);
+            quietText = parts.length > 0 ? parts.map(formatQuietRange).join(' / ') : '未配置';
         }
 
         return Object.assign({}, job, {
@@ -283,8 +290,8 @@
             countdownTokens: remainingSeconds > 0
                 ? splitDurationTokens(remainingSeconds, 3)
                 : [],
-            // 任务卡是「待执行」，因此 kicker 用执行语义而非创建语义。
-            heroLabel: remainingSeconds > 0 ? '距离执行这次主动消息还有' : '当前执行状态',
+            // 任务卡是「待发送」，因此 kicker 用发送语义而非创建语义。
+            heroLabel: remainingSeconds > 0 ? '距离发送这次主动消息还有' : '当前发送状态',
             elapsedSeconds: elapsedSeconds,
             elapsedText: window.formatDuration(elapsedSeconds, { compact: true, maxUnits: 3 }),
             executeClockText: progress.nextRun
@@ -307,7 +314,7 @@
         });
     }
 
-    // 任务页卡片：推导下一次执行时间、倒计时、状态与进度。
+    // 任务页卡片：推导下一次发送时间、倒计时、状态与进度。
     function resolveTaskProgress(job, nowMs, displayTimezone) {
         const nextRun = window.TimeDomain.toDate(job.next_run_time);
         const nextTrigger = window.TimeDomain.toDate(job.next_trigger_time);
@@ -323,7 +330,7 @@
                 nextTrigger: nextTrigger,
                 remainingSeconds: 0,
                 remainingText: '--',
-                countdownText: '暂无有效执行时间',
+                countdownText: '暂无有效发送时间',
                 friendlyText: '--',
                 status: 'unknown',
                 statusLabel: '待确认',
@@ -368,7 +375,7 @@
             nextTrigger: nextTrigger,
             remainingSeconds: remainingSeconds,
             remainingText: remainingText,
-            countdownText: remainingSeconds > 0 ? `${remainingText} 后执行` : '等待下一轮刷新确认',
+            countdownText: remainingSeconds > 0 ? `${remainingText} 后发送` : '等待下一轮刷新确认',
             friendlyText: friendlyText,
             status: statusMeta.status,
             statusLabel: statusMeta.statusLabel,

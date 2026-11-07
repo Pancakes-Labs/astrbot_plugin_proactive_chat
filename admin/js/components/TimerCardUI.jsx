@@ -181,6 +181,33 @@ function TimerCardFootItem({ label, value, title }) {
     );
 }
 
+// 操作区：反馈文案栈 + 等宽按钮行，任务页与状态页共用同一套结构。
+// feedbacks 中 text 为空的项会被过滤，空态完全不占高度。
+function TimerCardActions({ feedbacks, buttons }) {
+    if (!buttons) return null;
+    const visible = (Array.isArray(feedbacks) ? feedbacks : []).filter(
+        (item) => item && item.text
+    );
+
+    return (
+        <div className="tcard-actions">
+            {visible.length > 0 ? (
+                <div className="tcard-feedback-stack">
+                    {visible.map((item, index) => (
+                        <div
+                            className={`tcard-feedback ${item.status ? `is-${item.status}` : ''}`}
+                            key={`feedback-${index}`}
+                        >
+                            {item.text}
+                        </div>
+                    ))}
+                </div>
+            ) : null}
+            <div className="tcard-button-row">{buttons}</div>
+        </div>
+    );
+}
+
 window.TimerCardUI = Object.freeze({
     RING_RADIUS: RING_RADIUS,
     RING_CIRCUMFERENCE: RING_CIRCUMFERENCE,
@@ -189,5 +216,6 @@ window.TimerCardUI = Object.freeze({
     TimerCardCountdown: TimerCardCountdown,
     TimerCardFacts: TimerCardFacts,
     TimerCardFootItem: TimerCardFootItem,
+    TimerCardActions: TimerCardActions,
 });
 })();

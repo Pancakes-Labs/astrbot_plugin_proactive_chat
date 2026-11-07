@@ -1,4 +1,10 @@
 {
+    "admin_users": {
+        "description": "🔐 插件管理员列表",
+        "type": "list",
+        "hint": "输入用户 ID（QQ 号等）。这些用户可以使用插件的管理指令。AstrBot 的全站管理员默认拥有权限，无需在此重复添加",
+        "default": null
+    },
     "friend_settings": {
         "description": "👤 私聊全局配置",
         "type": "object",
@@ -161,11 +167,17 @@
                             "step": 30
                         }
                     },
+                    "enable_quiet_hours": {
+                        "description": "启用免打扰时段",
+                        "type": "bool",
+                        "default": true,
+                        "hint": "关闭后将忽略下方免打扰时段，全天候允许发送主动消息。"
+                    },
                     "quiet_hours": {
                         "description": "免打扰时段 (24小时制)",
                         "type": "string",
                         "default": "1-7",
-                        "hint": "格式：开始-结束，例如 23-7 表示晚上 11 点到早上 7 点。在此时间段内不会发送主动消息"
+                        "hint": "支持多个时段，用逗号或顿号分隔，例如 23-7, 12-14、18-20。23-7 表示晚上 11 点到次日早上 7 点；在这些时间段内不会发送主动消息。仅在启用免打扰时段时生效"
                     },
                     "max_unanswered_times": {
                         "description": "最大未回复次数上限",
@@ -478,11 +490,17 @@
                             "step": 30
                         }
                     },
+                    "enable_quiet_hours": {
+                        "description": "启用免打扰时段",
+                        "type": "bool",
+                        "default": true,
+                        "hint": "关闭后将忽略下方免打扰时段，全天候允许发送主动消息。"
+                    },
                     "quiet_hours": {
                         "description": "免打扰时段 (24小时制)",
                         "type": "string",
                         "default": "2-6",
-                        "hint": "格式：开始-结束，例如 2-6 表示午夜 2 点到早上 6 点。在此时间段内不会发送主动消息"
+                        "hint": "支持多个时段，用逗号或顿号分隔，例如 23-7, 12-14、18-20。23-7 表示晚上 11 点到次日早上 7 点；在这些时间段内不会发送主动消息。仅在启用免打扰时段时生效"
                     },
                     "max_unanswered_times": {
                         "description": "最大未回复次数上限",

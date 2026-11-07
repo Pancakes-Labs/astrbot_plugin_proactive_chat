@@ -140,6 +140,10 @@ class StateBuilder:
                     "max_unanswered_times": schedule_settings.get(
                         "max_unanswered_times", 0
                     ),
+                    "quiet_hours": schedule_settings.get("quiet_hours", ""),
+                    "quiet_hours_enabled": bool(
+                        schedule_settings.get("enable_quiet_hours", True)
+                    ),
                     "timer_kind": "auto_trigger",
                     "title": "自动触发检测",
                     "status": "running" if remaining_seconds is not None else "unknown",
@@ -201,6 +205,10 @@ class StateBuilder:
                     ),
                     "max_unanswered_times": schedule_settings.get(
                         "max_unanswered_times", 0
+                    ),
+                    "quiet_hours": schedule_settings.get("quiet_hours", ""),
+                    "quiet_hours_enabled": bool(
+                        schedule_settings.get("enable_quiet_hours", True)
                     ),
                     "timer_kind": "group_silence",
                     "title": "群沉默检测",
@@ -384,6 +392,9 @@ class StateBuilder:
                         "max_interval_minutes"
                     ),
                     "quiet_hours": schedule_settings.get("quiet_hours", ""),
+                    "quiet_hours_enabled": bool(
+                        schedule_settings.get("enable_quiet_hours", True)
+                    ),
                 }
             )
         return jobs

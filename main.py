@@ -16,6 +16,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.core.config.astrbot_config import AstrBotConfig
 
 from .core.adapters.event_handlers import EventHandlers
+from .core.commands.plugin_command_service import PluginCommandService
 from .core.console.runtime_server import WebConsoleServer
 from .core.domain.domain_enums import TriggerSource
 from .core.pipeline.flow_orchestrator import FlowOrchestrator
@@ -73,6 +74,8 @@ class ProactiveChatPlugin(star.Star):
         self.lifecycle_service = LifecycleService(self)
         self.event_handlers = EventHandlers(self)
         self.orchestrator = FlowOrchestrator(self)
+        # 指令层：main.py 只保留 @filter.command 薄壳，业务收敛在服务内。
+        self.command_service = PluginCommandService(self)
 
         # 会话差异配置管理器
         self.session_override_manager = OverrideStore(self.data_dir)
@@ -107,7 +110,11 @@ class ProactiveChatPlugin(star.Star):
         self.last_bot_message_time = 0
         self.session_temp_state: dict[str, dict] = {}
         self.last_message_times: dict[str, float] = {}
+        # 自动触发的计时起点：由「重新计时」写入，用于区分用户是否真说过话。
+        self.auto_trigger_baselines: dict[str, float] = {}
         self.auto_trigger_timers: dict[str, asyncio.TimerHandle] = {}
+        # 与生命周期解耦的后台任务（如插件重载），terminate 时不可取消。
+        self._detached_tasks: set[asyncio.Task[None]] = set()
         self.plugin_start_time = time.time()
         self.first_message_logged: set[str] = set()
         self._cleanup_counter = 0
@@ -134,6 +141,20 @@ class ProactiveChatPlugin(star.Star):
             return None
         self._telemetry_tasks.add(task)
         task.add_done_callback(self._telemetry_tasks.discard)
+        return task
+
+    def _track_detached_task(
+        self, task: asyncio.Task[None] | None
+    ) -> asyncio.Task[None] | None:
+        """登记与插件生命周期解耦的后台任务，避免被任务释放。
+
+        插件重载会先触发 terminate，而 terminate 会取消并等待遥测任务集合。
+        重载任务本身必须存活到旧实例销毁之后，因此单独存放、不参与清理。
+        """
+        if task is None:
+            return None
+        self._detached_tasks.add(task)
+        task.add_done_callback(self._detached_tasks.discard)
         return task
 
     async def _cleanup_telemetry_tasks(self) -> None:
@@ -258,6 +279,61 @@ class ProactiveChatPlugin(star.Star):
     async def on_after_message_sent(self, event: AstrMessageEvent) -> None:
         """消息发送后入口。"""
         await self.event_handlers.on_after_message_sent(event)
+
+    # ==================================================================
+    # 指令入口（薄壳：参数转交服务层处理）
+    # ==================================================================
+    @filter.command("主动消息")
+    async def cmd_help(self, event: AstrMessageEvent):
+        """显示插件帮助信息。"""
+        async for result in self.command_service.handle_help(event):
+            yield result
+
+    @filter.command("主动消息状态")
+    async def cmd_status(self, event: AstrMessageEvent, scope: str = ""):
+        """查询主动消息状态（当前会话 / 全局 / 指定 UMO）。"""
+        async for result in self.command_service.handle_status(event, scope):
+            yield result
+
+    @filter.command("主动消息发送")
+    async def cmd_send(self, event: AstrMessageEvent, scope: str = ""):
+        """立即发送主动消息（当前会话 / 全局 / 指定 UMO）。"""
+        async for result in self.command_service.handle_send(event, scope):
+            yield result
+
+    @filter.command("主动消息开关")
+    async def cmd_toggle(
+        self,
+        event: AstrMessageEvent,
+        scope: str = "",
+        switch: str = "",
+    ):
+        """开启或关闭主动消息推送（支持 on/off，缺省为切换）。"""
+        async for result in self.command_service.handle_toggle(event, scope, switch):
+            yield result
+
+    @filter.command("主动消息重启", alias={"主动消息重载"})
+    async def cmd_reload_plugin(self, event: AstrMessageEvent):
+        """重载本插件。"""
+        async for result in self.command_service.handle_reload_plugin(event):
+            yield result
+
+    @filter.command(
+        "重启AstrBot",
+        alias={
+            "重启 AstrBot",
+            "重启astrbot",
+            "重启 astrbot",
+            "重载 AstrBot",
+            "重载AstrBot",
+            "重载 astrbot",
+            "重载astrbot",
+        },
+    )
+    async def cmd_restart_astrbot(self, event: AstrMessageEvent):
+        """重启整个 AstrBot 进程。"""
+        async for result in self.command_service.handle_restart_astrbot(event):
+            yield result
 
     # ==================================================================
     # 主动消息主流程

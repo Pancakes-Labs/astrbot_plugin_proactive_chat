@@ -23,8 +23,19 @@ from ..pipeline.schema_merge import (
     ensure_config_defaults,
     merge_defaults_into,
     merge_schema_into,
+    split_path,
 )
 from . import config_migrator
+
+
+def _lookup_path(source: dict[str, Any], dotted_key: str) -> Any:
+    """按点号路径取值，任一层缺失即返回 None。"""
+    current: Any = source
+    for part in split_path(dotted_key):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
 
 
 class ConfigAssemblyService:
@@ -172,12 +183,13 @@ class ConfigAssemblyService:
                     await save_async()
                 else:
                     config.save_config()
-                logger.info(
-                    "[主动消息] 配置已升级并保存喵"
-                    f"（补齐 {len(added)} 项，迁移提示词 "
-                    f"{'是' if changed else '否'}）喵。"
-                )
+                # 迁移与补齐是两件事：分开记录，避免"补齐"被误读为"结构又升级了一次"。
+                if changed:
+                    logger.info("[主动消息] 配置结构已升级并保存喵。")
                 if added:
+                    logger.info(
+                        f"[主动消息] 已为 {len(added)} 项缺失配置写入默认值并保存喵。"
+                    )
                     logger.debug(f"[主动消息] 本次补齐的配置项喵: {', '.join(added)}")
             except Exception as e:
                 logger.error(f"[主动消息] 保存升级后的配置失败喵: {e}")
@@ -199,9 +211,12 @@ class ConfigAssemblyService:
 
         before = copy.deepcopy(dict(config))
         merge_defaults_into(config, defaults)
-        if dict(config) == before:
-            return []
-        return list(defaults.keys())
+        # 只回报真正发生变化的键，避免"声明了但已存在"的项被重复计为补齐。
+        return [
+            key
+            for key in defaults
+            if _lookup_path(before, key) != _lookup_path(dict(config), key)
+        ]
 
 
 __all__ = ["ConfigAssemblyService"]
