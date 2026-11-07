@@ -422,13 +422,16 @@ class ApiRoutes:
             normalized = plugin.session_service.normalize_session_id(umo)
             mode = payload.get("mode", "effective")
 
+            saved = True
             if mode == "override":
                 override = payload.get("override", {})
                 if not isinstance(override, dict):
                     return JSONResponse(
                         {"error": "override 必须是对象"}, status_code=400
                     )
-                await plugin.session_override_manager.set_override(normalized, override)
+                saved = await plugin.session_override_manager.set_override(
+                    normalized, override
+                )
             else:
                 effective = payload.get("effective", {})
                 if not isinstance(effective, dict):
@@ -443,11 +446,23 @@ class ApiRoutes:
                         },
                         status_code=400,
                     )
-                await plugin.session_override_manager.update_session_from_effective(
-                    normalized, base, effective
+                saved = (
+                    await plugin.session_override_manager.update_session_from_effective(
+                        normalized, base, effective
+                    )
                 )
 
             await _broadcast_web_update("session-config")
+            if not saved:
+                # 与 /api/config 保持一致：内存已改但磁盘没写成功，必须显式报错。
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "session": normalized,
+                        "error": "会话配置已应用到内存，但保存到磁盘失败",
+                    },
+                    status_code=500,
+                )
             return {
                 "ok": True,
                 "session": normalized,
@@ -459,8 +474,17 @@ class ApiRoutes:
         @app.delete("/api/session-config/{umo:path}")
         async def reset_session_config(umo: str):
             normalized = plugin.session_service.normalize_session_id(umo)
-            await plugin.session_override_manager.delete_override(normalized)
+            saved = await plugin.session_override_manager.delete_override(normalized)
             await _broadcast_web_update("session-config")
+            if not saved:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "session": normalized,
+                        "error": "会话配置已从内存移除，但保存到磁盘失败",
+                    },
+                    status_code=500,
+                )
             return {
                 "ok": True,
                 "session": normalized,
