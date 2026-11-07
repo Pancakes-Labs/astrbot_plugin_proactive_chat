@@ -37,6 +37,7 @@
         auto_trigger_after_minutes: '⏱️',
         min_interval_minutes: '⏱️',
         max_interval_minutes: '⏱️',
+        enable_quiet_hours: '🔕',
         quiet_hours: '🌙',
         max_unanswered_times: '🛑',
         enable_tts: '💬',

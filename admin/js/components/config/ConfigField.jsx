@@ -98,7 +98,7 @@
  // 人格选择器：AstrBot 的 select_persona 在这里用等价下拉实现，
  // 特殊项（跟随当前人格 / 不使用人格）与真实人格合并展示。
  // 人格提示词正文改由弹窗查看，避免长文本撑开表单布局。
- function PersonaSelectField({ schema, fieldKey, localValue, onChange }) {
+ function PersonaSelectField({ schema, fieldKey, localValue, onChange, depth = 1 }) {
      const [personas, setPersonas] = useState(personaStore.items || []);
      const [specialOptions, setSpecialOptions] = useState(personaStore.specialOptions || []);
      const [previewOpen, setPreviewOpen] = useState(false);
@@ -130,71 +130,77 @@
      const canPreview = Boolean(currentPersona && currentPersona.prompt);
 
      return (
-         <Box sx={{ py: 1.5 }}>
-             <Box sx={{ mb: 1 }}>
-                 <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary', fontSize: '0.9rem' }}>
-                     {schema.description || fieldKey}
-                 </Typography>
-                 {schema.hint && (
-                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                         {schema.hint}
-                     </Typography>
-                 )}
-             </Box>
-             <TextField
-                 select
-                 fullWidth
-                 size="small"
-                 value={currentValue}
-                 onChange={(e) => onChange(e.target.value)}
-                 variant="outlined"
-                 SelectProps={{
-                     MenuProps: {
-                         PaperProps: {
-                             sx: { borderRadius: 1.5, mt: 0.5, boxShadow: 'var(--md-menu-shadow)' }
-                         }
-                     }
-                 }}
-                 sx={{
-                     '& .MuiOutlinedInput-root': {
-                         borderRadius: 1.5,
-                         bgcolor: 'background.paper',
-                         '&.Mui-focused > fieldset': { borderColor: 'primary.main' }
-                     }
-                 }}
-             >
-                 {specialOptions.map((option) => (
-                     <MenuItem key={`special_${option.value}`} value={option.value}>
-                         {option.label}
-                     </MenuItem>
-                 ))}
-                 {valueMissing && (
-                     <MenuItem key="missing" value={currentValue}>
-                         {`${currentValue}（人格不存在）`}
-                     </MenuItem>
-                 )}
-                 {personas.map((persona) => (
-                     <MenuItem key={persona.name} value={persona.name}>
-                         {persona.name}
-                     </MenuItem>
-                 ))}
-             </TextField>
+         <Box sx={rowGridSx(depth)}>
+             {/* 描述固定 50%，下拉框占 20%，与其他普通字段共用同一套栅格。 */}
+             <DescriptionSection schema={schema} fieldKey={fieldKey} />
 
-             {/* 状态行：特殊选项说明或人格正文预览入口，保持单行不撑高表单。 */}
-             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.75, flexWrap: 'wrap' }}>
-                 {currentSpecial && (
-                     <Chip size="small" label={currentLabel} variant="outlined" />
-                 )}
-                 {canPreview && (
-                     <Button
-                         size="small"
-                         variant="text"
-                         onClick={() => setPreviewOpen(true)}
-                         sx={{ minWidth: 'auto', px: 1, py: 0, fontSize: '0.75rem' }}
-                     >
-                         查看人格内容
-                     </Button>
-                 )}
+             {/* 列方向时 justifyContent 需重置，否则 flex-end 会让控件贴到底部。 */}
+             <Box sx={{
+                 ...CONFIG_CONTROL_CELL_SX,
+                 flexDirection: 'column',
+                 alignItems: 'stretch',
+                 justifyContent: 'flex-start',
+                 gap: 0.75
+             }}>
+                 <TextField
+                     select
+                     fullWidth
+                     size="small"
+                     value={currentValue}
+                     onChange={(e) => onChange(e.target.value)}
+                     variant="outlined"
+                     SelectProps={{
+                         MenuProps: {
+                             PaperProps: {
+                                 sx: { borderRadius: 1.5, mt: 0.5, boxShadow: 'var(--md-menu-shadow)' }
+                             }
+                         }
+                     }}
+                     sx={{
+                         '& .MuiOutlinedInput-root': {
+                             borderRadius: 1.5,
+                             bgcolor: 'background.paper',
+                             '&.Mui-focused > fieldset': { borderColor: 'primary.main' }
+                         },
+                         '& .MuiSelect-select': {
+                             overflow: 'hidden',
+                             textOverflow: 'ellipsis'
+                         }
+                     }}
+                 >
+                     {specialOptions.map((option) => (
+                         <MenuItem key={`special_${option.value}`} value={option.value}>
+                             {option.label}
+                         </MenuItem>
+                     ))}
+                     {valueMissing && (
+                         <MenuItem key="missing" value={currentValue}>
+                             {`${currentValue}（人格不存在）`}
+                         </MenuItem>
+                     )}
+                     {personas.map((persona) => (
+                         <MenuItem key={persona.name} value={persona.name}>
+                             {persona.name}
+                         </MenuItem>
+                     ))}
+                 </TextField>
+
+                 {/* 状态行：特殊选项说明或人格正文预览入口，保持单行不撑高表单。 */}
+                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, justifyContent: 'flex-start', flexWrap: 'wrap' }}>
+                     {currentSpecial && (
+                         <Chip size="small" label={currentLabel} variant="outlined" />
+                     )}
+                     {canPreview && (
+                         <Button
+                             size="small"
+                             variant="text"
+                             onClick={() => setPreviewOpen(true)}
+                             sx={{ minWidth: 'auto', px: 1, py: 0, fontSize: '0.75rem' }}
+                         >
+                             查看人格内容
+                         </Button>
+                     )}
+                 </Box>
              </Box>
 
              <Dialog
@@ -218,10 +224,57 @@
      );
  }
 
+ // 配置行统一栅格：描述 5fr / 滑块 3fr / 控件 2fr。
+ // 必须用 fr 而不是「百分比 + gap」：子项宽度之和会超过容器宽度，
+ // 嵌套配置组里就会表现为输入框右侧被裁切看不全。
+ const CONFIG_ROW_COLUMNS = '5fr 3fr 2fr';
+
+ function rowGridSx(depth) {
+    return {
+        display: 'grid',
+        gridTemplateColumns: CONFIG_ROW_COLUMNS,
+        alignItems: 'center',
+        columnGap: 2,
+        rowGap: 0.75,
+        minWidth: 0,
+        py: 1.5,
+        borderBottom: depth === 0 ? 'none' : '1px solid',
+        borderColor: 'divider',
+        '&:last-child': { borderBottom: 'none' }
+    };
+ }
+
+ // 控件统一落在第三列并右对齐，保证所有行的输入框 / 开关左右边缘严格对齐。
+ // 注意不要写 width: 100%，否则 grid 子项会用整行宽度反向撑破列宽。
+ const CONFIG_CONTROL_CELL_SX = {
+    gridColumn: '3 / 4',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    minWidth: 0
+ };
+
+ // 滑块独占第二列，宽度由 fr 自适应，不会挤压后面的输入框。
+ const CONFIG_SLIDER_CELL_SX = {
+    gridColumn: '2 / 3',
+    display: 'flex',
+    alignItems: 'center',
+    minWidth: 0
+ };
+
+ // 复合控件（如免打扰时间条）跨第二、三列，右边缘与普通控件保持一致。
+ const CONFIG_WIDE_CELL_SX = {
+    gridColumn: '2 / 4',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 1,
+    minWidth: 0
+ };
+
  // 把字段描述区抽成模块级组件，避免在 ConfigField 渲染体内重复创建组件类型。
- function DescriptionSection({ schema, fieldKey, flex = 8 }) {
+ function DescriptionSection({ schema, fieldKey }) {
     return (
-        <Box sx={{ flex: flex, pr: 2, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        <Box sx={{ gridColumn: '1 / 2', minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', wordBreak: 'break-word' }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary', fontSize: '0.9rem', lineHeight: 1.3 }}>
                 {schema.description || fieldKey}
             </Typography>
@@ -230,6 +283,336 @@
                     {schema.hint}
                 </Typography>
             )}
+        </Box>
+    );
+}
+
+// 免打扰时段控件常量：后端只认 "开始-结束" 的多段字符串，这里负责可视化转换。
+const QUIET_HOURS_FIELDS = new Set(['quiet_hours']);
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, index) => index);
+// 常用预设顺序：23-07 在前，便于跨天场景一键套用。
+const QUIET_HOURS_PRESETS = [
+    { start: 23, end: 7, label: '23-07' },
+    { start: 2, end: 6, label: '02-06' },
+    { start: 1, end: 7, label: '01-07' },
+];
+// 多时段分隔符与后端保持一致：中英文逗号与顿号都接受。
+const QUIET_RANGE_SPLIT_REGEX = /[,，、]/;
+
+function formatHourLabel(hour) {
+    // 24 保留为当天结束标记，刻度线上需要显示 24:00
+    return `${String(hour).padStart(2, '0')}:00`;
+}
+
+// 解析多段 "23-7, 12-14" 配置；空值视为无时段，非法片段统一标记出来。
+function parseQuietHours(raw) {
+    const text = raw === undefined || raw === null ? '' : String(raw).trim();
+    if (!text) {
+        return { ranges: [], valid: true, empty: true };
+    }
+
+    const ranges = [];
+    let valid = true;
+    QUIET_RANGE_SPLIT_REGEX.lastIndex = 0;
+    text.split(QUIET_RANGE_SPLIT_REGEX).forEach((chunk) => {
+        const part = chunk.trim();
+        if (!part) return;
+        const matched = part.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+        if (!matched) {
+            valid = false;
+            return;
+        }
+        const start = Number(matched[1]);
+        const end = Number(matched[2]);
+        if (start < 0 || start > 23 || end < 0 || end > 24 || start === end) {
+            valid = false;
+            return;
+        }
+        ranges.push({ start, end });
+    });
+
+    return { ranges, valid, empty: false };
+}
+
+// 把区间展开成 24 格布尔数组，跨天区间会同时点亮尾部与头部。
+function buildHourGrid(ranges) {
+    const grid = new Array(24).fill(false);
+    ranges.forEach(({ start, end }) => {
+        if (start < end) {
+            for (let hour = start; hour < end; hour += 1) grid[hour] = true;
+            return;
+        }
+        // 跨天：例如 23-7 覆盖 23 点与 0-6 点
+        for (let hour = start; hour < 24; hour += 1) grid[hour] = true;
+        for (let hour = 0; hour < end; hour += 1) grid[hour] = true;
+    });
+    return grid;
+}
+
+// 把 24 格布尔数组还原成紧凑的区间字符串，相邻整点自动合并成一段。
+// 关键点：从第一个未覆盖的整点开始环形扫描，跨天段才能自然合并为 23-7 这种形式。
+function gridToRangesText(grid) {
+    const covered = grid.filter(Boolean).length;
+    if (covered === 0) return '';
+    if (covered === 24) return '0-24';
+
+    const pivot = grid.findIndex((value) => !value);
+    const ranges = [];
+    let runStart = null;
+
+    for (let step = 0; step < 24; step += 1) {
+        const hour = (pivot + step) % 24;
+        if (grid[hour]) {
+            if (runStart === null) runStart = hour;
+            continue;
+        }
+        if (runStart !== null) {
+            ranges.push({ start: runStart, end: hour });
+            runStart = null;
+        }
+    }
+
+    if (runStart !== null) {
+        // 扫描到末尾仍在覆盖中：终点回绕到 pivot，pivot 为 0 时表示当天结束
+        ranges.push({ start: runStart, end: pivot === 0 ? 24 : pivot });
+    }
+
+    return ranges.map((item) => `${item.start}-${item.end}`).join(',');
+}
+
+// 生成可读摘要：跨天段标注次日，便于用户确认语义。
+function describeQuietRanges(ranges) {
+    if (!ranges.length) return '当前未覆盖任何时段，全天均可发送主动消息';
+    const parts = ranges.map(({ start, end }) => (
+        start < end
+            ? `${formatHourLabel(start)} - ${formatHourLabel(end)}`
+            : `${formatHourLabel(start)} - 次日 ${formatHourLabel(end)}`
+    ));
+    return `${parts.join('、')}（共 ${ranges.length} 段）`;
+}
+
+// 免打扰时段可视化控件：可涂抹的 24 格时间条 + 多时段支持。
+function QuietHoursField({ schema, fieldKey, value, onChange, depth = 1 }) {
+    const parsed = parseQuietHours(value !== undefined ? value : schema.default);
+    const grid = buildHourGrid(parsed.ranges);
+    const coveredHours = grid.filter(Boolean).length;
+
+    // 涂抹状态：null 表示未按下，否则记录本次拖拽要写入的目标值
+    const paintRef = React.useRef(null);
+    // 拖拽期间 value 可能还没回流到渲染，这里用 ref 累积，避免连续涂抹互相覆盖
+    const gridRef = React.useRef(grid);
+
+    // 外部值变化（切换会话 / 撤销 / 恢复默认）时重置拖拽基线，否则会拿旧格子继续涂抹
+    React.useEffect(() => {
+        gridRef.current = buildHourGrid(parseQuietHours(value !== undefined ? value : schema.default).ranges);
+    }, [value, schema.default]);
+
+    const commitGrid = (nextGrid) => {
+        gridRef.current = nextGrid;
+        onChange(gridToRangesText(nextGrid));
+    };
+
+    const applyCell = (hour, targetValue) => {
+        if (gridRef.current[hour] === targetValue) return;
+        const next = gridRef.current.slice();
+        next[hour] = targetValue;
+        commitGrid(next);
+    };
+
+    const handleCellPointerDown = (hour) => (event) => {
+        event.preventDefault();
+        // 每次起手都以当前真实配置为基线，再进入涂抹累积模式
+        gridRef.current = buildHourGrid(parseQuietHours(value).ranges);
+        const targetValue = !gridRef.current[hour];
+        paintRef.current = targetValue;
+        applyCell(hour, targetValue);
+    };
+
+    const handleCellPointerEnter = (hour) => () => {
+        if (paintRef.current === null) return;
+        applyCell(hour, paintRef.current);
+    };
+
+    // 指针离开时间条即结束本次涂抹
+    const endPaint = () => {
+        paintRef.current = null;
+    };
+
+    React.useEffect(() => {
+        window.addEventListener('pointerup', endPaint);
+        window.addEventListener('pointercancel', endPaint);
+        return () => {
+            window.removeEventListener('pointerup', endPaint);
+            window.removeEventListener('pointercancel', endPaint);
+        };
+    }, []);
+
+    // 预设按「叠加切换」处理：已存在则移除该段，不存在则补上，
+    // 这样用户可以在保留自己勾选的时段基础上快速增删常用段。
+    const applyPreset = (preset) => {
+        const base = gridRef.current.slice();
+        const presetGrid = buildHourGrid([{ start: preset.start, end: preset.end }]);
+        const alreadyApplied = presetGrid.every((covered, hour) => !covered || base[hour]);
+        const next = base.map((covered, hour) => {
+            if (!presetGrid[hour]) return covered;
+            return !alreadyApplied;
+        });
+        commitGrid(next);
+    };
+
+    const clearAll = () => onChange('');
+
+    return (
+        <Box
+            sx={{
+                py: 1.75,
+                borderBottom: depth === 0 ? 'none' : '1px solid',
+                borderColor: 'divider',
+                '&:last-child': { borderBottom: 'none' }
+            }}
+        >
+            {/* 免打扰是复合可视化控件（可涂抹时间条），跨第 2-3 列占满剩余宽度，
+                这样它的右边缘与其它输入框保持一致，普通控件仍固定在第三列 20%。 */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: CONFIG_ROW_COLUMNS, columnGap: 2, alignItems: 'flex-start', minWidth: 0 }}>
+                <DescriptionSection schema={schema} fieldKey={fieldKey} />
+                <Box sx={CONFIG_WIDE_CELL_SX}>
+                    {/* 时间条主体：24 个可涂抹格子，未覆盖的格子也保留可见分段 */}
+                    <Box
+                        onPointerLeave={endPaint}
+                        sx={{
+                            display: 'flex',
+                            gap: '2px',
+                            p: '3px',
+                            borderRadius: 1.5,
+                            bgcolor: 'action.hover',
+                            border: '1px solid',
+                            borderColor: 'divider',
+                            userSelect: 'none',
+                            touchAction: 'none'
+                        }}
+                    >
+                        {HOUR_OPTIONS.map((hour) => {
+                            const active = grid[hour];
+                            const hourEnd = hour + 1;
+                            // 每 6 小时加一条更明显的分隔线，形成 0/6/12/18/24 四段视觉分区
+                            const majorDivider = hour % 6 === 0 && hour !== 0;
+                            return (
+                                <Box
+                                    key={hour}
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-label={`${formatHourLabel(hour)} 至 ${formatHourLabel(hourEnd)}`}
+                                    aria-pressed={active}
+                                    title={`${formatHourLabel(hour)} - ${formatHourLabel(hourEnd)}`}
+                                    onPointerDown={handleCellPointerDown(hour)}
+                                    onPointerEnter={handleCellPointerEnter(hour)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault();
+                                            applyCell(hour, !active);
+                                        }
+                                    }}
+                                    sx={{
+                                        flex: 1,
+                                        height: 26,
+                                        borderRadius: '4px',
+                                        cursor: 'pointer',
+                                        position: 'relative',
+                                        bgcolor: active ? 'primary.main' : 'background.paper',
+                                        border: '1px solid',
+                                        borderColor: active ? 'primary.dark' : 'divider',
+                                        transition: 'background-color 0.12s ease, border-color 0.12s ease',
+                                        ml: majorDivider ? '7px' : 0,
+                                        // 主分隔线：在图示上更醒目地区分 6 小时区间
+                                        '&::before': majorDivider ? {
+                                            content: '""',
+                                            position: 'absolute',
+                                            left: '-5px',
+                                            top: '-5px',
+                                            bottom: '-5px',
+                                            width: '2px',
+                                            borderRadius: '1px',
+                                            bgcolor: 'text.secondary',
+                                            opacity: 0.85
+                                        } : undefined,
+                                        '&:hover': {
+                                            borderColor: 'primary.main'
+                                        },
+                                        '&:focus-visible': {
+                                            outline: '2px solid',
+                                            outlineColor: 'primary.main',
+                                            outlineOffset: '1px'
+                                        }
+                                    }}
+                                />
+                            );
+                        })}
+                    </Box>
+
+                    {/* 时间刻度：绝对定位到 0/6/12/18/24 对应位置，与主分隔线对齐 */}
+                    <Box sx={{ position: 'relative', height: 15, mt: '-0.25rem' }}>
+                        {[0, 6, 12, 18, 24].map((mark) => {
+                            const emphasis = mark % 12 === 0;
+                            const isFirst = mark === 0;
+                            const isLast = mark === 24;
+                            return (
+                                <Typography
+                                    key={mark}
+                                    variant="caption"
+                                    color={emphasis ? 'text.secondary' : 'text.disabled'}
+                                    sx={{
+                                        position: 'absolute',
+                                        top: 0,
+                                        left: isLast ? undefined : `${(mark / 24) * 100}%`,
+                                        right: isLast ? 0 : undefined,
+                                        transform: isFirst || isLast ? 'none' : 'translateX(-50%)',
+                                        fontSize: '0.7rem',
+                                        fontWeight: emphasis ? 700 : 400,
+                                        whiteSpace: 'nowrap'
+                                    }}
+                                >
+                                    {formatHourLabel(mark)}
+                                </Typography>
+                            );
+                        })}
+                    </Box>
+
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' }}>
+                        <Typography variant="caption" color={parsed.valid ? 'text.secondary' : 'warning.main'}>
+                            {parsed.valid
+                                ? `${describeQuietRanges(parsed.ranges)}${coveredHours > 0 ? ` · 共 ${coveredHours} 小时` : ''}`
+                                : `当前值 “${String(value)}” 含非法片段，仅展示可解析的部分`}
+                        </Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                            <Typography variant="caption" color="text.secondary">常用：</Typography>
+                            {QUIET_HOURS_PRESETS.map((preset) => {
+                                const active = parsed.ranges.some(
+                                    (range) => range.start === preset.start && range.end === preset.end
+                                );
+                                return (
+                                    <Chip
+                                        key={preset.label}
+                                        size="small"
+                                        label={preset.label}
+                                        color={active ? 'primary' : 'default'}
+                                        variant={active ? 'filled' : 'outlined'}
+                                        onClick={() => applyPreset(preset)}
+                                        sx={{ height: 22, fontSize: '0.7rem' }}
+                                    />
+                                );
+                            })}
+                            <Chip
+                                size="small"
+                                label="清空"
+                                variant="outlined"
+                                onClick={clearAll}
+                                disabled={coveredHours === 0}
+                                sx={{ height: 22, fontSize: '0.7rem' }}
+                            />
+                        </Box>
+                    </Box>
+                </Box>
+            </Box>
         </Box>
     );
 }
@@ -266,6 +649,20 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                 fieldKey={fieldKey}
                 localValue={localValue}
                 onChange={handleChange}
+                depth={depth}
+            />
+        );
+    }
+
+    // 免打扰时段改为可视化控件，内部仍输出后端可直接解析的 "开始-结束" 字符串。
+    if (QUIET_HOURS_FIELDS.has(fieldKey) && (!schema.type || schema.type === 'string')) {
+        return (
+            <QuietHoursField
+                schema={schema}
+                fieldKey={fieldKey}
+                value={localValue}
+                onChange={handleChange}
+                depth={depth}
             />
         );
     }
@@ -361,8 +758,8 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                             )}
                         </Box>
                     </AccordionSummary>
-                    <AccordionDetails sx={{ px: 3, py: 0, bgcolor: 'background.default' }}>
-                        <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                    <AccordionDetails sx={{ px: 3, py: 0, bgcolor: 'background.default', minWidth: 0 }}>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                             {Object.entries(schema.items).map(([key, subSchema]) => (
                                 <ConfigField
                                     key={key}
@@ -386,17 +783,10 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
     // 布尔配置映射为开关组件，适合表示 enable / always_send_text 这类 on-off 项。
     if (schema.type === 'bool' || schema.type === 'boolean') {
         return (
-            <Box sx={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                py: 1.5,
-                borderBottom: depth === 0 ? 'none' : '1px solid',
-                borderColor: 'divider',
-                '&:last-child': { borderBottom: 'none' }
-            }}>
-                <DescriptionSection schema={schema} fieldKey={fieldKey} flex={8} />
-                <Box sx={{ flex: 2, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+            <Box sx={rowGridSx(depth)}>
+                <DescriptionSection schema={schema} fieldKey={fieldKey} />
+                {/* 开关放在第三列最右端，与其它输入框的右边缘严格对齐。 */}
+                <Box sx={CONFIG_CONTROL_CELL_SX}>
                     <Switch
                         checked={localValue !== undefined ? localValue : (schema.default || false)}
                         onChange={(e) => handleChange(e.target.checked)}
@@ -441,8 +831,6 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
     if (['integer', 'int', 'number', 'float', 'double'].includes(schema.type)) {
         const sliderConfig = schema.slider;
         const hasRange = sliderConfig !== undefined;
-        // 如果有范围，展示 Slider，布局 5:3:2；否则回退到 8:2。
-        const descFlex = hasRange ? 5 : 8;
 
         const min = sliderConfig && sliderConfig.min !== undefined ? sliderConfig.min : schema.minimum;
         const max = sliderConfig && sliderConfig.max !== undefined ? sliderConfig.max : schema.maximum;
@@ -458,19 +846,11 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
         );
 
         return (
-            <Box sx={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                py: 1.5,
-                borderBottom: depth === 0 ? 'none' : '1px solid',
-                borderColor: 'divider',
-                '&:last-child': { borderBottom: 'none' }
-            }}>
-                <DescriptionSection schema={schema} fieldKey={fieldKey} flex={descFlex} />
+            <Box sx={rowGridSx(depth)}>
+                <DescriptionSection schema={schema} fieldKey={fieldKey} />
 
                 {hasRange && (
-                    <Box sx={{ flex: 3, px: 2, display: 'flex', alignItems: 'center' }}>
+                    <Box sx={CONFIG_SLIDER_CELL_SX}>
                         <Slider
                             value={sliderValue}
                             onChange={(e, newValue) => setLocalValue(newValue)}
@@ -485,7 +865,7 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                     </Box>
                 )}
 
-                <Box sx={{ flex: 2, display: 'flex', justifyContent: 'flex-end' }}>
+                <Box sx={CONFIG_CONTROL_CELL_SX}>
                     <TextField
                         fullWidth
                         size="small"
@@ -569,17 +949,9 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
         const currentValue = localValue !== undefined ? localValue : (schema.default || '');
 
         return (
-            <Box sx={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                py: 1.5,
-                borderBottom: depth === 0 ? 'none' : '1px solid',
-                borderColor: 'divider',
-                '&:last-child': { borderBottom: 'none' }
-            }}>
-                <DescriptionSection schema={schema} fieldKey={fieldKey} flex={8} />
-                <Box sx={{ flex: 2, display: 'flex', justifyContent: 'flex-end' }}>
+            <Box sx={rowGridSx(depth)}>
+                <DescriptionSection schema={schema} fieldKey={fieldKey} />
+                <Box sx={CONFIG_CONTROL_CELL_SX}>
                     <TextField
                         select
                         fullWidth
@@ -622,23 +994,17 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
         );
     }
 
-    // 其余情况按字符串处理，并依据字段语义决定是否切换为多行文本框。
+    // 只有真正需要大文本块的字段才允许全宽，其余一律走 5fr/3fr/2fr 横排栅格。
     const shouldBeMultiline =
         schema.type === 'text' ||
-        (schema.hint && schema.hint.length > 100) ||
         fieldKey.includes('prompt') ||
-        fieldKey.includes('format') ||
-        fieldKey.includes('template') ||
-        fieldKey.includes('pattern') ||
-        fieldKey.includes('message') ||
-        fieldKey.includes('body') ||
-        fieldKey.includes('content');
+        fieldKey.includes('template');
     const multilineRows =
         fieldKey.includes('prompt') || schema.type === 'text'
             ? 8
             : 4;
 
-    // 如果是长文本，保持上下布局；否则使用 8:2 布局。
+    // 长文本保持上下全宽布局；其余字段使用统一栅格。
     if (shouldBeMultiline) {
         return (
             <Box sx={{
@@ -687,17 +1053,9 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
     }
 
     return (
-        <Box sx={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            py: 1.5,
-            borderBottom: depth === 0 ? 'none' : '1px solid',
-            borderColor: 'divider',
-            '&:last-child': { borderBottom: 'none' }
-        }}>
-            <DescriptionSection schema={schema} fieldKey={fieldKey} flex={8} />
-            <Box sx={{ flex: 2, display: 'flex', justifyContent: 'flex-end' }}>
+        <Box sx={rowGridSx(depth)}>
+            <DescriptionSection schema={schema} fieldKey={fieldKey} />
+            <Box sx={CONFIG_CONTROL_CELL_SX}>
                 <TextField
                     fullWidth
                     size="small"
