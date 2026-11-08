@@ -1,4 +1,4 @@
-﻿{
+{
     "admin_users": {
         "description": "🔐 插件管理员列表",
         "type": "list",
