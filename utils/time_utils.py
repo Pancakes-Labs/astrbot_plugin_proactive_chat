@@ -107,8 +107,11 @@ def coerce_aware_datetime(
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
 
+    # 未配置时区时统一用本机时区，与 format_current_time 的显示口径一致；
+    # 若这里保留 UTC，流水时间标签会与提示词里的当前时间差一个时区。
+    target_tz = tz or moment.astimezone().tzinfo
     try:
-        return moment.astimezone(tz) if tz else moment
+        return moment.astimezone(target_tz)
     except (ValueError, OverflowError):  # pragma: no cover - 防御性兜底
         return moment
 
