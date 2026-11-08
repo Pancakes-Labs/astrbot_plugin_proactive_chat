@@ -62,7 +62,11 @@ DEFAULT_PLATFORM_HISTORY_PROMPT = (
 class ContextService:
     """上下文来源读取、清洗与 LLM 请求准备服务。"""
 
-    PLATFORM_CONTEXT_MAX_CHARS = 4000
+    # 正文长度保险丝：只约束流水正文，不含提示词模板，也不作为可调配置暴露。
+    # 条数（platform_history_count）才是唯一的用户可见旋钮，这里仅防极端长文。
+    PLATFORM_HISTORY_BODY_MAX_CHARS = 20000
+    # 单条流水的正文上限，避免一条超长消息吃掉整份配额。
+    PLATFORM_HISTORY_LINE_MAX_CHARS = 400
     PLATFORM_LIST_CONTENT_KEYS = ("message", "content")
     PLATFORM_TEXT_CONTENT_KEYS = ("text", "message_str", "message", "content")
     PLATFORM_PART_PLACEHOLDERS = {
@@ -76,6 +80,9 @@ class ContextService:
     }
     PLATFORM_FILE_PLACEHOLDER = "[文件]"
     PLATFORM_FILE_PLACEHOLDER_TEMPLATE = "[文件{name}]"
+    PLATFORM_REPLY_PLACEHOLDER_TEMPLATE = "[回复{name}：{quote}]"
+    PLATFORM_REPLY_QUOTE_MAX_CHARS = 60
+    PLATFORM_AT_PLACEHOLDER_TEMPLATE = "[@{name}]"
     DEFAULT_BOT_IDENTIFIERS = {"bot"}
 
     def __init__(self, plugin: Any) -> None:
@@ -210,16 +217,9 @@ class ContextService:
             count = 20
         count = max(0, min(count, 200))
 
-        try:
-            max_chars = int(
-                settings.get(
-                    "platform_context_max_chars",
-                    self.PLATFORM_CONTEXT_MAX_CHARS,
-                )
-            )
-        except Exception:
-            max_chars = self.PLATFORM_CONTEXT_MAX_CHARS
-        max_chars = max(0, min(max_chars, 20000))
+        # 正文长度保险丝不再读取配置项：用户侧只保留“注入条数”这一个旋钮，
+        # 字符上限降级为内部兜底，避免两个旋钮同时作用在同一个量上。
+        max_chars = self.PLATFORM_HISTORY_BODY_MAX_CHARS
 
         include_bot_messages = self.parse_bool_setting(
             settings.get("include_bot_messages", True),
@@ -236,7 +236,7 @@ class ContextService:
             "platform_history_prompt": platform_history_prompt,
             "include_bot_messages": include_bot_messages,
             "bot_identifiers": bot_identifiers,
-            "platform_context_max_chars": max_chars,
+            "platform_history_body_max_chars": max_chars,
         }
 
     # ------------------------------------------------------------------
@@ -873,25 +873,76 @@ class ContextService:
             if not isinstance(part, dict):
                 continue
 
+            # 分段有两种落库形态，都要认：
+            # 扁平：message_history_manager 写入的 {"type": "plain", "text": "..."}
+            # 嵌套：MessageSegment.to_dict() 写入的 {"type": "text", "data": {...}}
+            payload = part.get("data")
+            if not isinstance(payload, dict):
+                payload = {}
+
             part_type = str(part.get("type") or "").lower()
             if part_type in {"plain", "text"}:
                 text = part.get("text")
-                if isinstance(text, str):
+                if not isinstance(text, str) or not text:
+                    text = payload.get("text")
+                if isinstance(text, str) and text:
                     texts.append(text)
             elif part_type == "file":
-                name = part.get("name") or part.get("filename") or ""
+                name = (
+                    part.get("name")
+                    or part.get("filename")
+                    or payload.get("name")
+                    or payload.get("filename")
+                    or ""
+                )
                 if name:
                     texts.append(
                         self.PLATFORM_FILE_PLACEHOLDER_TEMPLATE.format(name=name)
                     )
                 else:
                     texts.append(self.PLATFORM_FILE_PLACEHOLDER)
+            elif part_type == "reply":
+                # 引用段的原话在 text / selected_text 里，只按类型吐占位符
+                # 会让整句引文丢失，真人发言最终只剩一个 [回复]。
+                quote = part.get("text") or part.get("selected_text")
+                if not isinstance(quote, str) or not quote:
+                    quote = payload.get("text") or payload.get("selected_text") or ""
+                quote = str(quote).strip()
+                if quote:
+                    if len(quote) > self.PLATFORM_REPLY_QUOTE_MAX_CHARS:
+                        quote = f"{quote[: self.PLATFORM_REPLY_QUOTE_MAX_CHARS]}…"
+                    who = part.get("sender_name") or payload.get("sender_name") or ""
+                    who = str(who).strip()
+                    texts.append(
+                        self.PLATFORM_REPLY_PLACEHOLDER_TEMPLATE.format(
+                            name=f" {who}" if who else "",
+                            quote=quote,
+                        )
+                    )
+                else:
+                    texts.append(self.PLATFORM_PART_PLACEHOLDERS["reply"])
+            elif part_type == "at":
+                # at 段只有名字有信息量；不处理会让纯 @ 记录渲染成空串，
+                # 再被下游的“正文为空则跳过”逻辑整条丢弃。
+                name = part.get("name") or payload.get("name") or ""
+                name = str(name).strip()
+                if name:
+                    texts.append(
+                        self.PLATFORM_AT_PLACEHOLDER_TEMPLATE.format(name=name)
+                    )
             else:
                 placeholder = self.PLATFORM_PART_PLACEHOLDERS.get(part_type)
                 if placeholder:
                     texts.append(placeholder)
 
         return "".join(texts).strip()
+
+    def truncate_platform_line(self, text: str) -> str:
+        """按单条上限截断过长正文，避免一条长文吃掉整份注入配额。"""
+        limit = self.PLATFORM_HISTORY_LINE_MAX_CHARS
+        if limit <= 0 or len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
 
     def sanitize_platform_context_text(self, text: Any) -> str:
         """压缩空白并把保留标记替换为全角括号，避免二次注入。"""
@@ -942,8 +993,9 @@ class ContextService:
     ) -> tuple[str, int, int]:
         """将平台聊天流水格式化为一段动态上下文文本。
 
-        超出 max_chars 时从最早的行开始裁剪，并逐级降级为省略号/硬截断，
-        保证最终文本长度可控。返回 (正文, 采用行数, 正文字符数)。
+        max_chars 只约束流水正文（含截断提示），不含提示词模板：模板长度不再
+        挤占正文配额。超出时从最早的行开始裁剪并逐级降级，返回
+        (渲染结果, 采用行数, 最终文本字符数)。
         """
         lines: list[str] = []
         used_count = 0
@@ -959,6 +1011,8 @@ class ContextService:
             )
             if not text:
                 continue
+            # 单条超长消息先各自截断，条数配额才不会被一条长文整体吃掉。
+            text = self.truncate_platform_line(text)
 
             sender_name = self.sanitize_platform_context_text(
                 self.get_platform_record_field(record, "sender_name", None)
@@ -978,52 +1032,60 @@ class ContextService:
         trimmed_lines = list(lines)
         dropped_count = 0
 
-        def _build_content(history_lines: list[str], dropped: int) -> str:
-            """用给定行集合与模板重新渲染正文（供截断循环复用）。"""
-            dropped_hint = (
+        def _dropped_hint(dropped: int) -> str:
+            """生成截断提示，长度计入正文配额。"""
+            return (
                 f"注意：较早历史已截断 {dropped} 条，仅保留最新片段。\n"
                 if dropped > 0
                 else ""
             )
-            body = "\n".join(history_lines)
-            prompt_template = str(
-                (context_settings or {}).get("platform_history_prompt") or ""
-            ).strip()
-            if not prompt_template:
-                prompt_template = DEFAULT_PLATFORM_HISTORY_PROMPT
 
-            # 占位符替换与 PROMPT 阶段共用同一实现，避免两处规则漂移。
-            content = render_placeholders(
-                prompt_template,
-                current_time=format_current_time(self.plugin.timezone),
-                unanswered_count=unanswered_count,
-                platform_history_lines=body,
-            )
-            if dropped_hint:
-                content = f"{dropped_hint}{content}"
-            return content
+        def _body_length(history_lines: list[str], dropped: int) -> int:
+            """正文总长度（含截断提示），不含提示词模板。"""
+            return len(_dropped_hint(dropped)) + len("\n".join(history_lines))
 
-        content = _build_content(trimmed_lines, dropped_count)
-        # 逐行丢弃最早内容，直到满足长度限制。
-        if max_chars > 0 and len(content) > max_chars:
-            while len(trimmed_lines) > 1 and len(content) > max_chars:
+        # 逐行丢弃最早内容，直到正文满足长度保险丝。
+        if max_chars > 0 and _body_length(trimmed_lines, dropped_count) > max_chars:
+            while (
+                len(trimmed_lines) > 1
+                and _body_length(trimmed_lines, dropped_count) > max_chars
+            ):
                 trimmed_lines.pop(0)
                 dropped_count += 1
-                content = _build_content(trimmed_lines, dropped_count)
 
-            # 仍超长时先截断最后一行，再兜底做硬截断。
-            if len(content) > max_chars:
-                overflow = len(content) - max_chars + 3
+            # 仍超长时先截断最后一条消息正文，再在正文层做硬截断。
+            # 两者都只作用于正文，保证提示词模板结构始终完整。
+            if _body_length(trimmed_lines, dropped_count) > max_chars:
+                overflow = _body_length(trimmed_lines, dropped_count) - max_chars + 3
                 last_line = trimmed_lines[-1]
                 if overflow < len(last_line):
                     trimmed_lines[-1] = f"{last_line[:-overflow]}..."
                 else:
                     trimmed_lines[-1] = "..."
-                content = _build_content(trimmed_lines, dropped_count)
 
-            if len(content) > max_chars:
-                hard_limit = max(0, max_chars - 7)
-                content = f"{content[:hard_limit]}[...]"
+            if _body_length(trimmed_lines, dropped_count) > max_chars:
+                hard_limit = max(0, max_chars - 7 - len(_dropped_hint(dropped_count)))
+                body_joined = "\n".join(trimmed_lines)
+                trimmed_lines = [f"{body_joined[:hard_limit]}[...]"]
+
+        body = "\n".join(trimmed_lines)
+        prompt_template = str(
+            (context_settings or {}).get("platform_history_prompt") or ""
+        ).strip()
+        if not prompt_template:
+            prompt_template = DEFAULT_PLATFORM_HISTORY_PROMPT
+
+        # 模板渲染放在裁剪之后，模板变长不会再压掉正文行数；
+        # 占位符替换与 PROMPT 阶段共用同一实现，避免两处规则漂移。
+        content = render_placeholders(
+            prompt_template,
+            current_time=format_current_time(self.plugin.timezone),
+            unanswered_count=unanswered_count,
+            platform_history_lines=body,
+        )
+        dropped_hint = _dropped_hint(dropped_count)
+        if dropped_hint:
+            content = f"{dropped_hint}{content}"
 
         return content, len(trimmed_lines), len(content)
 
@@ -1070,7 +1132,7 @@ class ContextService:
                 platform_records,
                 include_bot_messages=settings["include_bot_messages"],
                 bot_identifiers=settings["bot_identifiers"],
-                max_chars=settings["platform_context_max_chars"],
+                max_chars=settings["platform_history_body_max_chars"],
                 context_settings=settings,
                 unanswered_count=unanswered_count,
             )
