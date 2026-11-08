@@ -8,9 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from astrbot.api import logger
+
 from ...domain.domain_enums import HookPoint, StageResult
 from ...domain.llm_outcome import LlmOutcome
 from ...domain.prompt_block import PromptBlock
+from ...domain.tool_markup_cleaner import (
+    clean_chain_components,
+    clean_llm_text,
+    contains_tool_markup,
+)
 from ...pipeline.stage_protocol import BaseStage
 
 
@@ -57,6 +64,18 @@ class DeliberateStage(BaseStage):
 
         response_text = plugin.llm_service.extract_response_text(llm_response)
         result_chain = plugin.llm_service.extract_response_chain(llm_response)
+
+        # 清洗必须在构造 LlmOutcome 之前：RECORD 阶段会按 outcome 存档，
+        # 脏内容一旦入库会在下一轮被当作上下文回灌，形成自我强化。
+        raw_text = response_text
+        response_text = clean_llm_text(response_text)
+        result_chain = clean_chain_components(result_chain)
+        if response_text != raw_text or contains_tool_markup(raw_text):
+            logger.warning(
+                "[主动消息] 检测到不合规的 LLM 输出（工具调用标记或对象残留），"
+                "已在存档与发送前完成清洗喵。"
+            )
+
         # 文本与消息链都为空同样视为失败。
         if not response_text and not result_chain:
             ctx.abort("empty_response")

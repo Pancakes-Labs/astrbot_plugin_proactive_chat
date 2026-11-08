@@ -20,6 +20,7 @@ from ..domain.prompt_placeholders import (
     render_placeholders,
 )
 from ..domain.prompt_templates import resolve_active_prompt
+from ..domain.tool_markup_cleaner import clean_llm_text
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -301,14 +302,23 @@ class LlmService:
                 )
             return None, final_user_simulation_prompt
 
-        if response_text == "[object Object]":
+        # 1.1.3 起拦截 JS 风格的对象字符串化残留；这里升级为清洗后判定，
+        # 既能处理纯 "[object Object]"，也能处理夹在正文中间的同类残留。
+        cleaned_text = clean_llm_text(response_text)
+        if not cleaned_text:
             logger.error(
-                "[主动消息] 喵呜！LLM 返回了意料之外的 '[object Object]' 字符串喵！"
+                "[主动消息] 喵呜！LLM 输出的正文只包含无法解析的对象或工具调用标记喵！"
             )
             logger.warning(
-                "[主动消息] 这通常是因为上下文或 Prompt 中包含了无法解析的对象喵。已拦截本次发送喵。"
+                "[主动消息] 这通常是因为上下文或 Prompt 中包含了无法解析的对象，"
+                "或上游以文本形式返回了工具调用标记喵。已拦截本次发送喵。"
             )
             return None, final_user_simulation_prompt
+        if cleaned_text != response_text:
+            logger.warning(
+                "[主动消息] 已从 LLM 输出中清洗掉不合规内容（对象残留或工具调用标记）喵。"
+            )
+            response_text = cleaned_text
 
         logger.info(f"[主动消息] LLM 已生成文本喵，长度: {len(response_text)}。")
         if plugin.telemetry and plugin.telemetry.enabled:

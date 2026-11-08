@@ -32,6 +32,7 @@ from ..adapters.astrbot_ltm import read_group_history_settings, supports_max_mes
 from ..adapters.astrbot_platform import find_platform_by_id
 from ..domain.delivery_report import DeliveryReport
 from ..domain.session_key import is_group_umo, normalize_storage_umo
+from ..domain.tool_markup_cleaner import clean_chain_components, clean_llm_text
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -531,7 +532,11 @@ class SenderService:
 
         tts_conf = session_config.get("tts_settings", {})
         seg_conf = session_config.get("segmented_reply_settings", {})
-        text = text or ""
+        # 发送前最后一道防线：装饰钩子与外部调用方都可能绕过 DELIBERATE 的清洗，
+        # 这里再清一次，保证任何路径都不会把不合规标记送到平台。
+        text = clean_llm_text(text or "")
+        if initial_chain:
+            initial_chain = clean_chain_components(initial_chain)
         segmented = False
         send_count = 0
 
