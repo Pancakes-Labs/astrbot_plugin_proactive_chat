@@ -306,6 +306,14 @@ class LlmService:
         # 既能处理纯 "[object Object]"，也能处理夹在正文中间的同类残留。
         cleaned_text = clean_llm_text(response_text)
         if not cleaned_text:
+            # 与上面的空文本分支保持一致：文本不可用但消息链有效时继续放行。
+            if getattr(llm_response_obj, "result_chain", None):
+                logger.info(
+                    "[主动消息] 文本仅含工具调用标记或对象残留，但存在消息链，继续后续流程喵。"
+                )
+                return llm_response_obj, self.resolve_final_user_prompt(
+                    req, final_user_simulation_prompt
+                )
             logger.error(
                 "[主动消息] 喵呜！LLM 输出的正文只包含无法解析的对象或工具调用标记喵！"
             )
@@ -315,9 +323,7 @@ class LlmService:
             )
             return None, final_user_simulation_prompt
         if cleaned_text != response_text:
-            logger.warning(
-                "[主动消息] 已从 LLM 输出中清洗掉不合规内容（对象残留或工具调用标记）喵。"
-            )
+            logger.debug("[主动消息] 已在生成阶段清洗掉不合规的 LLM 输出喵。")
             response_text = cleaned_text
 
         logger.info(f"[主动消息] LLM 已生成文本喵，长度: {len(response_text)}。")
