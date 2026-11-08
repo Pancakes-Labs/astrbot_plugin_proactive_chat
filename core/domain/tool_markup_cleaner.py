@@ -121,29 +121,35 @@ def _remove_regions(text: str, regions: list[tuple[int, int, str]]) -> str:
 _METADATA_KEYS = frozenset({"meta", "metadata", "extra", "extra_content"})
 
 
-def _collect_payload_texts(node: Any, out: list[str], depth: int = 0) -> None:
+def _collect_payload_texts(
+    node: Any, out: list[str], depth: int = 0, allow_bare_str: bool = True
+) -> None:
     """从参数载荷中递归收集正文文本。
 
     只收纯文本分段的 text；file/image/record 等类型的 text 仅是文件名
     或占位描述，当作正文发出会把 “report.pdf” 这类内容泄漏给用户。
     元数据容器（meta 等）整体跳过，否则同一个文件名会从那里被重新收回。
+
+    allow_bare_str 控制“裸字符串”能否算正文：顶层消息数组允许
+    ["句子1", "句子2"] 这种简写，但在非文本分段内部（如 file 的
+    files: ["report.pdf"]）只认带 type 的文本分段。
     """
     if depth > _MAX_PAYLOAD_DEPTH or len(out) >= _MAX_PAYLOAD_ITEMS:
         return
     if isinstance(node, str):
-        if node.strip():
+        if allow_bare_str and node.strip():
             out.append(node.strip())
         return
     if isinstance(node, list):
         for item in node:
-            _collect_payload_texts(item, out, depth + 1)
+            _collect_payload_texts(item, out, depth + 1, allow_bare_str)
         return
     if not isinstance(node, dict):
         return
 
     seg_type = node.get("type")
     if seg_type is None:
-        # 无 type 字段视为宽松文本，保留旧行为。
+        # 无 type 字段视为宽松文本容器，保留旧行为。
         is_text_segment = True
     else:
         is_text_segment = (
@@ -157,14 +163,18 @@ def _collect_payload_texts(node: Any, out: list[str], depth: int = 0) -> None:
             return
 
     # 非文本分段不取自身 text，也不进入元数据；
-    # 只沿分段容器（列表或自带 type 的子分段）继续下探。
+    # 只沿分段容器继续下探，且不再把裸字符串当作正文。
     for key, value in node.items():
         if isinstance(key, str) and key.lower() in _METADATA_KEYS:
             continue
         if isinstance(value, list):
-            _collect_payload_texts(value, out, depth + 1)
+            _collect_payload_texts(
+                value, out, depth + 1, allow_bare_str=is_text_segment
+            )
         elif isinstance(value, dict) and "type" in value:
-            _collect_payload_texts(value, out, depth + 1)
+            _collect_payload_texts(
+                value, out, depth + 1, allow_bare_str=is_text_segment
+            )
 
 
 # HTML 实体形式的引号：拆开拼接，避免被编辑器或注释处理链路转义。
