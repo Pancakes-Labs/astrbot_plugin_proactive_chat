@@ -13,7 +13,7 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.provider import LLMResponse, ProviderRequest
 
-from ..domain.tool_markup_cleaner import contains_tool_markup
+from ..domain.tool_markup_cleaner import contains_tool_markup, extract_payload_text
 
 
 def provider_request_fields() -> set[str] | None:
@@ -265,9 +265,8 @@ async def invoke_provider(provider: Any, req: Any, *, max_tool_rounds: int = 1) 
     rounds = 0
     while rounds < max_tool_rounds:
         native_tool_call = bool(getattr(response, "tools_call_name", None))
-        markup_leak = (not native_tool_call) and contains_tool_markup(
-            getattr(response, "completion_text", "")
-        )
+        completion_text = getattr(response, "completion_text", "")
+        markup_leak = (not native_tool_call) and contains_tool_markup(completion_text)
         if not native_tool_call and not markup_leak:
             break
 
@@ -282,9 +281,17 @@ async def invoke_provider(provider: Any, req: Any, *, max_tool_rounds: int = 1) 
                 "当前版本的主动消息插件暂不支持执行，已回灌不可用提示并重试纯文本生成喵。"
             )
         else:
+            # 载荷可解析说明正文是确定性的，下游清洗能还原出来。
+            # 此时保留首次响应即可，重试反而会丢掉这段内容并多花一次调用。
+            if extract_payload_text(completion_text):
+                logger.info(
+                    "[主动消息] 模型返回了文本形式的工具调用标记，但其载荷可解析，"
+                    "已保留首次响应交由清洗还原喵。"
+                )
+                break
             _apply_markup_retry_notice(req)
             logger.warning(
-                "[主动消息] 模型返回了文本形式的工具调用标记，"
+                "[主动消息] 模型返回了文本形式的工具调用标记且载荷不可解析，"
                 "已要求其改用纯文本重新作答喵。"
             )
 
