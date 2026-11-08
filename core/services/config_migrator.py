@@ -1,7 +1,9 @@
 """配置迁移器。
 
 只做一次性、幂等的结构升级，不参与运行时业务逻辑。
-当前迁移项：旧版单一字符串 proactive_prompt -> prompt_templates 列表。
+当前迁移项：
+1. 旧版单一字符串 proactive_prompt -> prompt_templates 列表；
+2. 平台流水提示词由历史默认值升级为新默认值（仅逐字相同时才动）。
 """
 
 from __future__ import annotations
@@ -12,7 +14,9 @@ from typing import Any
 from astrbot.api import logger
 
 from ..domain.prompt_templates import (
+    LEGACY_PLATFORM_HISTORY_PROMPTS,
     LEGACY_PROMPT_KEY,
+    PLATFORM_HISTORY_PROMPT_KEY,
     PROMPT_TEMPLATES_KEY,
     build_templates_from_legacy,
     normalize_templates,
@@ -77,14 +81,56 @@ def _migrate_override(override: Any, session_id: str) -> dict[str, Any] | None:
     return patched
 
 
+def _migrate_platform_history_prompt(
+    section: Any,
+    section_name: str,
+    new_default: str,
+) -> bool:
+    """把仍是历史默认值的平台流水提示词升级为新默认值。
+
+    配置面板会把默认值原样落盘，导致「从没改过」与「自己写了一份」
+    在配置里无法区分，因此这里只做逐字比对：只要用户动过任何一个字，
+    就原样保留，绝不覆盖用户内容。
+    """
+    if not isinstance(section, dict):
+        return False
+
+    context_settings = section.get("context_settings")
+    if not isinstance(context_settings, dict):
+        return False
+
+    current = context_settings.get(PLATFORM_HISTORY_PROMPT_KEY)
+    if not isinstance(current, str) or not current.strip():
+        # 空值表示跟随代码默认，无需写回配置。
+        return False
+
+    legacy = LEGACY_PLATFORM_HISTORY_PROMPTS.get(section_name)
+    if not legacy or current != legacy:
+        return False
+
+    context_settings[PLATFORM_HISTORY_PROMPT_KEY] = new_default
+    logger.info(
+        f"[主动消息] 已将 {section_name} 的平台流水提示词从历史默认值升级为新版本喵。"
+    )
+    return True
+
+
 def migrate_config(config: Any) -> bool:
     """就地迁移全局配置，返回是否发生变更。"""
     if not isinstance(config, dict):
         return False
 
+    # 延迟导入：context_service 依赖链较重，迁移器保持轻量。
+    from .context_service import DEFAULT_PLATFORM_HISTORY_PROMPT
+
     changed = False
     for section_name in SESSION_SETTINGS_KEYS:
-        if _migrate_section(config.get(section_name), section_name):
+        section = config.get(section_name)
+        if _migrate_section(section, section_name):
+            changed = True
+        if _migrate_platform_history_prompt(
+            section, section_name, DEFAULT_PLATFORM_HISTORY_PROMPT
+        ):
             changed = True
     return changed
 
