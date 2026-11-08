@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import re
 import zoneinfo
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any
 
 # 中文星期名称，索引与 datetime.weekday() 对齐（0=周一）
 _WEEKDAY_NAMES_ZH = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+# 流水时间标签的两种形态：与当前同一天只显示时分，跨天才补月日，
+# 避免每行都拖一串完整日期把上下文撑长。
+_CLOCK_SAME_DAY_FORMAT = "%H:%M"
+_CLOCK_OTHER_DAY_FORMAT = "%m-%d %H:%M"
 
 
 # 多时段分隔符：中英文逗号与顿号都接受，避免用户手输时因全角符号失效
@@ -70,3 +76,101 @@ def format_current_time(tz: zoneinfo.ZoneInfo | None = None) -> str:
     now = datetime.now(tz) if tz else datetime.now()
     weekday = _WEEKDAY_NAMES_ZH[now.weekday()]
     return f"{now.strftime('%Y年%m月%d日')} {weekday} {now.strftime('%H:%M')}"
+
+
+def coerce_aware_datetime(
+    value: Any,
+    tz: zoneinfo.ZoneInfo | None = None,
+) -> datetime | None:
+    """把数据库里的时间字段归一化为带时区的 datetime。
+
+    AstrBot 核心以 UTC 写入 created_at，但经 SQLModel 或 SQLite 读出后
+    可能是 naive datetime，也可能是 "2026-11-08 06:31:22.477315" 这类
+    字符串。缺失时区信息时一律按 UTC 解释，否则会整体偏移时区差。
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+
+    try:
+        return moment.astimezone(tz) if tz else moment
+    except (ValueError, OverflowError):  # pragma: no cover - 防御性兜底
+        return moment
+
+
+def format_history_clock(
+    value: Any,
+    tz: zoneinfo.ZoneInfo | None = None,
+    *,
+    now: Any = None,
+) -> str:
+    """把单条流水时间渲染成紧凑标签，例如 09:53 或 11-07 22:40。
+
+    与 now（缺省为当前时刻）同一天时只保留时分，跨天才补月日，
+    保证每条记录都能看出“是什么时候说的”，又不至于让上下文暴长。
+    """
+    moment = coerce_aware_datetime(value, tz)
+    if moment is None:
+        return ""
+
+    current = coerce_aware_datetime(now, tz) if now is not None else None
+    if current is None:
+        current = datetime.now(tz) if tz else datetime.now(timezone.utc)
+        current = coerce_aware_datetime(current, tz)
+
+    if current is not None and moment.date() == current.date():
+        return moment.strftime(_CLOCK_SAME_DAY_FORMAT)
+    return moment.strftime(_CLOCK_OTHER_DAY_FORMAT)
+
+
+def format_relative_age(
+    value: Any,
+    tz: zoneinfo.ZoneInfo | None = None,
+    *,
+    now: Any = None,
+) -> str:
+    """把流水时间渲染成“刚刚 / 12 分钟前 / 3 小时前 / 2 天前”。
+
+    模型无法自行比较时间差，显式给出“距今多久”才能判断一段聊天
+    是正在进行还是早就结束了。
+    """
+    moment = coerce_aware_datetime(value, tz)
+    if moment is None:
+        return ""
+
+    current = coerce_aware_datetime(now, tz) if now is not None else None
+    if current is None:
+        current = datetime.now(tz) if tz else datetime.now(timezone.utc)
+        current = coerce_aware_datetime(current, tz)
+    if current is None:
+        return ""
+
+    seconds = (current - moment).total_seconds()
+    # 时钟轻微漂移或未来时间一律按“刚刚”处理，避免出现负数。
+    if seconds < 60:
+        return "刚刚"
+
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes} 分钟前"
+
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} 小时前"
+
+    return f"{hours // 24} 天前"
