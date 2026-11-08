@@ -21,6 +21,7 @@ from ..domain.prompt_templates import (
     build_templates_from_legacy,
     normalize_templates,
 )
+from ..domain.session_key import is_group_umo
 
 # 会话覆写补丁里也存放 context_settings，这两处字符串必须与配置层保持同形。
 CONTEXT_SETTINGS_KEY = "context_settings"
@@ -39,13 +40,12 @@ def _resolve_default_prompt_template(section_name: str) -> str:
 def _infer_section_name(session_id: str) -> str:
     """由会话标识推断该会话属于哪一组配置。
 
-    会话覆写补丁不带分组信息，只能按 UMO 里的消息类型回推，
-    推不出来时按群聊处理（与未命中时的默认模板一致）。
+    会话覆写补丁不带分组信息，只能按 UMO 里的消息类型回推。
+    这里复用运行时的 is_group_umo 而不是自己匹配字符串。
     """
-    umo = str(session_id or "")
-    if "FriendMessage" in umo or "friendmessage" in umo.lower():
-        return "friend_settings"
-    return "group_settings"
+    return (
+        "group_settings" if is_group_umo(str(session_id or "")) else "friend_settings"
+    )
 
 
 # 需要迁移的配置分组：私聊与群聊各一份，结构完全对称。
