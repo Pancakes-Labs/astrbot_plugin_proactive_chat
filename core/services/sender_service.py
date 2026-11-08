@@ -32,6 +32,7 @@ from ..adapters.astrbot_ltm import read_group_history_settings, supports_max_mes
 from ..adapters.astrbot_platform import find_platform_by_id
 from ..domain.delivery_report import DeliveryReport
 from ..domain.session_key import is_group_umo, normalize_storage_umo
+from ..domain.tool_markup_cleaner import clean_chain_components, clean_llm_text
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -531,7 +532,11 @@ class SenderService:
 
         tts_conf = session_config.get("tts_settings", {})
         seg_conf = session_config.get("segmented_reply_settings", {})
-        text = text or ""
+        # 发送前最后一道防线：装饰钩子与外部调用方都可能绕过 DELIBERATE 的清洗，
+        # 这里再清一次，保证任何路径都不会把不合规标记送到平台。
+        text = clean_llm_text(text or "")
+        if initial_chain:
+            initial_chain = clean_chain_components(initial_chain)
         segmented = False
         send_count = 0
 
@@ -581,6 +586,10 @@ class SenderService:
             decorated_chain, should_send = await self.run_decorating_hooks(
                 event, base_components
             )
+            # 钩子可能注入或改写含标记的文本组件，这里必须再清一次，
+            # 否则分段与普通发送路径都会把它原样转发出去。
+            if decorated_chain:
+                decorated_chain = clean_chain_components(decorated_chain)
             if not should_send:
                 # 文本被钩子拦截：TTS 可能已送出，此处只跳过文本发送，
                 # 仍需走统一收尾，以便写入报告并重置群聊沉默计时器。

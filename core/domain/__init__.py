@@ -46,6 +46,12 @@ from .session_key import (
     is_group_type,
     is_group_umo,
 )
+from .tool_markup_cleaner import (
+    clean_chain_components,
+    clean_llm_text,
+    contains_tool_markup,
+    extract_payload_text,
+)
 
 __all__ = [
     "BlockKind",
@@ -80,8 +86,12 @@ __all__ = [
     "ToolCallRecord",
     "TriggerSource",
     "build_templates_from_legacy",
+    "clean_chain_components",
+    "clean_llm_text",
     "contains_group_marker",
     "contains_placeholder",
+    "contains_tool_markup",
+    "extract_payload_text",
     "is_friend_type",
     "is_group_type",
     "is_group_umo",
