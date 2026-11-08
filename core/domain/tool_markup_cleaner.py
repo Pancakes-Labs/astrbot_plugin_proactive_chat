@@ -117,11 +117,16 @@ def _remove_regions(text: str, regions: list[tuple[int, int, str]]) -> str:
     return "".join(parts)
 
 
+# 元数据容器键名：其中的 text 只是文件名、时长等描述，不属于正文。
+_METADATA_KEYS = frozenset({"meta", "metadata", "extra", "extra_content"})
+
+
 def _collect_payload_texts(node: Any, out: list[str], depth: int = 0) -> None:
     """从参数载荷中递归收集正文文本。
 
     只收纯文本分段的 text；file/image/record 等类型的 text 仅是文件名
     或占位描述，当作正文发出会把 “report.pdf” 这类内容泄漏给用户。
+    元数据容器（meta 等）整体跳过，否则同一个文件名会从那里被重新收回。
     """
     if depth > _MAX_PAYLOAD_DEPTH or len(out) >= _MAX_PAYLOAD_ITEMS:
         return
@@ -133,23 +138,33 @@ def _collect_payload_texts(node: Any, out: list[str], depth: int = 0) -> None:
         for item in node:
             _collect_payload_texts(item, out, depth + 1)
         return
-    if isinstance(node, dict):
-        seg_type = node.get("type")
-        if isinstance(seg_type, str) and seg_type.lower() in _TEXT_SEGMENT_TYPES:
-            text = node.get("text")
-            if isinstance(text, str) and text.strip():
-                out.append(text.strip())
-                return
-        elif seg_type is None:
-            # 无 type 字段视为宽松文本，保留旧行为。
-            text = node.get("text")
-            if isinstance(text, str) and text.strip():
-                out.append(text.strip())
-                return
-        # 非文本分段（含 file/image 等）不取 text，但继续向下找纯文本段。
-        for value in node.values():
-            if isinstance(value, (list, dict)):
-                _collect_payload_texts(value, out, depth + 1)
+    if not isinstance(node, dict):
+        return
+
+    seg_type = node.get("type")
+    if seg_type is None:
+        # 无 type 字段视为宽松文本，保留旧行为。
+        is_text_segment = True
+    else:
+        is_text_segment = (
+            isinstance(seg_type, str) and seg_type.lower() in _TEXT_SEGMENT_TYPES
+        )
+
+    if is_text_segment:
+        text = node.get("text")
+        if isinstance(text, str) and text.strip():
+            out.append(text.strip())
+            return
+
+    # 非文本分段不取自身 text，也不进入元数据；
+    # 只沿分段容器（列表或自带 type 的子分段）继续下探。
+    for key, value in node.items():
+        if isinstance(key, str) and key.lower() in _METADATA_KEYS:
+            continue
+        if isinstance(value, list):
+            _collect_payload_texts(value, out, depth + 1)
+        elif isinstance(value, dict) and "type" in value:
+            _collect_payload_texts(value, out, depth + 1)
 
 
 # HTML 实体形式的引号：拆开拼接，避免被编辑器或注释处理链路转义。
