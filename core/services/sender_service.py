@@ -586,6 +586,10 @@ class SenderService:
             decorated_chain, should_send = await self.run_decorating_hooks(
                 event, base_components
             )
+            # 钩子可能注入或改写含标记的文本组件，这里必须再清一次，
+            # 否则分段与普通发送路径都会把它原样转发出去。
+            if decorated_chain:
+                decorated_chain = clean_chain_components(decorated_chain)
             if not should_send:
                 # 文本被钩子拦截：TTS 可能已送出，此处只跳过文本发送，
                 # 仍需走统一收尾，以便写入报告并重置群聊沉默计时器。
