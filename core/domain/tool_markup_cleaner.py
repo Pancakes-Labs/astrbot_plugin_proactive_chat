@@ -22,18 +22,27 @@ from typing import Any
 
 # 全角竖线是 DeepSeek 特殊 token 的原生定界符；ASCII 竖线一并覆盖，
 # 因为部分中继层会把特殊 token 规范化成半角。
+_FULLWIDTH_BAR = "\uff5c"
+_BAR_CHARS = frozenset({_FULLWIDTH_BAR, "|"})
 _BAR = r"[｜|]"
+
+# 标签内部不允许跨行、不允许再出现尖括号，避免贪婪吞掉后续正文。
+_TAG_BODY = r"[^<>\n]*"
 
 # DSML 标签：<｜dsml｜ tool_calls>、</｜dsml｜ parameter> 等。
 _DSML_TOKEN_RE = re.compile(
-    rf"<(?P<closing>/)?\s*{_BAR}\s*dsml\s*{_BAR}[^<>]*>",
+    rf"<(?P<closing>/)?\s*{_BAR}\s*dsml\s*{_BAR}{_TAG_BODY}>",
     re.IGNORECASE,
 )
 
 # 其余特殊 token：<｜tool▁calls▁begin｜>、<｜dsml｜ tool_calls> 等。
 # 竖线之后可能还跟一段内容（如 tool_calls），整体到最近的 > 为止。
 # 这些不构成闭合配对，只剥离标签本身，避免误伤后面的正文。
-_SPECIAL_TOKEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}[^<>]*{_BAR}[^<>]*>")
+_SPECIAL_TOKEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}{_TAG_BODY}{_BAR}{_TAG_BODY}>")
+
+# 被 max_tokens 截断的开标签：有 < 和竖线，但到文本末尾都没等到 >。
+# 这类残片不会被上面两条正则匹配，必须单独识别，否则会原样发给用户。
+_TRUNCATED_MARKER_RE = re.compile(rf"<(?:/)?{_TAG_BODY}{_BAR}{_TAG_BODY}\Z")
 
 _SEND_INVOKE_RE = re.compile(
     r"invoke\s+name\s*=\s*[\"']send_message_to_user[\"']",
@@ -41,16 +50,21 @@ _SEND_INVOKE_RE = re.compile(
 )
 
 _MESSAGES_PARAM_RE = re.compile(
-    rf"parameter\s+name\s*=\s*[\"']messages[\"'][^<>]*>(?P<body>.*?)"
+    rf"parameter\s+name\s*=\s*[\"']messages[\"']{_TAG_BODY}>(?P<body>.*?)"
     rf"</\s*{_BAR}\s*dsml\s*{_BAR}\s*parameter\s*>",
     re.IGNORECASE | re.DOTALL,
 )
 
 _OBJECT_PLACEHOLDER_RE = re.compile(r"\[\s*object\s+Object\s*\]", re.IGNORECASE)
 
-# 载荷递归上限：防止畸形结构导致深层遍历或超长文本。
+# 载荷深度、条目与长度上限：畸形结构不应打断投递，超限一律放弃解析。
 _MAX_PAYLOAD_DEPTH = 8
 _MAX_PAYLOAD_ITEMS = 50
+_MAX_PAYLOAD_CHARS = 20000
+
+# 允许被当作正文还原的分段类型；其余类型（file/image/record 等）
+# 的 text 字段只是文件名或占位描述，不能当正文发出去。
+_TEXT_SEGMENT_TYPES = frozenset({"plain", "text", "markdown", ""})
 
 
 def contains_tool_markup(text: Any) -> bool:
@@ -104,7 +118,11 @@ def _remove_regions(text: str, regions: list[tuple[int, int, str]]) -> str:
 
 
 def _collect_payload_texts(node: Any, out: list[str], depth: int = 0) -> None:
-    """从参数载荷中递归收集正文文本。"""
+    """从参数载荷中递归收集正文文本。
+
+    只收纯文本分段的 text；file/image/record 等类型的 text 仅是文件名
+    或占位描述，当作正文发出会把 “report.pdf” 这类内容泄漏给用户。
+    """
     if depth > _MAX_PAYLOAD_DEPTH or len(out) >= _MAX_PAYLOAD_ITEMS:
         return
     if isinstance(node, str):
@@ -116,10 +134,19 @@ def _collect_payload_texts(node: Any, out: list[str], depth: int = 0) -> None:
             _collect_payload_texts(item, out, depth + 1)
         return
     if isinstance(node, dict):
-        text = node.get("text")
-        if isinstance(text, str) and text.strip():
-            out.append(text.strip())
-            return
+        seg_type = node.get("type")
+        if isinstance(seg_type, str) and seg_type.lower() in _TEXT_SEGMENT_TYPES:
+            text = node.get("text")
+            if isinstance(text, str) and text.strip():
+                out.append(text.strip())
+                return
+        elif seg_type is None:
+            # 无 type 字段视为宽松文本，保留旧行为。
+            text = node.get("text")
+            if isinstance(text, str) and text.strip():
+                out.append(text.strip())
+                return
+        # 非文本分段（含 file/image 等）不取 text，但继续向下找纯文本段。
         for value in node.values():
             if isinstance(value, (list, dict)):
                 _collect_payload_texts(value, out, depth + 1)
@@ -132,7 +159,19 @@ _QUOTE_CHAR = chr(34)
 
 
 def _load_json_lenient(body: str) -> Any:
-    """解析参数载荷，兼容 HTML 实体转义过的引号。"""
+    """解析参数载荷，兼容 HTML 实体转义过的引号。
+
+    超长或超深嵌套的载荷一律放弃解析：清洗属于投递前的必经路径，
+    这里抛出的任何异常都会中断整次发送，宁可当作不可解析的纯标记剥离。
+    """
+    if len(body) > _MAX_PAYLOAD_CHARS:
+        return None
+    if (
+        body.count("[") > _MAX_PAYLOAD_DEPTH * 8
+        or body.count("{") > _MAX_PAYLOAD_DEPTH * 8
+    ):
+        return None
+
     candidates = [
         body,
         body.replace(_QUOT_ENTITY, _QUOTE_CHAR).replace(_NUM_QUOT_ENTITY, _QUOTE_CHAR),
@@ -140,7 +179,7 @@ def _load_json_lenient(body: str) -> Any:
     for candidate in candidates:
         try:
             return json.loads(candidate)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             continue
     return None
 
@@ -153,18 +192,21 @@ def _extract_payload_texts(region_texts: list[str]) -> list[str]:
     """
     texts: list[str] = []
     for raw in region_texts:
-        if not _SEND_INVOKE_RE.search(raw):
-            continue
-        param = _MESSAGES_PARAM_RE.search(raw)
-        if param is None:
-            continue
-        body = param.group("body").strip()
-        if not body:
-            continue
-        parsed: Any = _load_json_lenient(body)
-        if parsed is None:
-            continue
-        _collect_payload_texts(parsed, texts)
+        # 一个外层 tool_calls 区域可能包住多次 invoke，必须逐个提取，
+        # 否则第二个及之后的载荷会随整块一起被删除。
+        for param in _MESSAGES_PARAM_RE.finditer(raw):
+            body = param.group("body").strip()
+            if not body:
+                continue
+            # 只还原 send_message_to_user 的载荷，其它工具的正文不还原。
+            head = raw[: param.start()]
+            last_invoke = head.rfind("invoke")
+            if last_invoke < 0 or not _SEND_INVOKE_RE.search(head[last_invoke:]):
+                continue
+            parsed: Any = _load_json_lenient(body)
+            if parsed is None:
+                continue
+            _collect_payload_texts(parsed, texts)
     return texts
 
 
@@ -191,6 +233,36 @@ def _collapse_blank_lines(text: str) -> str:
     return "\n".join(result)
 
 
+def _strip_truncated_marker(text: str) -> str:
+    """剥离被截断的开标签残片。
+
+    生成在标签内部结束时（如 <｜dsml｜ invoke name="send_message_to_user），
+    没有闭合 > 的残片不会被标签正则命中，只能按“以 < 开头且含竖线”识别。
+    """
+    if "<" not in text or _BAR_CHARS.isdisjoint(text):
+        return text
+    last_lt = text.rfind("<")
+    tail = text[last_lt:]
+    if not _BAR_CHARS.intersection(tail):
+        return text
+    # 残片里若已经出现 > 说明标签是完整的，交给正常规则处理。
+    if ">" in tail:
+        return text
+    return text[:last_lt].rstrip()
+
+
+def extract_payload_text(text: str) -> str:
+    """只取 send_message_to_user 的可还原正文，不做任何清洗。
+
+    供调用方判断“这份响应值不值得为它再花一次 LLM 调用”。
+    """
+    if not isinstance(text, str) or not text:
+        return ""
+    regions = _iter_dsml_regions(text)
+    texts = _extract_payload_texts([raw for _start, _end, raw in regions])
+    return "\n".join(texts)
+
+
 def clean_llm_text(text: str, *, extract_payload: bool = True) -> str:
     """清洗单段 LLM 输出文本。
 
@@ -209,6 +281,7 @@ def clean_llm_text(text: str, *, extract_payload: bool = True) -> str:
 
     body = _remove_regions(text, regions)
     body = _SPECIAL_TOKEN_RE.sub("", body)
+    body = _strip_truncated_marker(body)
     body = _clean_object_placeholders(body)
     body = _collapse_blank_lines(body).strip()
 
