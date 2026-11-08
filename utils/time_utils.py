@@ -163,7 +163,12 @@ def format_relative_age(
     if current is None:
         return ""
 
-    seconds = (current - moment).total_seconds()
+    # 必须先转 UTC 再相减：两个 datetime 共用同一个 tzinfo 实例时，
+    # Python 会忽略 tzinfo 直接做“墙上时间”减法，夏令时回拨那一小时
+    # 会被算成间隔 0，显示成“刚刚”，误导模型判断话题新鲜度。
+    seconds = (
+        current.astimezone(timezone.utc) - moment.astimezone(timezone.utc)
+    ).total_seconds()
     # 时钟轻微漂移或未来时间一律按“刚刚”处理，避免出现负数。
     if seconds < 60:
         return "刚刚"
