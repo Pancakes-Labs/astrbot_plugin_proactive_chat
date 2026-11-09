@@ -316,9 +316,19 @@ function StatusView({ onRefresh }) {
                 );
             }
         } catch (e) {
-            setRestartState({ phase: 'error' });
-            const message = e && e.message ? e.message : '重启 AstrBot 失败，请查看服务端日志';
-            if (window.Toast) window.Toast.error(message, { title: '重启 AstrBot 失败' });
+            // 409 表示已有重启任务在跑（幂等跳过），不是故障，按提示处理。
+            const inProgress = e && e.status === 409;
+            setRestartState({ phase: inProgress ? 'success' : 'error' });
+            const message = e && e.message
+                ? e.message
+                : (inProgress ? '已有重启任务在进行中，请稍候' : '重启 AstrBot 失败，请查看服务端日志');
+            if (window.Toast) {
+                if (inProgress) {
+                    window.Toast.info(message, { title: '重启 AstrBot' });
+                } else {
+                    window.Toast.error(message, { title: '重启 AstrBot 失败' });
+                }
+            }
         }
     };
 
