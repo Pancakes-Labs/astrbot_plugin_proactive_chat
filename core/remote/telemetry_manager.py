@@ -497,6 +497,14 @@ class TelemetryManager:
                 # 管理端密码绝不进入遥测事件。
                 del web_admin["password"]
 
+            # admin_users 是 QQ 号等真实用户标识，属于可关联到个人的信息，
+            # 与 session_list 同理只保留数量用于统计权限规模。
+            admin_users = config_copy.pop("admin_users", None)
+            if admin_users is not None:
+                config_copy["admin_users_count"] = (
+                    len(admin_users) if isinstance(admin_users, list) else 0
+                )
+
             return await self.track("config", config_copy)
         except Exception as e:
             logger.debug(f"[主动消息] 配置快照提取失败喵: {e}")
