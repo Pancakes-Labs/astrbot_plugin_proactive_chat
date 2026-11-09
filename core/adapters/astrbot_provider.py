@@ -261,13 +261,15 @@ async def invoke_provider(provider: Any, req: Any, *, max_tool_rounds: int = 1) 
     # 前置钩子可能已改写 prompt，这里保存钩子后的值作为重试的基准；
     # 重试期间追加的纠错提示只用于本次请求，结束后必须还原，
     # 否则它会随 final_user_prompt 一起写进对话历史永久回灌给模型。
-    original_prompt = getattr(req, "prompt", None)
+    # 用哨兵区分“属性不存在”和“值为 None”。
+    _missing = object()
+    original_prompt = getattr(req, "prompt", _missing)
     try:
         return await _invoke_provider_rounds(
             provider, req, max_tool_rounds=max_tool_rounds
         )
     finally:
-        if original_prompt is not None:
+        if original_prompt is not _missing:
             try:
                 req.prompt = original_prompt
             except Exception:  # pragma: no cover - 只读属性兜底
