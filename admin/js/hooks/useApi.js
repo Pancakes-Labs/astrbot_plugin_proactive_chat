@@ -8,10 +8,15 @@
 (function () {
     const HttpUtil = window.HttpUtil;
 
+    // 运维接口要求自定义头：后端据此拒绝跨站页面发起的重启/重载请求。
+    const OPS_HEADERS = { 'X-Requested-With': 'AstrBotProactiveChatConsole' };
+
     const ApiClient = Object.freeze({
         getStatus: () => HttpUtil.get('/api/status'),
         getConfig: () => HttpUtil.get('/api/config'),
         getConfigSchema: () => HttpUtil.get('/api/config-schema'),
+        // 人格列表与 AstrBot 人格库同源，用于 select_persona 特殊控件。
+        getPersonas: () => HttpUtil.get('/api/personas'),
         // 全局配置保存接口，传入完整 payload 由后端按分组白名单更新。
         updateConfig: (payload) => HttpUtil.post('/api/config', payload),
 
@@ -19,6 +24,8 @@
         listSessions: () => HttpUtil.get('/api/session-config/sessions'),
         // 会话 ID 可能包含特殊字符，路径参数必须先 encodeURIComponent。
         getSessionConfig: (session) => HttpUtil.get(`/api/session-config/${encodeURIComponent(session)}`),
+        // 预览该会话最终生效的人格与来源。
+        getSessionPersona: (session) => HttpUtil.get(`/api/persona-preview/${encodeURIComponent(session)}`),
         // 同一接口同时支持 override 与 effective 两种保存模式，由 payload.mode 区分。
         updateSessionConfig: (session, payload) => HttpUtil.post(`/api/session-config/${encodeURIComponent(session)}`, payload),
         resetSessionConfig: (session) => HttpUtil.del(`/api/session-config/${encodeURIComponent(session)}`),
@@ -30,6 +37,20 @@
         readNotification: (id) => HttpUtil.post('/api/notifications/read', { id }),
         readAllNotifications: () => HttpUtil.post('/api/notifications/read-all', {}),
         refreshNotifications: () => HttpUtil.post('/api/notifications/refresh', {}),
+        // 计时器控制：finish 只结束倒计时并转入调度任务，reset 按配置重新计时。
+        // timer_kind 走 query 参数，空值由后端自行探测类型。
+        finishTimer: (session, timerKind) => HttpUtil.post(
+            `/api/timers/${encodeURIComponent(session)}/finish${timerKind ? `?timer_kind=${encodeURIComponent(timerKind)}` : ''}`,
+            {},
+        ),
+        resetTimer: (session, timerKind) => HttpUtil.post(
+            `/api/timers/${encodeURIComponent(session)}/reset${timerKind ? `?timer_kind=${encodeURIComponent(timerKind)}` : ''}`,
+            {},
+        ),
+        // 运维快捷操作：重载插件与重启 AstrBot，等价于对应的聊天指令。
+        // 必须带自定义头：后端据此拒绝跨站页面发起的运维请求。
+        reloadPlugin: () => HttpUtil.post('/api/plugin/reload', {}, OPS_HEADERS),
+        restartAstrbot: () => HttpUtil.post('/api/astrbot/restart', {}, OPS_HEADERS),
         // “立即触发”接口无参，body 传空对象保持请求格式统一。
         triggerJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/trigger`, {}),
         cancelJob: (session) => HttpUtil.del(`/api/jobs/${encodeURIComponent(session)}`),

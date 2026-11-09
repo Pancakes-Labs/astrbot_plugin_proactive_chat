@@ -5,10 +5,22 @@
  
  const { Box, Typography, Button, Chip } = MaterialUI;
 
+// 上次阅读的文档路径：刷新或切走再回来后仍停在同一篇文档上。
+const DOCS_LAST_PATH_KEY = 'astrbot_plugin_proactive_docs_last_path';
+
+function readLastDocPath() {
+    try {
+        return String(localStorage.getItem(DOCS_LAST_PATH_KEY) || '');
+    } catch (e) {
+        return '';
+    }
+}
+
 function MarkdownDocsView() {
     const { state, dispatch } = useAppContext();
     const api = useApi();
     const articleRef = React.useRef(null);
+    const fileListRef = React.useRef(null);
     // 从全局状态读取文档目录与当前选中文档，便于视图切换后仍能保留上下文。
     const markdownFiles = Array.isArray(state.markdownFiles) ? state.markdownFiles : [];
     const markdownDocument = state.markdownDocument || null;
@@ -25,11 +37,17 @@ function MarkdownDocsView() {
             dispatch({ type: 'SET_MARKDOWN_FILES', payload: items });
 
             if (!selectedMarkdownPath && items.length > 0) {
-                // 首次进入文档页时自动选中第一篇文档，避免右侧区域出现长时间空白。
-                dispatch({ type: 'SET_SELECTED_MARKDOWN_PATH', payload: items[0].path || '' });
+                // 优先恢复上次阅读的文档；它已不存在（文件被删）时再回退到第一篇。
+                const saved = readLastDocPath();
+                const restored = saved && items.some((item) => item && item.path === saved)
+                    ? saved
+                    : (items[0].path || '');
+                dispatch({ type: 'SET_SELECTED_MARKDOWN_PATH', payload: restored });
             }
         } catch (e) {
-            dispatch({ type: 'SET_ERROR', payload: e.message || '加载 Markdown 文档列表失败' });
+            const message = e.message || '加载 Markdown 文档列表失败';
+            dispatch({ type: 'SET_ERROR', payload: message });
+            if (window.Toast) window.Toast.error(message, { title: '文档目录加载失败' });
         } finally {
             setLoadingList(false);
         }
@@ -49,7 +67,9 @@ function MarkdownDocsView() {
             dispatch({ type: 'SET_MARKDOWN_DOCUMENT', payload: payload || null });
             dispatch({ type: 'SET_SELECTED_MARKDOWN_PATH', payload: normalizedPath });
         } catch (e) {
-            dispatch({ type: 'SET_ERROR', payload: e.message || '加载 Markdown 文档失败' });
+            const message = e.message || '加载 Markdown 文档失败';
+            dispatch({ type: 'SET_ERROR', payload: message });
+            if (window.Toast) window.Toast.error(message, { title: '文档加载失败' });
         } finally {
             setLoadingDocument(false);
         }
@@ -61,6 +81,25 @@ function MarkdownDocsView() {
             loadMarkdownFiles();
         }
     }, [loadMarkdownFiles, markdownFiles.length]);
+
+    // 记住当前打开的文档，供下次进入本页时恢复。
+    React.useEffect(() => {
+        if (!selectedMarkdownPath) return;
+        try {
+            localStorage.setItem(DOCS_LAST_PATH_KEY, selectedMarkdownPath);
+        } catch (e) {
+            // 存储受限时静默降级。
+        }
+    }, [selectedMarkdownPath]);
+
+    // 文档目录是独立滚动容器，需要单独恢复与记录位置。
+    // allowWindow=false：移动端列表 overflow 会变成 visible，此时滚动其实发生在
+    // 文档上，而文档滚动已由 App 层统一恢复，两边都接管会互相覆盖。
+    window.useScrollRestore(
+        fileListRef,
+        window.ScrollDomain.buildScrollKey('docs_file_list'),
+        { enabled: markdownFiles.length > 0, allowWindow: false }
+    );
 
     React.useEffect(() => {
         if (!selectedMarkdownPath && markdownFiles.length > 0) {
@@ -423,7 +462,7 @@ function MarkdownDocsView() {
                                     </Typography>
                                 </div>
                             ) : (
-                                <div className="markdown-docs-file-list">
+                                <div className="markdown-docs-file-list" ref={fileListRef}>
                                     {markdownFiles.map((item) => {
                                         const isActive = item.path === currentDocumentPath;
                                         return (

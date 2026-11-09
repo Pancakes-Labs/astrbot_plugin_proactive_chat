@@ -13,6 +13,8 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.provider import LLMResponse, ProviderRequest
 
+from ..domain.tool_markup_cleaner import contains_tool_markup, extract_payload_text
+
 
 def provider_request_fields() -> set[str] | None:
     """探测 ProviderRequest 支持的字段名。
@@ -117,6 +119,14 @@ TOOL_UNAVAILABLE_NOTICE = (
     "基于已有上下文直接使用纯文本作答，不要再次调用任何工具。"
 )
 
+# 部分推理栈缺少 tool call parser，模型的原生工具调用会退化成文本方言
+# 直接写进 content。这类输出同样需要拒绝一次并要求改用纯文本。
+TEXT_TOOL_MARKUP_NOTICE = (
+    "上一条回复包含了文本形式的工具调用标记（例如 DSML、xml 风格的特殊标记），"
+    "这些内容无法被执行且会直接泄漏给用户。请改用纯文本重新作答，"
+    "不要输出任何形如 <｜...｜>、<｜dsml｜ ...> 的标记，也不要尝试调用工具。"
+)
+
 
 def serialize_tool_arguments(arguments: Any) -> str:
     """把工具参数统一成 JSON 字符串。
@@ -215,6 +225,26 @@ async def _call_text_chat(provider: Any, req: Any) -> Any:
     return await provider.text_chat(**call_kwargs)
 
 
+def _apply_markup_retry_notice(req: Any) -> None:
+    """为文本式工具调用标记的回灌提示追加一轮用户消息。
+
+    ProviderRequest 的字段在不同版本间存在差异，这里逐级降级，
+    确保提示能进入下一轮请求而不抛异常。
+    """
+    req.func_tool = None
+    try:
+        req.tool_calls_result = None
+    except Exception:  # pragma: no cover - 只读属性兜底
+        pass
+
+    prompt = str(getattr(req, "prompt", "") or "")
+    req.prompt = (
+        f"{prompt}\n\n{TEXT_TOOL_MARKUP_NOTICE}"
+        if prompt
+        else (TEXT_TOOL_MARKUP_NOTICE)
+    )
+
+
 async def invoke_provider(provider: Any, req: Any, *, max_tool_rounds: int = 1) -> Any:
     """调用 Provider，并按运行时能力裁剪不支持的可选参数。
 
@@ -224,24 +254,70 @@ async def invoke_provider(provider: Any, req: Any, *, max_tool_rounds: int = 1) 
     主动消息链路不进入框架工具循环；若模型仍请求工具，这里回灌一次
     “工具不可用”回执并摘除工具，使其在下一次请求中给出纯文本回复，
     避免整轮响应因无文本而被判定失败。
+
+    文本式工具调用标记（DSML 等）不属于原生 tool_calls，核心不会拦截，
+    因此这里额外判定一次并同样回灌提示，尽量在源头拿到干净回复。
     """
+    # 前置钩子可能已改写 prompt，这里保存钩子后的值作为重试的基准；
+    # 重试期间追加的纠错提示只用于本次请求，结束后必须还原，
+    # 否则它会随 final_user_prompt 一起写进对话历史永久回灌给模型。
+    # 用哨兵区分“属性不存在”和“值为 None”。
+    _missing = object()
+    original_prompt = getattr(req, "prompt", _missing)
+    try:
+        return await _invoke_provider_rounds(
+            provider, req, max_tool_rounds=max_tool_rounds
+        )
+    finally:
+        if original_prompt is not _missing:
+            try:
+                req.prompt = original_prompt
+            except Exception:  # pragma: no cover - 只读属性兜底
+                pass
+
+
+async def _invoke_provider_rounds(
+    provider: Any, req: Any, *, max_tool_rounds: int = 1
+) -> Any:
+    """执行 Provider 调用与工具标记重试循环（不改动 req 的初始状态）。"""
     response = await _call_text_chat(provider, req)
     if isinstance(response, str):
         response = LLMResponse(role="assistant", completion_text=response)
 
     rounds = 0
-    while rounds < max_tool_rounds and getattr(response, "tools_call_name", None):
-        tool_calls_result = build_tool_calls_result(response)
-        if tool_calls_result is None:
+    while rounds < max_tool_rounds:
+        native_tool_call = bool(getattr(response, "tools_call_name", None))
+        completion_text = getattr(response, "completion_text", "")
+        markup_leak = (not native_tool_call) and contains_tool_markup(completion_text)
+        if not native_tool_call and not markup_leak:
             break
 
+        if native_tool_call:
+            tool_calls_result = build_tool_calls_result(response)
+            if tool_calls_result is None:
+                break
+            req.func_tool = None
+            req.tool_calls_result = tool_calls_result
+            logger.info(
+                f"[主动消息] 模型请求调用工具 {list(response.tools_call_name)}，"
+                "当前版本的主动消息插件暂不支持执行，已回灌不可用提示并重试纯文本生成喵。"
+            )
+        else:
+            # 载荷可解析说明正文是确定性的，下游清洗能还原出来。
+            # 此时保留首次响应即可，重试反而会丢掉这段内容并多花一次调用。
+            if extract_payload_text(completion_text):
+                logger.info(
+                    "[主动消息] 模型返回了文本形式的工具调用标记，但其载荷可解析，"
+                    "已保留首次响应交由清洗还原喵。"
+                )
+                break
+            _apply_markup_retry_notice(req)
+            logger.warning(
+                "[主动消息] 模型返回了文本形式的工具调用标记且载荷不可解析，"
+                "已要求其改用纯文本重新作答喵。"
+            )
+
         rounds += 1
-        logger.info(
-            f"[主动消息] 模型请求调用工具 {list(response.tools_call_name)}，"
-            "主动消息场景不支持执行，已回灌不可用提示并重试纯文本生成喵。"
-        )
-        req.func_tool = None
-        req.tool_calls_result = tool_calls_result
         response = await _call_text_chat(provider, req)
         if isinstance(response, str):
             response = LLMResponse(role="assistant", completion_text=response)

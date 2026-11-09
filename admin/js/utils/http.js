@@ -3,10 +3,17 @@
  */
 
 (function () {
+    // 后端对写接口做跨站来源校验：带自定义头会触发 CORS 预检，
+    // 未授权站点无法伪造。所有请求（含 GET）统一携带，调用方无需关心。
+    const CONSOLE_HEADERS = {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'AstrBotProactiveChatConsole',
+    };
+
     function buildHeaders(extra) {
         // 所有请求默认发送 JSON；如调用方有额外头信息，再在此基础上合并。
         return window.AuthUtil.withAuthHeaders(
-            Object.assign({ 'Content-Type': 'application/json' }, extra || {})
+            Object.assign({}, CONSOLE_HEADERS, extra || {})
         );
     }
 
@@ -42,10 +49,12 @@
         get: function (url) {
             return request(url, { method: 'GET' });
         },
-        post: function (url, body) {
+        post: function (url, body, extraHeaders) {
             // POST 请求统一将 body 序列化为 JSON；空 body 则发送空对象保持接口风格一致。
+            // extraHeaders 供运维类接口附加自定义头，用于服务端识别同源请求。
             return request(url, {
                 method: 'POST',
+                headers: extraHeaders || undefined,
                 body: JSON.stringify(body || {}),
             });
         },

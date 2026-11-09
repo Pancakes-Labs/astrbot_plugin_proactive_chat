@@ -6,6 +6,75 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+# 2026/11/09 v1.3.0-beta.2
+
+## 🚀 What's Changed
+
+本版本中带来了不少功能提升和改进，其中最核心的就是使用上下文来源为**平台完整聊天流水**的时候，主动消息效果终于没问题了。
+此外下个版本中预计插件的配置结构会发生巨大变化，强烈建议所有用户先升级到此版本，再升级至后续版本。
+
+以下是完整的更新内容：
+
+### ✨ New Features (新功能)
+
+- 支持进行主动消息时使用特定的人格，并提供更好的人格配置体验 by @DBJD-CR in #125
+- 午睡时也不想被主动消息打扰？现在可以更直观地设置多个免打扰时段了，并且支持自由开关免打扰时段 by @DBJD-CR in #130
+- 支持设置插件管理员列表和配套的鉴权功能，以提供插件命令使用权限 by @DBJD-CR in #130
+- 让吃白饭的大肥鱼学会正确的说话 by @DBJD-CR in #132
+
+### ⚙️ Configuration (配置)
+
+- 新增 `🔐 插件管理员列表` 配置项 by @DBJD-CR in #130
+- 新增 `启用免打扰时段` 配置项 by @DBJD-CR in #130
+
+### 💻 WebUI / Frontend (前端)
+
+- 新增全局 Toast 通知功能，提供统一的前端信息通知能力 by @DBJD-CR in #125
+- 重新设计了运行状态与任务管理页面的卡片样式 by @DBJD-CR in #125
+- 运行状态页面的卡片新增 `立即结束` 与 `重置计时` 两个能力 by @DBJD-CR in #130
+
+### ♻️ Refactor (重构)
+
+- 使用强类型执行上下文模型统一传递流水线产物 by @DBJD-CR in #122
+- 预留多提示词模板配置结构并新增启动期配置装配与迁移 by @DBJD-CR in #126
+- 将提示词组装与模型推理拆分，并统一主动消息处理流程中的占位符渲染方式 by @DBJD-CR in #127
+
+### 🐛 Bug Fixes (修复)
+
+- 修复了 LLM 进行主动消息时请求工具调用可能导致整轮响应被丢弃的问题 by @ltcdz5 & @DBJD-CR in #120
+- 修复了使用上下文来源为 `平台完整聊天流水` 模式时主动消息效果不理想的问题 by @DBJD-CR & @Penistrong & @AmeiMiao in #121 #128 #131
+- 修复了前端中浏览位置、展开状态等信息没有被正确记忆的问题 by @DBJD-CR in #125 #135
+
+### 🛠️ Commands (指令系统)
+
+本插件在设计之初一直秉持拟人化与高度沉浸感的体验，因此一直没有计划加入指令系统。
+然而随着近期插件使用人数上升和重复的问题反馈增加，以及潜在的调试和运维需求，
+本着可以不用但是不能没有的理念，现添加主动消息插件指令组，提供一些基础的状态查询和操作功能。
+
+- 新增主动消息插件指令组 by @DBJD-CR in #130 #133 #135
+  - 新增 `/主动消息` 命令，提供插件帮助信息
+  - 新增 `/主动消息状态` 命令，查询会话的主动消息状态
+  - 新增 `/主动消息发送` 命令，立即发送一次主动消息（如果有）
+  - 新增 `/主动消息开关` 命令，开启或关闭主动消息推送
+  - 新增 `/主动消息重启` 命令，重载插件（等价于 AstrBot WebUI 中的重载）
+  - 新增 `/重启AstrBot` 命令，重启整个 AstrBot 进程
+
+### 📚 Documentation (文档)
+
+- 更新适用于 v1.3.0-beta.2 的 README 文档、贡献指南和更新日志 by @DBJD-CR in #130 #133
+
+---
+
+## ❤️ New Contributors
+
+- @ltcdz5 made their first contribution in #120
+- @Penistrong made their first contribution in #121
+- @AmeiMiao made their first contribution in #128
+
+**Full Changelog**: https://github.com/Pancakes-Labs/astrbot_plugin_proactive_chat/compare/v1.3.0-beta.1...v1.3.0-beta.2
+
+---
+
 # 2026/11/01 v1.3.0-beta.1
 
 ## 🚀 What's Changed
@@ -43,7 +112,8 @@
 
 **Full Changelog**: https://github.com/Pancakes-Labs/astrbot_plugin_proactive_chat/compare/v1.2.6...v1.3.0-beta.1
 
----
+<details>
+<summary>点击查看历史更新记录 (History)</summary>
 
 # 2026/09/28 v1.2.6
 
@@ -88,8 +158,7 @@
 
 **Full Changelog**: https://github.com/Pancakes-Labs/astrbot_plugin_proactive_chat/compare/v1.2.5...v1.2.6
 
-<details>
-<summary>点击查看历史更新记录 (History)</summary>
+---
 
 # 2026/08/30 v1.2.5
 

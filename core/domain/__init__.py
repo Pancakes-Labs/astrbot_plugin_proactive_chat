@@ -8,7 +8,35 @@ from .context_block import BlockKind, ContextBlock, ContextBundle
 from .delivery_report import DeliveryReport
 from .domain_enums import HookPoint, StageResult, TriggerSource
 from .llm_outcome import LlmOutcome, ToolCallRecord
-from .prompt_block import PromptBlock, PromptBundle
+from .persona_resolution import (
+    PERSONA_SOURCE_BUILTIN,
+    PERSONA_SOURCE_CONVERSATION,
+    PERSONA_SOURCE_DEFAULT,
+    PERSONA_SOURCE_DISABLED,
+    PERSONA_SOURCE_PLUGIN,
+    PERSONA_SOURCE_PROFILE,
+    PERSONA_SOURCE_SESSION_RULE,
+    PersonaResolution,
+)
+from .prompt_block import PromptBlock, PromptBundle, PromptExtra
+from .prompt_placeholders import (
+    PLACEHOLDER_CURRENT_TIME,
+    PLACEHOLDER_PLATFORM_HISTORY_LAST_TIME,
+    PLACEHOLDER_PLATFORM_HISTORY_LINES,
+    PLACEHOLDER_UNANSWERED_COUNT,
+    PLACEHOLDERS,
+    contains_placeholder,
+    render_placeholders,
+)
+from .prompt_templates import (
+    LEGACY_PROMPT_KEY,
+    MIGRATED_TEMPLATE_ID,
+    PROMPT_TEMPLATES_KEY,
+    build_templates_from_legacy,
+    normalize_templates,
+    resolve_active_prompt,
+    resolve_active_template,
+)
 from .request_context import ProactiveContext
 from .session_config import SessionConfig
 from .session_key import (
@@ -18,6 +46,12 @@ from .session_key import (
     is_group_type,
     is_group_umo,
 )
+from .tool_markup_cleaner import (
+    clean_chain_components,
+    clean_llm_text,
+    contains_tool_markup,
+    extract_payload_text,
+)
 
 __all__ = [
     "BlockKind",
@@ -25,17 +59,44 @@ __all__ = [
     "ContextBundle",
     "DeliveryReport",
     "HookPoint",
+    "LEGACY_PROMPT_KEY",
     "LlmOutcome",
+    "MIGRATED_TEMPLATE_ID",
+    "PLACEHOLDERS",
+    "PLACEHOLDER_CURRENT_TIME",
+    "PLACEHOLDER_PLATFORM_HISTORY_LAST_TIME",
+    "PLACEHOLDER_PLATFORM_HISTORY_LINES",
+    "PLACEHOLDER_UNANSWERED_COUNT",
+    "PERSONA_SOURCE_BUILTIN",
+    "PERSONA_SOURCE_CONVERSATION",
+    "PERSONA_SOURCE_DEFAULT",
+    "PERSONA_SOURCE_DISABLED",
+    "PERSONA_SOURCE_PLUGIN",
+    "PERSONA_SOURCE_PROFILE",
+    "PERSONA_SOURCE_SESSION_RULE",
+    "PersonaResolution",
+    "PROMPT_TEMPLATES_KEY",
     "ProactiveContext",
     "PromptBlock",
     "PromptBundle",
+    "PromptExtra",
     "SessionConfig",
     "SessionKey",
     "StageResult",
     "ToolCallRecord",
     "TriggerSource",
+    "build_templates_from_legacy",
+    "clean_chain_components",
+    "clean_llm_text",
     "contains_group_marker",
+    "contains_placeholder",
+    "contains_tool_markup",
+    "extract_payload_text",
     "is_friend_type",
     "is_group_type",
     "is_group_umo",
+    "normalize_templates",
+    "render_placeholders",
+    "resolve_active_prompt",
+    "resolve_active_template",
 ]

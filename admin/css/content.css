@@ -289,6 +289,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
     gap: 18px;
+    align-items: start;
 }
 
 .task-card-enhanced {
@@ -413,21 +414,7 @@
     border-color: rgb(var(--md-success-rgb) / 0.18);
 }
 
-/* 任务卡来源模式标记，跟随主色主题自动切换。 */
-.task-source-mode-pill {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 800;
-    white-space: nowrap;
-    border: 1px solid rgb(var(--md-primary-rgb) / 0.18);
-    background: rgb(var(--md-primary-rgb) / 0.08);
-    color: var(--md-sys-color-primary);
-    line-height: 1.2;
-}
+/* 任务卡来源模式标记已并入 tcard-facts 事实行，原 .task-source-mode-pill 已移除。 */
 
 .task-meta-grid {
     margin-top: 12px;
@@ -553,6 +540,34 @@
     line-height: 1.82;
     font-size: 0.97rem;
     word-break: break-word;
+}
+
+/* 配置页人格正文预览：复用通知页 Markdown 排版，但限制高度并自带滚动，
+   避免超长提示词把弹窗撑出屏幕。 */
+.persona-prompt-md {
+    max-height: min(62vh, 560px);
+    overflow-y: auto;
+    padding-right: 6px;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--md-primary-rgb) / 0.28) transparent;
+}
+
+.persona-prompt-md::-webkit-scrollbar {
+    width: 6px;
+}
+
+.persona-prompt-md::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: rgb(var(--md-primary-rgb) / 0.26);
+}
+
+/* 人格提示词里通常没有标题，首个段落不应带上大间距。 */
+.persona-prompt-md > :first-child {
+    margin-top: 0;
+}
+
+.persona-prompt-md > :last-child {
+    margin-bottom: 0;
 }
 
 .notification-md > :first-child {

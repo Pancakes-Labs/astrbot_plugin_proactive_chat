@@ -57,6 +57,7 @@ function Sidebar({ currentView, onChange }) {
     ];
 
     const openDirectory = async (path) => {
+        const targetLabel = path === 'data' ? '插件数据目录' : '插件文件目录';
         try {
             // 通过后端调用本机资源管理器打开目录，前端无需感知具体平台命令。
             const response = await window.HttpUtil.post('/api/open-directory', { path });
@@ -66,15 +67,21 @@ function Sidebar({ currentView, onChange }) {
                 const errorMsg = response?.message ? `\n详情: ${response.message}` : '';
                 throw new Error(`${errorTitle}${errorMsg}`);
             }
-            
-            // 可选：如果是 Docker 环境等虽然成功响应但并非打开了窗口的场景，给出提示
-            if (response.message && response.message.includes('已在系统文件管理器中打开目录')) {
-                // 正常打开，可以什么都不做，也可以给个轻提示
-                console.log(response.message);
+
+            // 后端可能返回“已在文件管理器中打开”的说明；无论文案如何都给出统一反馈。
+            if (window.Toast) {
+                window.Toast.success(`已请求打开${targetLabel}`, {
+                    title: '文件管理器',
+                    description: response && response.message ? String(response.message) : '',
+                });
             }
         } catch (e) {
             const message = e?.message || '打开目录失败';
-            window.alert(message);
+            if (window.Toast) {
+                window.Toast.error(message, { title: '打开目录失败' });
+            } else {
+                window.alert(message);
+            }
         }
     };
 

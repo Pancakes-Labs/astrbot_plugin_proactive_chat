@@ -20,13 +20,22 @@ from ..domain.domain_enums import TriggerSource
 
 # 注意：WebSocket / FileResponse / JSONResponse 必须在模块全局命名空间可用。
 try:  # pragma: no cover - 取决于是否安装 FastAPI
-    from fastapi import WebSocket, WebSocketDisconnect
+    from fastapi import BackgroundTasks, Request, WebSocket, WebSocketDisconnect
     from fastapi.responses import FileResponse, JSONResponse
 except ImportError:  # pragma: no cover
+    BackgroundTasks = None  # type: ignore[assignment,misc]
+    Request = Any  # type: ignore[assignment,misc]
     WebSocket = None  # type: ignore[assignment,misc]
     WebSocketDisconnect = Exception  # type: ignore[assignment,misc]
     FileResponse = None  # type: ignore[assignment,misc]
     JSONResponse = None  # type: ignore[assignment,misc]
+
+# 写操作接口统一要求带一个跨站页面无法伪造的请求头：带自定义头的请求必然
+# 触发 CORS 预检，而预检不会放行未列出的来源，因此即使未设置 WebUI 密码，
+# 第三方网页也无法用表单提交改动插件状态或重启进程。
+# 该校验的入口在 runtime_server 的 HTTP 中间件，这里定义常量供两处共用。
+OPS_HEADER_NAME = "x-requested-with"
+OPS_HEADER_VALUE = "AstrBotProactiveChatConsole"
 
 
 class ApiRoutes:
@@ -122,7 +131,7 @@ class ApiRoutes:
         # 运行状态总览（含计时器卡片与连接数）。
         @app.get("/api/status")
         async def get_status():
-            return state.build_status_payload()
+            return await state.build_status_payload()
 
         # 可浏览的 Markdown 文档列表。
         @app.get("/api/markdown-files")
@@ -169,8 +178,14 @@ class ApiRoutes:
             web_admin = {
                 k: v for k, v in _config_group("web_admin").items() if k != "password"
             }
+            # admin_users 是顶层列表而非分组，单独处理：它是管理指令的权限边界，
+            # 必须在 WebUI 可读可写，否则用户无法在面板里授予插件管理员。
+            admin_users = self.config.get("admin_users") or []
+            if not isinstance(admin_users, list):
+                admin_users = []
             # 返回所有可编辑分组，保证前端渲染的字段与服务端保存范围一致。
             return {
+                "admin_users": [str(item) for item in admin_users],
                 "friend_settings": _config_group("friend_settings"),
                 "group_settings": _config_group("group_settings"),
                 "web_admin": web_admin,
@@ -178,9 +193,31 @@ class ApiRoutes:
                 "telemetry_config": _config_group("telemetry_config"),
             }
 
-        # 返回 _conf_schema.json 内容，供前端渲染配置表单。
+        # 可用人格列表：直接读 AstrBot 的 persona_manager，与 WebUI 保持同源。
+        @app.get("/api/personas")
+        async def list_personas():
+            personas = await plugin.context_service.list_available_personas()
+            return {
+                "personas": personas,
+                # 供前端在 select_persona 控件中渲染“继承/不使用”两个特殊选项。
+                "special_options": [
+                    {"value": "", "label": "跟随 AstrBot 当前人格"},
+                    {
+                        "value": "[%None]",
+                        "label": "不使用人格（仅用主动消息提示词）",
+                    },
+                ],
+            }
+
+        # 返回配置 schema，供前端渲染配置表单。
+        # 优先使用运行期装配结果：已合并各 Feature 的配置声明，
+        # 比磁盘上的静态文件更贴近当前实际生效的配置结构。
         @app.get("/api/config-schema")
         async def get_config_schema():
+            runtime_schema = getattr(self.config, "schema", None)
+            if isinstance(runtime_schema, dict) and runtime_schema:
+                return runtime_schema
+
             schema_path = Path(__file__).resolve().parents[2] / "_conf_schema.json"
             if schema_path.exists():
                 try:
@@ -218,6 +255,32 @@ class ApiRoutes:
                     status_code=400,
                 )
 
+            # admin_users 是顶层列表，单独校验并去空白，避免空串混入权限名单。
+            admin_users_payload = None
+            if "admin_users" in payload:
+                raw_admins = payload.get("admin_users")
+                if raw_admins is None:
+                    raw_admins = []
+                if not isinstance(raw_admins, list):
+                    return JSONResponse(
+                        {
+                            "error": "admin_users 必须是字符串数组",
+                            "invalid_keys": ["admin_users"],
+                        },
+                        status_code=400,
+                    )
+                if any(not isinstance(item, str) for item in raw_admins):
+                    return JSONResponse(
+                        {
+                            "error": "admin_users 必须是字符串数组",
+                            "invalid_keys": ["admin_users"],
+                        },
+                        status_code=400,
+                    )
+                admin_users_payload = [
+                    item.strip() for item in raw_admins if item.strip()
+                ]
+
             # 遥测开关必须是布尔值。
             telemetry_payload = payload.get("telemetry_config")
             if isinstance(telemetry_payload, dict) and "enabled" in telemetry_payload:
@@ -243,8 +306,15 @@ class ApiRoutes:
                 else:
                     self.config[key] = payload[key]
 
+            if admin_users_payload is not None:
+                self.config["admin_users"] = admin_users_payload
+
             # 遥测开关是运行期缓存的，必须在内存配置更新后同步，否则要重启才生效。
             self._sync_telemetry_config()
+            # 配置可能改了人格，清掉人格摘要缓存，避免面板短时间仍显示旧值。
+            invalidate = getattr(state, "invalidate_persona_cache", None)
+            if callable(invalidate):
+                invalidate()
 
             try:
                 plugin.config.save_config()
@@ -307,19 +377,67 @@ class ApiRoutes:
                 "effective": plugin.config_service.get_session_config(normalized),
             }
 
+        # 预览某会话最终生效的人格与来源，使用独立前缀避免路径贪婪匹配。
+        @app.get("/api/persona-preview/{umo:path}")
+        async def preview_session_persona(umo: str):
+            normalized = plugin.session_service.normalize_session_id(umo)
+            # 解析对话人格需要真实对话对象，缺失时按 None 处理即可。
+            conversation = None
+            try:
+                conv_id = (
+                    await plugin.context.conversation_manager.get_curr_conversation_id(
+                        normalized
+                    )
+                )
+                if conv_id:
+                    conversation = (
+                        await plugin.context.conversation_manager.get_conversation(
+                            normalized, conv_id
+                        )
+                    )
+            except Exception as e:
+                logger.debug(f"[主动消息] 预览人格时读取对话失败喵: {e}")
+
+            service = plugin.context_service
+            # 预览属于调试路径，高频调用不应反复刷人格遮蔽日志。
+            resolution = await service.resolve_persona(
+                normalized, conversation, log_shadow=False
+            )
+            # 各来源原始取值一并返回，便于定位优先级遮蔽问题。
+            candidates = {
+                "plugin_config": service.get_plugin_persona_id(normalized),
+                "profile": service.get_profile_persona_id(normalized),
+                "session_rule": await service.get_session_rule_persona_id(normalized),
+                "conversation": service.get_conversation_persona_id(conversation),
+                "default": await service.get_default_persona_id(normalized),
+            }
+            return {
+                "session": normalized,
+                "persona_id": resolution.persona_id,
+                "persona_name": resolution.persona_name,
+                "persona_source": resolution.source,
+                "persona_source_label": resolution.source_label,
+                "has_prompt": bool(resolution.system_prompt),
+                "disabled": resolution.disabled,
+                "candidates": candidates,
+            }
+
         # 写入会话配置：mode=override 直接覆盖差异；否则按 effective 反推差异。
         @app.post("/api/session-config/{umo:path}")
         async def update_session_config(umo: str, payload: dict[str, Any]):
             normalized = plugin.session_service.normalize_session_id(umo)
             mode = payload.get("mode", "effective")
 
+            saved = True
             if mode == "override":
                 override = payload.get("override", {})
                 if not isinstance(override, dict):
                     return JSONResponse(
                         {"error": "override 必须是对象"}, status_code=400
                     )
-                await plugin.session_override_manager.set_override(normalized, override)
+                saved = await plugin.session_override_manager.set_override(
+                    normalized, override
+                )
             else:
                 effective = payload.get("effective", {})
                 if not isinstance(effective, dict):
@@ -334,11 +452,28 @@ class ApiRoutes:
                         },
                         status_code=400,
                     )
-                await plugin.session_override_manager.update_session_from_effective(
-                    normalized, base, effective
+                saved = (
+                    await plugin.session_override_manager.update_session_from_effective(
+                        normalized, base, effective
+                    )
                 )
 
+            # 会话 override 可能包含 persona_id，必须在广播前失效该会话的
+            # 人格缓存，否则状态卡片与任务列表会继续显示旧人格。
+            invalidate = getattr(state, "invalidate_persona_cache", None)
+            if callable(invalidate):
+                invalidate(normalized)
             await _broadcast_web_update("session-config")
+            if not saved:
+                # 与 /api/config 保持一致：内存已改但磁盘没写成功，必须显式报错。
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "session": normalized,
+                        "error": "会话配置已应用到内存，但保存到磁盘失败",
+                    },
+                    status_code=500,
+                )
             return {
                 "ok": True,
                 "session": normalized,
@@ -350,8 +485,21 @@ class ApiRoutes:
         @app.delete("/api/session-config/{umo:path}")
         async def reset_session_config(umo: str):
             normalized = plugin.session_service.normalize_session_id(umo)
-            await plugin.session_override_manager.delete_override(normalized)
+            saved = await plugin.session_override_manager.delete_override(normalized)
+            # 删除覆写同样会改变生效人格，需与写入路径一致地失效缓存。
+            invalidate = getattr(state, "invalidate_persona_cache", None)
+            if callable(invalidate):
+                invalidate(normalized)
             await _broadcast_web_update("session-config")
+            if not saved:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "session": normalized,
+                        "error": "会话配置已从内存移除，但保存到磁盘失败",
+                    },
+                    status_code=500,
+                )
             return {
                 "ok": True,
                 "session": normalized,
@@ -362,7 +510,7 @@ class ApiRoutes:
         # 调度任务列表。
         @app.get("/api/jobs")
         async def list_jobs():
-            return {"jobs": state.collect_jobs()}
+            return {"jobs": await state.collect_jobs_async()}
 
         # 手动重新调度下一次主动消息（不重置未回复计数）。
         @app.post("/api/jobs/{umo:path}/reschedule")
@@ -538,6 +686,74 @@ class ApiRoutes:
                     status_code=500,
                 )
 
+        # ------------------------------------------------------------------
+        # 运维快捷操作（等价于 /主动消息重启 与 /重启AstrBot 指令）
+        # ------------------------------------------------------------------
+        def _reject_cross_site(request: Any) -> Any:
+            """校验运维请求是否来自控制台页面；通过返回 None。
+
+            WebUI 未设置密码时中间件完全放行，此时跨站表单可以直接 POST
+            到本机端口。要求自定义头即可挡住这类无法预检的简单请求。
+            """
+            if request.headers.get(OPS_HEADER_NAME, "") != OPS_HEADER_VALUE:
+                return JSONResponse(
+                    {"error": "请求来源不受信任，请从管理端页面操作"},
+                    status_code=403,
+                )
+            return None
+
+        @app.post("/api/plugin/reload")
+        async def reload_plugin(background_tasks: BackgroundTasks, request: Request):
+            """重载本插件。
+
+            BackgroundTasks 保证响应发送完成后才执行重载，避免销毁旧实例
+            与响应返回之间的竞态。
+            """
+            rejected = _reject_cross_site(request)
+            if rejected is not None:
+                return rejected
+
+            service = getattr(plugin, "command_service", None)
+            if service is None:
+                return JSONResponse({"error": "指令服务未就绪"}, status_code=503)
+
+            try:
+                message = service.register_reload_task(background_tasks)
+            except Exception as e:
+                logger.error(f"[主动消息] Web 端重载插件失败喵: {e}")
+                return JSONResponse(
+                    {"error": "重载插件失败", "message": str(e)}, status_code=500
+                )
+
+            return {"ok": True, "message": message}
+
+        @app.post("/api/astrbot/restart")
+        async def restart_astrbot(request: Request):
+            """重启 AstrBot 进程，返回派发结果。"""
+            rejected = _reject_cross_site(request)
+            if rejected is not None:
+                return rejected
+
+            service = getattr(plugin, "command_service", None)
+            if service is None:
+                return JSONResponse({"error": "指令服务未就绪"}, status_code=503)
+
+            try:
+                ok, message, status_code = await service.web_restart_astrbot()
+            except Exception as e:
+                logger.error(f"[主动消息] Web 端重启 AstrBot 失败喵: {e}")
+                return JSONResponse(
+                    {"error": "重启 AstrBot 失败", "message": str(e)}, status_code=500
+                )
+
+            if not ok:
+                # 409 表示已有重启任务在跑（幂等跳过），不是真的失败。
+                return JSONResponse(
+                    {"ok": False, "error": message, "in_progress": status_code == 409},
+                    status_code=status_code,
+                )
+            return {"ok": True, "message": message}
+
         # 立即触发一次主动消息（异步执行，占用期间拒绝重复触发）。
         @app.post("/api/jobs/{umo:path}/trigger")
         async def trigger_job(umo: str):
@@ -596,6 +812,73 @@ class ApiRoutes:
             await _broadcast_web_update("jobs")
             return {"ok": True, "session": normalized, "removed": removed}
 
+        # 结束会话当前的计时器：只退场并登记下一次任务，不会真正发送主动消息。
+        @app.post("/api/timers/{umo:path}/finish")
+        async def finish_timer(umo: str, timer_kind: str = ""):
+            normalized = plugin.session_service.normalize_session_id(umo)
+            result = await plugin.scheduler_service.finish_timer(normalized, timer_kind)
+            await _broadcast_web_update("timers")
+            if not result.get("ok"):
+                if result.get("reason") == "reschedule_failed":
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "session": normalized,
+                            "error": "登记后续任务失败，原计时器已保留",
+                        },
+                        status_code=500,
+                    )
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "session": normalized,
+                        "error": "该会话当前没有正在运行的计时器",
+                    },
+                    status_code=404,
+                )
+            return {
+                "ok": True,
+                "session": normalized,
+                "scheduled": bool(result.get("scheduled")),
+                "message": "已结束计时器，下一次主动消息已进入任务管理页",
+            }
+
+        # 按当前配置重新开始计时，不发送消息也不改动未回复计数。
+        @app.post("/api/timers/{umo:path}/reset")
+        async def reset_timer(umo: str, timer_kind: str = ""):
+            normalized = plugin.session_service.normalize_session_id(umo)
+            result = await plugin.scheduler_service.reset_timer(normalized, timer_kind)
+            await _broadcast_web_update("timers")
+            if not result.get("ok"):
+                reason = result.get("reason")
+                if reason == "disabled":
+                    error = "会话未启用或不存在，无法重置计时器"
+                elif reason == "already_scheduled":
+                    error = "该会话已有待发送任务，无需重新计时"
+                elif reason == "max_unanswered":
+                    error = "未回复次数已达上限，不会重新计时"
+                else:
+                    error = "该会话没有可重置的计时器配置"
+                return JSONResponse(
+                    {"ok": False, "session": normalized, "error": error},
+                    status_code=400,
+                )
+            return {
+                "ok": True,
+                "session": normalized,
+                "message": "已按当前配置重新开始计时",
+            }
+
+        async def _build_full_update_payload() -> dict[str, Any]:
+            """构建 WebSocket 全量快照，状态与任务共用一次人格解析。"""
+            combined = await state.build_realtime_payload()
+            return {
+                "status": combined["status"],
+                "jobs": combined["jobs"],
+                "sessions": state.list_known_session_summaries(),
+                "notifications": await state.build_notification_payload(),
+            }
+
         # WebSocket 实时通道：连接后先推送一次全量快照，之后响应 ping/refresh。
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
@@ -614,15 +897,7 @@ class ApiRoutes:
 
             try:
                 await websocket.send_json(
-                    {
-                        "type": "full_update",
-                        "data": {
-                            "status": state.build_status_payload(),
-                            "jobs": state.collect_jobs(),
-                            "sessions": state.list_known_session_summaries(),
-                            "notifications": await state.build_notification_payload(),
-                        },
-                    }
+                    {"type": "full_update", "data": await _build_full_update_payload()}
                 )
 
                 while True:
@@ -648,12 +923,7 @@ class ApiRoutes:
                         await websocket.send_json(
                             {
                                 "type": "full_update",
-                                "data": {
-                                    "status": state.build_status_payload(),
-                                    "jobs": state.collect_jobs(),
-                                    "sessions": state.list_known_session_summaries(),
-                                    "notifications": await state.build_notification_payload(),
-                                },
+                                "data": await _build_full_update_payload(),
                             }
                         )
             except WebSocketDisconnect:

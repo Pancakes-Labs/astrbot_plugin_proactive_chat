@@ -14,7 +14,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ...utils.version_utils import get_plugin_version
-from .api_routes import ApiRoutes
+from .api_routes import OPS_HEADER_NAME, OPS_HEADER_VALUE, ApiRoutes
 from .realtime_channel import RealtimeChannel
 from .state_builder import StateBuilder
 from .token_auth import TokenAuth
@@ -42,6 +42,13 @@ except ImportError:
 
 
 _PORT_FALLBACK_MAX_ATTEMPTS = 20
+
+# 只读方法不参与跨站来源校验：GET 无副作用，且 OPTIONS 必须放行给 CORS 预检。
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# 登录必须能在尚未拿到令牌时提交，其余写接口一律要求自定义头。
+_WRITE_GUARD_EXEMPT_PATHS = frozenset({"/api/login"})
+# 视为仅本机可达的监听地址，其余地址都会把管理端暴露到网络上。
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", ""})
 
 
 def is_running_in_docker() -> bool:
@@ -89,6 +96,11 @@ class WebConsoleServer:
         # 记录 Web 端可用性及初始化失败原因。
         self._web_admin_available = False
         self._web_admin_init_error: str | None = None
+        # 状态广播合并窗口：群聊消息连发时避免重复构建全量载荷。
+        self._broadcast_task: asyncio.Task | None = None
+        self._pending_broadcast_reason = ""
+        # 构建/发送阶段到达的新请求置位，flush 收尾后据此补跑一轮。
+        self._broadcast_dirty = False
 
         if FASTAPI_AVAILABLE:
             try:
@@ -123,10 +135,21 @@ class WebConsoleServer:
             allow_headers=["*"],
         )
 
-        # HTTP 鉴权中间件：启用鉴权后，除登录与鉴权信息接口外，
-        # 其余 /api 前缀请求都必须携带有效 Bearer 令牌。
+        # HTTP 鉴权中间件：先做跨站来源校验，再按开关校验 Bearer 令牌。
+        # 跨站校验对所有写方法生效，未设置密码时同样不跳过。
         @self.app.middleware("http")
         async def auth_middleware(request: Request, call_next):
+            if (
+                request.method not in _SAFE_METHODS
+                and request.url.path.startswith("/api")
+                and request.url.path not in _WRITE_GUARD_EXEMPT_PATHS
+                and request.headers.get(OPS_HEADER_NAME, "") != OPS_HEADER_VALUE
+            ):
+                return JSONResponse(
+                    {"error": "请求来源不受信任，请从管理端页面操作"},
+                    status_code=403,
+                )
+
             if not self.token_auth.enabled:
                 return await self._with_static_cache_policy(request, call_next)
 
@@ -195,28 +218,82 @@ class WebConsoleServer:
             logger.warning(f"[主动消息] 未找到管理端静态目录喵: {admin_dir}")
 
     # ------------------------------------------------------------------
-    # 广播（供通知中心与路由复用）
+    # 广播（供通知中心、路由与消息事件复用）
     # ------------------------------------------------------------------
     async def _broadcast_ws_payload(self, payload: dict[str, Any]) -> None:
         """通过实时通道向所有连接广播任意载荷。"""
         await self.realtime.broadcast_ws_payload(payload)
 
     async def _broadcast_update(self, reason: str) -> None:
-        """广播一份全量状态刷新载荷（无连接时直接跳过）。"""
+        """广播一份全量状态刷新载荷（无连接时直接跳过）。
+
+        新增合并窗口：群聊消息可能在短时间内连发，逐条构建全量载荷会
+        同时拖慢事件处理与前端刷新，这里把 300ms 内的多次请求合并为一次。
+
+        注意构建阶段同样属于“任务未完成”，此期间到达的请求不能直接丢弃，
+        否则计时器变化既进不了当前载荷也不会触发下一轮，前端会一直显示旧状态。
+        """
         if not self.realtime.connections:
             return
 
-        payload = {
-            "type": "update",
-            "reason": reason,
-            "data": {
-                "status": self.state_builder.build_status_payload(),
-                "jobs": self.state_builder.collect_jobs(),
-                "sessions": self.state_builder.list_known_session_summaries(),
-                "notifications": await self.state_builder.build_notification_payload(),
-            },
-        }
-        await self._broadcast_ws_payload(payload)
+        self._pending_broadcast_reason = reason
+        # 已有等待中的合并任务时打脏标记：本次状态变化必须由下一轮广播补上。
+        if self._broadcast_task and not self._broadcast_task.done():
+            self._broadcast_dirty = True
+            return
+
+        self._broadcast_task = asyncio.create_task(self._flush_broadcast_update())
+        # 任务结束时清理引用，避免持有已完成的 Task 造成对象无法回收。
+        self._broadcast_task.add_done_callback(self._clear_broadcast_task)
+
+    def _clear_broadcast_task(self, task: Any) -> None:
+        """广播任务收尾：清理引用并吞掉异常，防止 asyncio 打未检索告警。"""
+        if self._broadcast_task is task:
+            self._broadcast_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"[主动消息] 状态广播失败喵: {e}")
+
+    async def _flush_broadcast_update(self) -> None:
+        """等待合并窗口后构建并广播全量状态，必要时补跑一轮。"""
+        while True:
+            try:
+                await asyncio.sleep(0.3)
+            except asyncio.CancelledError:
+                return
+
+            if not self.realtime.connections:
+                self._broadcast_dirty = False
+                return
+
+            reason = self._pending_broadcast_reason or "update"
+            # 构建开始前先清标记：构建期间的新请求会重新置位，触发下一轮。
+            self._broadcast_dirty = False
+
+            # 合并构建：状态卡片与任务列表共享同一份人格解析缓存，
+            # 避免同一会话在一轮广播里被解析两次。
+            combined = await self.state_builder.build_realtime_payload()
+            status = combined["status"]
+            jobs = combined["jobs"]
+
+            payload = {
+                "type": "update",
+                "reason": reason,
+                "data": {
+                    "status": status,
+                    "jobs": jobs,
+                    "sessions": self.state_builder.list_known_session_summaries(),
+                    "notifications": await self.state_builder.build_notification_payload(),
+                },
+            }
+            await self._broadcast_ws_payload(payload)
+
+            # 构建或发送期间又有状态变化时补跑一轮，避免这一轮载荷落后于真实状态。
+            if not self._broadcast_dirty:
+                return
 
     async def _broadcast_notification_meta_update(self, reason: str) -> None:
         """只广播通知元信息（未读数等），用于轻量刷新。"""
@@ -313,6 +390,14 @@ class WebConsoleServer:
 
         host = web_admin.get("host", "127.0.0.1")
         configured_port = int(web_admin.get("port", 4100))
+
+        # 监听非回环地址且未设密码时，局域网内任何人都能直接操作管理端
+        # （改配置、结束计时器、重启进程）。这里只告警，交给用户决定。
+        if host not in _LOOPBACK_HOSTS and not web_admin.get("password", ""):
+            logger.warning(
+                f"[主动消息] Web 管理端监听端口 {host} 且未设置访问密码喵："
+                "同一网络内的任何人都能打开并操作管理端，建议设置访问密码。"
+            )
 
         in_docker = is_running_in_docker()
         port = self._resolve_bind_port(

@@ -1,0 +1,609 @@
+/* 文件职责：会话卡片共享视觉层，供状态页计时器卡片与任务页调度卡片复用。
+ *
+ * 设计约束：
+ * 1. 类名统一 tcard- 前缀，不含“计时器/任务”语义，避免后续复用受限；
+ * 2. 本文件不依赖 status.css / content.css 的任何类，保证可独立加载；
+ * 3. 旧的 status-timer-* 与 task-card-* 类保持原样，通知页仍在复用。
+ */
+
+/* ===== 卡片外壳 =====
+   三段式结构：身份行 / 倒计时主体 / 配置事实行。
+   主题色以环绕描边呈现：伪元素铺满卡片并只画 border，颜色由 --tcard-accent 驱动。 */
+.tcard {
+    --tcard-accent: #6750A4;
+    --tcard-accent-alpha: 0.70;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 18px 20px;
+    position: relative;
+    overflow: visible;
+    isolation: isolate;
+    /* 内层元素不能盖住描边，因此把伪元素层级提到最上（pointer-events 关闭）。 */
+    transition:
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        box-shadow var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.tcard::before {
+    content: '';
+    position: absolute;
+    /* 内缩 -1px 盖住 .card 自带的 1px 描边，避免出现双线。 */
+    inset: -1px;
+    border: 2px solid var(--tcard-accent);
+    border-radius: inherit;
+    opacity: var(--tcard-accent-alpha);
+    pointer-events: none;
+    z-index: 1;
+    transition: opacity var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+/* 颜色变体：状态页区分群沉默 / 群自动触发 / 私聊自动触发，
+   任务页统一使用主色（accent-primary），语义由顶部徽标承担。 */
+.tcard.accent-group-silence {
+    --tcard-accent: #2563EB;
+    background:
+        linear-gradient(180deg, rgba(59, 130, 246, 0.06), transparent 34%),
+        var(--md-sys-color-surface);
+}
+
+.tcard.accent-auto-group {
+    --tcard-accent: #8B5CF6;
+    background:
+        linear-gradient(180deg, rgba(139, 92, 246, 0.07), transparent 34%),
+        var(--md-sys-color-surface);
+}
+
+.tcard.accent-auto-friend {
+    --tcard-accent: #EC4899;
+    background:
+        linear-gradient(180deg, rgba(236, 72, 153, 0.07), transparent 34%),
+        var(--md-sys-color-surface);
+}
+
+.tcard.accent-primary {
+    --tcard-accent: var(--md-sys-color-primary);
+    background:
+        linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.06), transparent 34%),
+        var(--md-sys-color-surface);
+}
+
+/* 紧急 / 过期态：只替换描边颜色并加强阴影，语义始终由一条色相表达。 */
+.tcard.is-urgent {
+    --tcard-accent: #F59E0B;
+    --tcard-accent-alpha: 0.85;
+    box-shadow: 0 8px 22px rgba(245, 158, 11, 0.14);
+}
+
+.tcard.is-urgent::before {
+    animation: tcard-border-pulse 1.8s ease-in-out infinite;
+}
+
+.tcard.is-expired {
+    --tcard-accent: #EF4444;
+    --tcard-accent-alpha: 0.75;
+    box-shadow: 0 8px 22px rgba(244, 67, 54, 0.12);
+}
+
+.tcard.is-resetting {
+    box-shadow: 0 12px 32px rgba(59, 130, 246, 0.12);
+}
+
+@keyframes tcard-border-pulse {
+    0%, 100% { opacity: 0.85; }
+    50% { opacity: 0.35; }
+}
+
+/* ===== 顶部浮层提示 =====
+   绝对定位，不参与布局；key 变化时由 React 重建节点以重播动画。 */
+.tcard-hint {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    right: 12px;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: rgba(240, 246, 255, 0.96);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(59, 130, 246, 0.22);
+    box-shadow: 0 8px 20px rgba(59, 130, 246, 0.18);
+    color: #2563EB;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.4;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+    animation: tcard-hint-fade 4.2s ease-out forwards;
+}
+
+body.dark-theme .tcard-hint {
+    background: rgba(30, 58, 138, 0.95);
+    border-color: rgba(59, 130, 246, 0.4);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    color: #93C5FD;
+}
+
+.tcard-hint-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: #2563EB;
+    animation: tcard-hint-dot-pulse 1.4s ease-out infinite;
+    flex-shrink: 0;
+}
+
+body.dark-theme .tcard-hint-dot {
+    background: #93C5FD;
+}
+
+@keyframes tcard-hint-dot-pulse {
+    0% {
+        transform: scale(0.9);
+        box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.34);
+    }
+    70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+    }
+    100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+    }
+}
+
+@keyframes tcard-hint-fade {
+    0% {
+        opacity: 0;
+        transform: translateY(-6px) scale(0.98);
+    }
+    10% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+    82% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.985);
+    }
+}
+
+/* ===== 身份行 ===== */
+.tcard-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    min-width: 0;
+}
+
+.tcard-identity {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.tcard-name {
+    margin: 0 !important;
+    font-weight: 800 !important;
+    font-size: 18px !important;
+    line-height: 1.3 !important;
+    letter-spacing: -0.2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* UMO 行：宽度随内容自适应收缩，长 UMO 达到 max-width 后靠省略号收尾。 */
+.tcard-umo {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    /* align-self 让胶囊按内容宽度收缩，而不是跟随父级 stretch 拉满。 */
+    align-self: flex-start;
+    width: auto;
+    max-width: 100%;
+    min-width: 0;
+    padding: 4px 8px;
+    border-radius: 8px;
+    border: 1px dashed rgb(var(--md-primary-rgb) / 0.2);
+    background: rgb(var(--md-primary-rgb) / 0.04);
+    color: var(--md-sys-color-on-surface-variant);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    text-align: left;
+    transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.tcard-umo:hover {
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    border-color: rgb(var(--md-primary-rgb) / 0.4);
+    color: var(--md-sys-color-primary);
+}
+
+.tcard-umo.is-copied {
+    border-style: solid;
+    border-color: rgba(46, 125, 50, 0.4);
+    background: rgba(46, 125, 50, 0.1);
+    color: #2E7D32;
+}
+
+.tcard-umo-label {
+    flex-shrink: 0;
+    font-weight: 800;
+    opacity: 0.6;
+}
+
+.tcard-umo-value {
+    /* 内容宽度由文本自身决定，超长时才在 max-width 处省略。
+       不给 flex:1，否则短 UMO 会被拉伸填满整行。 */
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+}
+
+.tcard-umo-action {
+    flex-shrink: 0;
+    font-weight: 700;
+    opacity: 0.7;
+}
+
+.tcard-umo:hover .tcard-umo-action {
+    opacity: 1;
+}
+
+.tcard-badges {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+}
+
+.tcard-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    color: var(--md-sys-color-primary);
+}
+
+.tcard-badge.accent-group-silence {
+    background: rgba(59, 130, 246, 0.12);
+    color: #2563EB;
+    border-color: rgba(59, 130, 246, 0.18);
+}
+
+.tcard-badge.accent-auto-group {
+    background: rgba(139, 92, 246, 0.12);
+    color: #7C3AED;
+    border-color: rgba(139, 92, 246, 0.18);
+}
+
+.tcard-badge.accent-auto-friend {
+    background: rgba(236, 72, 153, 0.12);
+    color: #DB2777;
+    border-color: rgba(236, 72, 153, 0.18);
+}
+
+/* ===== 倒计时主体：环形进度 + hero 数字 ===== */
+.tcard-body {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 16px;
+    border-radius: 16px;
+    background: rgb(var(--md-primary-rgb) / 0.05);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.08);
+}
+
+body.dark-theme .tcard-body {
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    border-color: rgb(var(--md-primary-rgb) / 0.14);
+}
+
+.tcard-ring {
+    position: relative;
+    flex-shrink: 0;
+    width: 64px;
+    height: 64px;
+}
+
+.tcard-ring-svg {
+    width: 64px;
+    height: 64px;
+    transform: rotate(-90deg);
+}
+
+.tcard-ring-track {
+    fill: none;
+    stroke: rgb(var(--md-primary-rgb) / 0.16);
+    stroke-width: 6;
+}
+
+.tcard-ring-bar {
+    fill: none;
+    stroke: #6750A4;
+    stroke-width: 6;
+    stroke-linecap: round;
+    /* 周长与偏移由 JS 通过自定义属性传入。 */
+    stroke-dasharray: var(--ring-circumference);
+    stroke-dashoffset: var(--ring-offset);
+    transition: stroke-dashoffset 0.6s linear, stroke 0.3s ease;
+}
+
+.tcard-ring-bar.is-soon { stroke: #3B82F6; }
+.tcard-ring-bar.is-urgent { stroke: #F59E0B; }
+.tcard-ring-bar.is-expired,
+.tcard-ring-bar.is-unknown { stroke: #EF4444; }
+
+.tcard-ring-value {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    font-weight: 800;
+    letter-spacing: -0.4px;
+    color: var(--md-sys-color-on-surface);
+}
+
+.tcard-ring-value small {
+    font-size: 10px;
+    font-weight: 700;
+    opacity: 0.6;
+    margin-left: 1px;
+}
+
+.tcard-body-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tcard-kicker {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.75;
+}
+
+.tcard-countdown {
+    display: flex;
+    align-items: baseline;
+    gap: 2px;
+    flex-wrap: wrap;
+    line-height: 1.1;
+}
+
+/* 仅数字用主题色：单位保持中性色，避免整段倒计时都抢眼。 */
+.tcard-countdown-num {
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: -0.8px;
+    color: var(--md-sys-color-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.tcard-countdown-unit {
+    font-size: 13px;
+    font-weight: 700;
+    margin-right: 4px;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.8;
+}
+
+.tcard-countdown-empty {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.tcard-foot {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.82;
+    line-height: 1.5;
+    /* 固定行高与等宽数字，秒数走字时不会引起高度或宽度抖动。 */
+    min-height: 17px;
+    font-variant-numeric: tabular-nums;
+}
+
+.tcard-foot-item {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.tcard-foot-dot {
+    opacity: 0.4;
+}
+
+.tcard-foot-time {
+    margin-left: 2px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface);
+    cursor: help;
+}
+
+/* ===== 配置事实行：字段名严格对齐配置页 ===== */
+.tcard-facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+    margin: 0;
+    padding-top: 12px;
+    border-top: 1px dashed rgb(var(--md-primary-rgb) / 0.16);
+}
+
+.tcard-fact {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.tcard-fact dt {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.7;
+}
+
+.tcard-fact dd {
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.45;
+    color: var(--md-sys-color-on-surface);
+    word-break: break-word;
+}
+
+.tcard-fact.is-warning dd {
+    color: #B45309;
+}
+
+.tcard-fact-sub {
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.62;
+}
+
+.tcard-fact-persona.is-disabled {
+    color: #B45309;
+}
+
+.tcard-fact-persona.is-unknown {
+    color: #64748B;
+}
+
+body.dark-theme .tcard-fact.is-warning dd {
+    color: #FBC02D;
+}
+
+body.dark-theme .tcard-kicker,
+body.dark-theme .tcard-foot,
+body.dark-theme .tcard-fact dt {
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.95;
+}
+
+/* ===== 操作区：任务页专用，供按钮与反馈文案占位 ===== */
+.tcard-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px dashed rgb(var(--md-primary-rgb) / 0.16);
+}
+
+/* 反馈文案只是短暂出现，多条时用统一容器占位，避免每条各自 min-height
+   叠出一大块空白。容器本身不给最小高度，没有反馈时完全不占位。 */
+.tcard-feedback-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.tcard-feedback {
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.tcard-feedback.is-error {
+    color: var(--md-sys-color-error);
+}
+
+.tcard-feedback.is-success {
+    color: var(--md-sys-color-success);
+}
+
+.tcard-button-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: nowrap;
+}
+
+.tcard-button-row .MuiButton-root {
+    min-width: 0;
+    flex: 1 1 0;
+}
+
+/* 尊重系统“减少动态效果”偏好。 */
+@media (prefers-reduced-motion: reduce) {
+    .tcard,
+    /* 紧急态描边动画挂在伪元素上，父选择器无法覆盖，必须显式点出。 */
+    .tcard.is-urgent::before,
+    .tcard-hint,
+    .tcard-hint-dot,
+    .tcard-ring-bar {
+        animation: none !important;
+        transition: none !important;
+    }
+
+    /* 提示条依赖动画淡入，关掉动画后必须补上静态可见状态。 */
+    .tcard-hint {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+/* ===== 响应式 ===== */
+@media (max-width: 640px) {
+    .tcard-facts {
+        grid-template-columns: 1fr;
+    }
+
+    .tcard-head {
+        flex-wrap: wrap;
+    }
+
+    .tcard-badges {
+        flex-direction: row;
+        align-items: center;
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .tcard-body {
+        gap: 12px;
+        padding: 12px;
+    }
+
+    .tcard-countdown-num {
+        font-size: 22px;
+    }
+}

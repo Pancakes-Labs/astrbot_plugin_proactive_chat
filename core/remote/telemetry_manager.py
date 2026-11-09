@@ -469,6 +469,12 @@ class TelemetryManager:
                 # 私聊主动提示词正文属于高敏感内容，必须完全移除。
                 if "proactive_prompt" in friend_settings:
                     del friend_settings["proactive_prompt"]
+                # 多提示词模板同样整段过滤，只保留条数用于统计。
+                templates = friend_settings.pop("prompt_templates", None)
+                if templates is not None:
+                    friend_settings["prompt_templates_count"] = (
+                        len(templates) if isinstance(templates, list) else 0
+                    )
 
             group_settings = config_copy.get("group_settings")
             if isinstance(group_settings, dict):
@@ -480,11 +486,26 @@ class TelemetryManager:
                 # 群聊提示词也做整段过滤，避免活跃策略被直接暴露。
                 if "proactive_prompt" in group_settings:
                     del group_settings["proactive_prompt"]
+                templates = group_settings.pop("prompt_templates", None)
+                if templates is not None:
+                    group_settings["prompt_templates_count"] = (
+                        len(templates) if isinstance(templates, list) else 0
+                    )
 
             web_admin = config_copy.get("web_admin")
             if isinstance(web_admin, dict) and "password" in web_admin:
                 # 管理端密码绝不进入遥测事件。
                 del web_admin["password"]
+
+            # admin_users 是 QQ 号等真实用户标识，属于可关联到个人的信息，
+            # 与 session_list 同理只保留数量用于统计权限规模。
+            # 该字段在 schema 中默认是 null，只要键存在就上报数量，
+            # 缺失上报会让统计端的平均值偏高。
+            if "admin_users" in config_copy:
+                admin_users = config_copy.pop("admin_users")
+                config_copy["admin_users_count"] = (
+                    len(admin_users) if isinstance(admin_users, list) else 0
+                )
 
             return await self.track("config", config_copy)
         except Exception as e:

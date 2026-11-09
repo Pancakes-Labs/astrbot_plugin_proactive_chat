@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from astrbot.api import logger
+
 
 class StateBuilder:
     """构建运行状态、任务卡片、会话摘要与文档列表载荷。"""
@@ -25,6 +27,15 @@ class StateBuilder:
         self._metadata_version = metadata_version
         # WebSocket 连接计数由实时通道提供，供状态载荷展示连接状态。
         self._connection_counter = connection_counter or (lambda: 0)
+        # 人格摘要缓存：广播每 300ms 一次，状态与任务各解析一遍，
+        # 逐会话读对话管理器是真实 I/O，短 TTL 足够新鲜又能避免重复读盘。
+        # TTL 取 10 秒而不是 30 秒：会话级人格也可能在 /persona 等插件之外
+        # 的路径改变，缓存只是广播合并窗口的补充，不能当成权威来源。
+        self._persona_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._persona_cache_ttl = 10.0
+        # 缓存代次：每次失效都递增。解析在 await 期间可能跨越一次失效，
+        # 写完前比对代次即可丢弃这次结果，避免把旧人格重新灌回缓存。
+        self._persona_cache_generation = 0
 
     # ------------------------------------------------------------------
     # 计时器元信息
@@ -138,6 +149,10 @@ class StateBuilder:
                     "max_unanswered_times": schedule_settings.get(
                         "max_unanswered_times", 0
                     ),
+                    "quiet_hours": schedule_settings.get("quiet_hours", ""),
+                    "quiet_hours_enabled": bool(
+                        schedule_settings.get("enable_quiet_hours", True)
+                    ),
                     "timer_kind": "auto_trigger",
                     "title": "自动触发检测",
                     "status": "running" if remaining_seconds is not None else "unknown",
@@ -169,8 +184,14 @@ class StateBuilder:
             target_time = timer_meta["target_time"]
             last_message_time = plugin.last_message_times.get(normalized_session_id, 0)
             temp_state = plugin.session_temp_state.get(normalized_session_id, {})
+            # 优先级：人为重新计时的起点 > 真实发言时间 > 临时状态。
+            # 重新计时不再改写 last_message_times，卡片必须从独立起点读，
+            # 否则工期展示会跳回旧值。
             last_user_time = (
-                temp_state.get("last_user_time") or last_message_time or None
+                plugin.silence_baselines.get(normalized_session_id)
+                or last_message_time
+                or temp_state.get("last_user_time")
+                or None
             )
             started_at = last_user_time or (
                 now - max(0, idle_seconds - (remaining_seconds or 0))
@@ -199,6 +220,10 @@ class StateBuilder:
                     ),
                     "max_unanswered_times": schedule_settings.get(
                         "max_unanswered_times", 0
+                    ),
+                    "quiet_hours": schedule_settings.get("quiet_hours", ""),
+                    "quiet_hours_enabled": bool(
+                        schedule_settings.get("enable_quiet_hours", True)
                     ),
                     "timer_kind": "group_silence",
                     "title": "群沉默检测",
@@ -252,15 +277,107 @@ class StateBuilder:
             }
         return await notification_center.get_payload()
 
-    def build_status_payload(self) -> dict[str, Any]:
+    def invalidate_persona_cache(self, session_id: str | None = None) -> None:
+        """清空人格摘要缓存；配置保存后调用，保证改人格立刻可见。
+
+        同时递增代次：若此刻有解析正在 await，它写回缓存前会发现代次已变，
+        从而放弃写入，否则失效会被这次迟到的结果撤销。
+        """
+        self._persona_cache_generation += 1
+        if session_id is None:
+            self._persona_cache.clear()
+            return
+        self._persona_cache.pop(str(session_id), None)
+
+    async def build_persona_map(
+        self, sessions: list[str], *, use_cache: bool = True
+    ) -> dict[str, dict[str, Any]]:
+        """批量解析会话生效人格，供状态 / 任务卡片直接标注。
+
+        解析失败时返回空 dict，调用方按“未知”展示即可，不能因此让整个载荷失败。
+        缓存命中时只补查缺失或过期的会话，避免同一轮广播重复解析。
+        """
+        unique_sessions = [s for s in dict.fromkeys(sessions) if s]
+        if not unique_sessions:
+            return {}
+
+        result: dict[str, dict[str, Any]] = {}
+        pending: list[str] = []
+        now = time.time()
+        generation = self._persona_cache_generation
+        for session in unique_sessions:
+            cached = self._persona_cache.get(session)
+            if (
+                use_cache
+                and cached is not None
+                and now - cached[0] < self._persona_cache_ttl
+            ):
+                result[session] = cached[1]
+                continue
+            pending.append(session)
+
+        if not pending:
+            return result
+
+        try:
+            resolved = await self.plugin.context_service.resolve_personas_for_sessions(
+                pending
+            )
+        except Exception as e:
+            # 解析整体失败时不写缓存：否则一次瞬时 I/O 故障会让面板在整个
+            # TTL 内都显示“未知人格”，而且恢复后也不会自动刷新。
+            logger.debug(f"[主动消息] 构建人格摘要映射失败喵: {e}")
+            return result
+
+        if not isinstance(resolved, dict):
+            return result
+
+        # 解析期间缓存被失效（配置保存）时，这批结果可能基于旧配置，直接丢弃。
+        cache_valid = generation == self._persona_cache_generation
+
+        for session in pending:
+            persona = resolved.get(session, {})
+            summary = persona if isinstance(persona, dict) else {}
+            result[session] = summary
+            # 单个会话解析失败的摘要（ok=False）同样不缓存，留待下次广播重试。
+            if cache_valid and summary.get("ok", True):
+                self._persona_cache[session] = (now, summary)
+        return result
+
+    async def build_realtime_payload(self) -> dict[str, Any]:
+        """一次构建状态与任务载荷，共享同一份人格解析缓存。
+
+        状态卡片与任务列表的会话高度重叠，分开构建会让同一会话在一轮广播里
+        被解析两次；活跃群多时就是成倍的对话管理器读取。
+        """
+        status = await self.build_status_payload()
+        jobs = self.collect_jobs()
+        try:
+            persona_map = await self.build_persona_map([job["id"] for job in jobs])
+        except Exception as e:
+            logger.debug(f"[主动消息] 构建任务人格摘要失败喵: {e}")
+            persona_map = {}
+        for job in jobs:
+            job["persona"] = persona_map.get(job["id"], {})
+        return {"status": status, "jobs": jobs}
+
+    async def build_status_payload(self) -> dict[str, Any]:
         """构建运行状态载荷（版本、运行时长、任务计数与计时器卡片）。"""
         plugin = self.plugin
         now = time.time()
         uptime_sec = max(0, int(now - plugin.plugin_start_time))
         timer_cards = self.collect_timer_cards(now)
+        # 计时器卡片的会话集合，用于一次性批量解析生效人格。
+        persona_map = await self.build_persona_map(
+            [card["session_id"] for card in timer_cards["auto_trigger_cards"]]
+            + [card["session_id"] for card in timer_cards["group_timer_cards"]]
+        )
 
         return {
             "running": True,
+            # timer_snapshot_at 是 remaining_seconds 对应的服务器时刻。
+            # 前端据此扣除「构建 + 传输」耗时，否则刷新时会莫名少掉数秒。
+            "timer_snapshot_at": now,
             "version": getattr(plugin, "version", None)
             or getattr(plugin, "__version__", None)
             or self._metadata_version
@@ -277,15 +394,34 @@ class StateBuilder:
             "jobs_count": len(plugin.scheduler.get_jobs()) if plugin.scheduler else 0,
             "timer_cards_total": len(timer_cards["auto_trigger_cards"])
             + len(timer_cards["group_timer_cards"]),
-            "auto_trigger_cards": timer_cards["auto_trigger_cards"],
-            "group_timer_cards": timer_cards["group_timer_cards"],
+            # 把人格信息挂到每张卡片上，前端无需再逐会话请求。
+            "auto_trigger_cards": [
+                {**card, "persona": persona_map.get(card["session_id"], {})}
+                for card in timer_cards["auto_trigger_cards"]
+            ],
+            "group_timer_cards": [
+                {**card, "persona": persona_map.get(card["session_id"], {})}
+                for card in timer_cards["group_timer_cards"]
+            ],
             "ws_connections": self._connection_counter(),
             # 时间戳用于前端判断数据新鲜度或手动刷新完成时间。
             "timestamp": datetime.now().isoformat(),
         }
 
     def collect_jobs(self) -> list[dict[str, Any]]:
-        """收集 APScheduler 中已注册的主动消息任务摘要。"""
+        """收集 APScheduler 中已注册的主动消息任务摘要（不含人格，同步版）。"""
+        return self._collect_jobs_sync()
+
+    async def collect_jobs_async(self) -> list[dict[str, Any]]:
+        """收集任务摘要并附带生效人格标注。"""
+        jobs = self._collect_jobs_sync()
+        persona_map = await self.build_persona_map([job["id"] for job in jobs])
+        for job in jobs:
+            job["persona"] = persona_map.get(job["id"], {})
+        return jobs
+
+    def _collect_jobs_sync(self) -> list[dict[str, Any]]:
+        """任务摘要的同步构建实现，供异步版本复用。"""
         plugin = self.plugin
         if not plugin.scheduler:
             return []
@@ -339,6 +475,9 @@ class StateBuilder:
                         "max_interval_minutes"
                     ),
                     "quiet_hours": schedule_settings.get("quiet_hours", ""),
+                    "quiet_hours_enabled": bool(
+                        schedule_settings.get("enable_quiet_hours", True)
+                    ),
                 }
             )
         return jobs

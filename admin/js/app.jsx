@@ -163,6 +163,23 @@ function App() {
         if (boot) boot.style.display = 'none';
     }, [state.status]);
 
+    // 顶部错误卡片是持久展示的兜底，这里额外用 Toast 做一次即时提醒。
+    // 同一错误文本复用固定 key，避免轮询反复报错时堆出多条相同提示。
+    const lastErrorToastRef = React.useRef('');
+    React.useEffect(() => {
+        const message = String(state.error || '').trim();
+        if (!message) {
+            lastErrorToastRef.current = '';
+            return;
+        }
+        if (lastErrorToastRef.current === message) return;
+        lastErrorToastRef.current = message;
+        if (!window.Toast) return;
+        // 页面自己已经弹过同一句错误时不再重复，只保留顶部错误卡片的持久展示。
+        if (typeof window.Toast.seenRecently === 'function' && window.Toast.seenRecently(message, 2000)) return;
+        window.Toast.error(message, { title: '操作未完成', key: 'app-global-error' });
+    }, [state.error]);
+
     // 主内容区滚动位置：与配置页共用同一套恢复实现与键规则。
     useScrollRestore(mainContentRef, window.ScrollDomain.buildScrollKey(`view_${state.currentView}`), {
         enabled: !window.__PROACTIVE_AUTH_PENDING && state.currentView !== 'config',
@@ -238,6 +255,8 @@ function App() {
 
     return (
         <div className="app">
+            {/* 全局 Toast 浮层：任何页面都可通过 window.Toast 触发。 */}
+            {window.ToastHost ? <window.ToastHost /> : null}
             <Sidebar
                 currentView={state.currentView}
                 // 侧边栏只负责发出“切换视图”的意图，真正状态写入仍走 reducer。

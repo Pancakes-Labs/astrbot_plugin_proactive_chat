@@ -13,6 +13,15 @@ from astrbot.api import logger
 from ...utils.time_utils import format_current_time
 from ..adapters.astrbot_event import dispatch_event_hook
 from ..adapters.astrbot_provider import build_provider_request, invoke_provider
+from ..domain.prompt_placeholders import (
+    PLACEHOLDER_CURRENT_TIME,
+    PLACEHOLDER_UNANSWERED_COUNT,
+    contains_placeholder,
+    render_placeholders,
+    strip_placeholders,
+)
+from ..domain.prompt_templates import resolve_active_prompt
+from ..domain.tool_markup_cleaner import clean_llm_text
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -71,11 +80,16 @@ class LlmService:
             if part is not None:
                 parts.append(part)
 
+        # 模板里已含对应占位符时不再重复注入同一信息。
         dynamic_text = self.build_dynamic_context_text(
             unanswered_count,
             session_config,
-            include_time="{{current_time}}" not in prompt_template,
-            include_unanswered="{{unanswered_count}}" not in prompt_template,
+            include_time=not contains_placeholder(
+                prompt_template, PLACEHOLDER_CURRENT_TIME
+            ),
+            include_unanswered=not contains_placeholder(
+                prompt_template, PLACEHOLDER_UNANSWERED_COUNT
+            ),
         )
         if dynamic_text:
             dynamic_part = self.plugin.context_service.make_temp_text_part(dynamic_text)
@@ -150,30 +164,50 @@ class LlmService:
         conversation: Any = None,
         platform_context: str = "",
         model: str | None = None,
+        prepared_prompt: str | None = None,
+        extra_parts: list | None = None,
     ) -> tuple[Any | None, str]:
         """统一 LLM 调用入口。
 
         model 为 None 时使用 Provider 自身的默认模型；传入非空值时仅覆盖本次
         请求的模型，供后续按场景（压缩、降级、专用模型）分层调用复用。
+
+        prepared_prompt / extra_parts 由 PROMPT 阶段预渲染后传入；
+        两者为 None 时退回本服务自行拼装，保持旧的调用契约可用。
         """
         plugin = self.plugin
-        motivation_template = session_config.get("proactive_prompt", "") or ""
-        now_str = format_current_time(plugin.timezone)
-        final_user_simulation_prompt = motivation_template.replace(
-            "{{unanswered_count}}", str(unanswered_count)
-        ).replace("{{current_time}}", now_str)
+        # 仅在缺少预渲染结果时才读取模板，避免重复解析配置。
+        motivation_template = ""
+        if prepared_prompt is None or extra_parts is None:
+            motivation_template = resolve_active_prompt(session_config) or ""
+
+        if prepared_prompt is None:
+            # 兜底渲染与 PROMPT 阶段保持一致：流水占位符不在本链路提供，
+            # 必须清掉字面残留，不能让模型直接读到标记。
+            final_user_simulation_prompt = strip_placeholders(
+                render_placeholders(
+                    motivation_template,
+                    current_time=format_current_time(plugin.timezone),
+                    unanswered_count=unanswered_count,
+                )
+            )
+        else:
+            final_user_simulation_prompt = prepared_prompt
 
         logger.debug("[主动消息] 已生成包含动机和时间的 Prompt 喵。")
 
         history_messages = plugin.context_service.sanitize_history_content(
             history_messages or []
         )
-        extra_parts = self.build_extra_content_parts(
-            platform_context=platform_context,
-            prompt_template=motivation_template,
-            unanswered_count=unanswered_count,
-            session_config=session_config,
-        )
+        if extra_parts is None:
+            extra_parts = self.build_extra_content_parts(
+                platform_context=platform_context,
+                prompt_template=motivation_template,
+                unanswered_count=unanswered_count,
+                session_config=session_config,
+            )
+        else:
+            extra_parts = list(extra_parts)
 
         provider = await self.resolve_chat_provider(session_id)
         if not provider:
@@ -273,14 +307,29 @@ class LlmService:
                 )
             return None, final_user_simulation_prompt
 
-        if response_text == "[object Object]":
+        # 1.1.3 起拦截 JS 风格的对象字符串化残留；这里升级为清洗后判定，
+        # 既能处理纯 "[object Object]"，也能处理夹在正文中间的同类残留。
+        cleaned_text = clean_llm_text(response_text)
+        if not cleaned_text:
+            # 与上面的空文本分支保持一致：文本不可用但消息链有效时继续放行。
+            if getattr(llm_response_obj, "result_chain", None):
+                logger.info(
+                    "[主动消息] 文本仅含工具调用标记或对象残留，但存在消息链，继续后续流程喵。"
+                )
+                return llm_response_obj, self.resolve_final_user_prompt(
+                    req, final_user_simulation_prompt
+                )
             logger.error(
-                "[主动消息] 喵呜！LLM 返回了意料之外的 '[object Object]' 字符串喵！"
+                "[主动消息] 喵呜！LLM 输出的正文只包含无法解析的对象或工具调用标记喵！"
             )
             logger.warning(
-                "[主动消息] 这通常是因为上下文或 Prompt 中包含了无法解析的对象喵。已拦截本次发送喵。"
+                "[主动消息] 这通常是因为上下文或 Prompt 中包含了无法解析的对象，"
+                "或上游以文本形式返回了工具调用标记喵。已拦截本次发送喵。"
             )
             return None, final_user_simulation_prompt
+        if cleaned_text != response_text:
+            logger.debug("[主动消息] 已在生成阶段清洗掉不合规的 LLM 输出喵。")
+            response_text = cleaned_text
 
         logger.info(f"[主动消息] LLM 已生成文本喵，长度: {len(response_text)}。")
         if plugin.telemetry and plugin.telemetry.enabled:
