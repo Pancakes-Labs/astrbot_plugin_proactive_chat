@@ -117,8 +117,8 @@ class SessionService:
             log_str += f" ({session_name})"
         return log_str
 
-    def find_known_umo_by_target(self, target_id: str, *, group: bool) -> str | None:
-        """在已知会话中按目标 ID 与类型族查找已存在的完整 UMO。
+    def find_known_umos_by_target(self, target_id: str, *, group: bool) -> list[str]:
+        """在已知会话中按目标 ID 与类型族查找全部已存在的完整 UMO。
 
         必须保留原有消息类型（PrivateMessage / FriendMessage、GuildMessage /
         GroupMessage 之间不能互换）：配置侧按裸 ID 匹配，但状态、覆写与调度
@@ -135,6 +135,7 @@ class SessionService:
             except Exception as e:
                 logger.debug(f"[主动消息] 读取会话覆写列表失败喵: {e}")
 
+        matched: list[str] = []
         for candidate in candidates:
             parsed = self.parse_session_id(candidate)
             if not parsed:
@@ -142,9 +143,9 @@ class SessionService:
             _, msg_type, candidate_target = parsed
             if str(candidate_target) != str(target_id):
                 continue
-            if is_group_type(msg_type) == group:
-                return candidate
-        return None
+            if is_group_type(msg_type) == group and candidate not in matched:
+                matched.append(candidate)
+        return matched
 
     def resolve_full_umo(
         self, target_id: str, msg_type: str, preferred_platform: str | None = None

@@ -146,22 +146,28 @@ class CommandSupportService:
         "group_settings": "GroupMessage",
     }
 
-    def _resolve_bare_session(self, raw: str, message_type: str) -> str:
-        """把配置里的裸 ID 补全为完整 UMO；无法确定时返回空串。
+    def _resolve_bare_sessions(self, raw: str, message_type: str) -> list[str]:
+        """把配置里的裸 ID 补全为完整 UMO 列表；无法确定时返回空列表。
 
         优先复用已知会话的原始 UMO，从而保留 PrivateMessage / GuildMessage
-        等具体类型。没有已知会话时，只有在唯一运行平台下才能确定目标平台；
+        等具体类型，并返回该 target 在全部平台上的已知会话。
+        没有已知会话时，只有在唯一运行平台下才能确定目标平台；
         多平台并存时宁可跳过并告警，也不要按平台顺序随便挑一个。
         """
         if not raw or not raw.strip():
-            return ""
+            return []
 
         session_service = self.plugin.session_service
-        known = session_service.find_known_umo_by_target(
+        known = session_service.find_known_umos_by_target(
             raw, group=is_group_type(message_type)
         )
         if known:
-            return session_service.normalize_session_id(known)
+            resolved: list[str] = []
+            for umo in known:
+                normalized = session_service.normalize_session_id(umo)
+                if normalized not in resolved:
+                    resolved.append(normalized)
+            return resolved
 
         running = self._running_platform_ids()
         if len(running) != 1:
@@ -170,8 +176,8 @@ class CommandSupportService:
                 f"（当前运行平台 {len(running)} 个），已跳过。"
                 "请改用完整会话 UMO。"
             )
-            return ""
-        return f"{running[0]}:{message_type}:{raw}"
+            return []
+        return [f"{running[0]}:{message_type}:{raw}"]
 
     def _running_platform_ids(self) -> list[str]:
         """列出当前处于运行状态的平台实例 ID。"""
@@ -207,13 +213,14 @@ class CommandSupportService:
                 if not isinstance(session, str) or not session:
                     continue
                 if plugin.session_service.parse_session_id(session):
-                    normalized = plugin.session_service.normalize_session_id(session)
+                    # 完整 UMO 归一后只对应一个会话。
+                    candidates = [plugin.session_service.normalize_session_id(session)]
                 else:
-                    normalized = self._resolve_bare_session(session, message_type)
-                    if not normalized:
-                        continue
-                if normalized not in result:
-                    result.append(normalized)
+                    # 裸 ID 可能命中同 target 在多个平台上的会话，全部展开。
+                    candidates = self._resolve_bare_sessions(session, message_type)
+                for normalized in candidates:
+                    if normalized and normalized not in result:
+                        result.append(normalized)
         return result
 
     def base_config_of(self, session_id: str) -> dict | None:
