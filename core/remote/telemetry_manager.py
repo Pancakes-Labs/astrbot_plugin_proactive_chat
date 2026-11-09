@@ -499,8 +499,10 @@ class TelemetryManager:
 
             # admin_users 是 QQ 号等真实用户标识，属于可关联到个人的信息，
             # 与 session_list 同理只保留数量用于统计权限规模。
-            admin_users = config_copy.pop("admin_users", None)
-            if admin_users is not None:
+            # 该字段在 schema 中默认是 null，只要键存在就上报数量，
+            # 缺失上报会让统计端的平均值偏高。
+            if "admin_users" in config_copy:
+                admin_users = config_copy.pop("admin_users")
                 config_copy["admin_users_count"] = (
                     len(admin_users) if isinstance(admin_users, list) else 0
                 )
