@@ -40,20 +40,17 @@ _DSML_TOKEN_RE = re.compile(
 # 这些不构成闭合配对，只剥离标签本身，避免误伤后面的正文。
 _SPECIAL_TOKEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}{_TAG_BODY}{_BAR}{_TAG_BODY}>")
 
-# 被 max_tokens 截断的开标签：竖线紧跟 <（可带一个斜杠与少量空白），直到文本
-# 末尾都没等到 >。真实残片一定以 <｜ 或 </｜ 起始，所以要允许 < 后的空白
-# （与 _DSML_TOKEN_RE / _SPECIAL_TOKEN_RE 保持一致），但不能放宽成
-# “< 之后任意位置出现竖线”，否则普通正文会被整段删掉。
-# 结尾不再追加 \s*：它和 [^<>\n]* 重叠，长空白输入会触发大量回溯。
-# 尾部空白交给调用方的 rstrip 处理。
-_TRUNCATED_MARKER_RE = re.compile(r"<(?:/)?\s*[｜|][^<>\n]*\Z")
-# 明确的 DSML 前缀被截断时允许跨行：生成在标签内部结束，后续内容都属于该标签，
-# 与 _iter_dsml_regions 的“配对失败丢弃到末尾”保持一致。
-# 这里要求出现 dsml 关键字，普通正文不会被这条规则命中。
-_TRUNCATED_DSML_RE = re.compile(
-    rf"<(?:/)?\s*{_BAR}\s*dsml\s*{_BAR}.*\Z",
-    re.IGNORECASE | re.DOTALL,
-)
+# 被 max_tokens 截断的开标签：< 或 </ 后紧跟竖线（允许中间有空白），并且到
+# 文本末尾都没有出现 >。允许跨行是因为标签内部可能已经带了换行；要求竖线紧贴
+# < 则保证普通正文（如 “x < 5 | 6”，< 后是数字）不会被误删。
+# 前面的 \s* 与后面的 [^>]* 不重叠，长空白输入不会产生二次回溯；
+# 尾部空白由调用方的 rstrip 处理。
+_TRUNCATED_MARKER_RE = re.compile(rf"<(?:/)?\s*{_BAR}[^>]*\Z")
+
+# 跨行书写并已被孤立的结束标签（如 </｜dsml｜ 换行 >）：只剔除标签本身，
+# 保留其后的正文。单行孤儿结束标签已由 _SPECIAL_TOKEN_RE 处理，
+# 这里只补跨行这一种漏网情况，避免误吞后续正文。
+_ORPHAN_CLOSING_TAG_RE = re.compile(rf"<\s*/\s*{_BAR}[^<]*?{_BAR}\s*>")
 
 _SEND_INVOKE_RE = re.compile(
     r"invoke\s+name\s*=\s*[\"']send_message_to_user[\"']",
@@ -277,15 +274,19 @@ def _strip_truncated_marker(text: str) -> str:
     不要放宽成“最后一个 < 之后出现过竖线就来一刀”，
     普通正文（比较运算、表格竖线）会被静默截断，用户收到的是残缺消息。
 
-    两条规则依次尝试：先处理带 dsml 关键字、允许跨行的残片，再处理同行残片。
+    只做两件事：先摘掉跨行的孤立结束标签（保留其后正文），
+    再把没有闭合 > 的残片连同其后内容一并丢弃。
     """
     if "<" not in text:
         return text
-    for pattern in (_TRUNCATED_DSML_RE, _TRUNCATED_MARKER_RE):
-        match = pattern.search(text)
-        if match is not None:
-            return text[: match.start()].rstrip()
-    return text
+
+    # 孤立结束标签只是标签本身脏，后面的正文要留着。
+    text = _ORPHAN_CLOSING_TAG_RE.sub("", text)
+
+    match = _TRUNCATED_MARKER_RE.search(text)
+    if match is None:
+        return text
+    return text[: match.start()].rstrip()
 
 
 def extract_payload_text(text: str) -> str:
