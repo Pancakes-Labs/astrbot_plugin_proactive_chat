@@ -40,17 +40,19 @@ _DSML_TOKEN_RE = re.compile(
 # 这些不构成闭合配对，只剥离标签本身，避免误伤后面的正文。
 _SPECIAL_TOKEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}{_TAG_BODY}{_BAR}{_TAG_BODY}>")
 
-# 被 max_tokens 截断的开标签：< 或 </ 后紧跟竖线（允许中间有空白），并且到
-# 文本末尾都没有出现 >。允许跨行是因为标签内部可能已经带了换行；要求竖线紧贴
-# < 则保证普通正文（如 “x < 5 | 6”，< 后是数字）不会被误删。
-# 前面的 \s* 与后面的 [^>]* 不重叠，长空白输入不会产生二次回溯；
-# 尾部空白由调用方的 rstrip 处理。
-_TRUNCATED_MARKER_RE = re.compile(rf"<(?:/)?\s*{_BAR}[^>]*\Z")
+# 被 max_tokens 截断的开标签：< 或 </ 后紧跟竖线（允许中间有空白）。
+# 匹配时只在「最后一个 > 之后的后缀」里搜索：残片必然没有闭合 >，
+# 因此不可能出现在最后一个 > 之前。这样每个 < 起点只扫描一次短后缀，
+# 避免大量 <|x 片段导致 O(n^2) 扫描。
+# 允许跨行是因为标签内部可能已经带了换行；要求竖线紧贴 < 则保证普通正文
+# （如 “x < 5 | 6”，< 后是数字）不会被误删。
+_TRUNCATED_OPEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}")
 
 # 跨行书写并已被孤立的结束标签（如 </｜dsml｜ 换行 >）：只剔除标签本身，
 # 保留其后的正文。单行孤儿结束标签已由 _SPECIAL_TOKEN_RE 处理，
 # 这里只补跨行这一种漏网情况，避免误吞后续正文。
-_ORPHAN_CLOSING_TAG_RE = re.compile(rf"<\s*/\s*{_BAR}[^<]*?{_BAR}\s*>")
+# 标签体限制长度上限，防止大量 “</” 使惰性匹配退化成二次扫描。
+_ORPHAN_CLOSING_TAG_RE = re.compile(rf"<\s*/\s*{_BAR}[^<]{{0,200}}?{_BAR}\s*>")
 
 _SEND_INVOKE_RE = re.compile(
     r"invoke\s+name\s*=\s*[\"']send_message_to_user[\"']",
@@ -283,10 +285,16 @@ def _strip_truncated_marker(text: str) -> str:
     # 孤立结束标签只是标签本身脏，后面的正文要留着。
     text = _ORPHAN_CLOSING_TAG_RE.sub("", text)
 
-    match = _TRUNCATED_MARKER_RE.search(text)
+    # 截断残片必定位于最后一个 > 之后，只在该后缀里查找即可。
+    suffix_start = text.rfind(">") + 1
+    suffix = text[suffix_start:]
+    if "<" not in suffix:
+        return text
+
+    match = _TRUNCATED_OPEN_RE.search(suffix)
     if match is None:
         return text
-    return text[: match.start()].rstrip()
+    return text[: suffix_start + match.start()].rstrip()
 
 
 def extract_payload_text(text: str) -> str:
