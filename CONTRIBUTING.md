@@ -108,7 +108,7 @@
 - @Sisyphbaous-DT-Project: 为主动消息提供了更灵活的上下文来源选择。
 - @Penistrong & @AmeiMiao: 辅助完善了使用平台流水时的主动消息效果。
 - @hccnm: 及时帮助发现并对齐了新版 AstrBot 中的 Provider 调用行为。
-- @@ltcdz5: 帮助优化进行主动消息时相关的工具调用行为。
+- @ltcdz5: 帮助优化进行主动消息时相关的工具调用行为。
 - @coco292931: 发现并修复了部分场景下主动消息的异常调度问题。
 - @Ayleovelle: 优化了 WebUI 加载与依赖相关问题。
 - @Alaye-Dong & @TQSY114514 & @TheFurnia: 帮助修订文档。
