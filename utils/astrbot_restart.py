@@ -132,19 +132,6 @@ def restart_astrbot_in_background(
             logger.error(f"[主动消息] AstrBot 重启策略探测失败喵: {e}")
             continue
 
-        # 探测成功后再做幂等判定，避免无可用策略时给出误导性提示。
-        # 同类实现在 Windows 非 frozen 环境走 Popen + os._exit，
-        # 重复派发会真正拉起两个 AstrBot 实例（抢端口、争数据库锁）。
-        with _dispatch_lock:
-            if _dispatched or _restart_already_dispatched():
-                logger.warning(
-                    "[主动消息] 已存在 AstrBot 重启任务，跳过本次重复派发喵。"
-                )
-                return False, RestartAlreadyInProgress(
-                    "已有 AstrBot 重启任务在进行中，请稍候"
-                )
-            _dispatched = True
-
         def _run_with_guard(runner=run) -> None:
             global _dispatched
             try:
@@ -161,17 +148,28 @@ def restart_astrbot_in_background(
                 # 能走到这里说明重启失败，必须复位标记以允许后续重试。
                 _dispatched = False
 
-        try:
-            threading.Thread(
-                target=_run_with_guard,
-                name="proactive-chat-astrbot-restart",
-                daemon=True,
-            ).start()
-        except Exception as e:  # noqa: BLE001 - 线程起不来时不能卡住幂等标记
-            with _dispatch_lock:
+        # 探测成功后再做幂等判定，避免无可用策略时给出误导性提示。
+        with _dispatch_lock:
+            if _dispatched or _restart_already_dispatched():
+                logger.warning(
+                    "[主动消息] 已存在 AstrBot 重启任务，跳过本次重复派发喵。"
+                )
+                return False, RestartAlreadyInProgress(
+                    "已有 AstrBot 重启任务在进行中，请稍候"
+                )
+
+            _dispatched = True
+            try:
+                threading.Thread(
+                    target=_run_with_guard,
+                    name="proactive-chat-astrbot-restart",
+                    daemon=True,
+                ).start()
+            except Exception as e:  # noqa: BLE001 - 线程起不来时不能卡住幂等标记
+                # 锁不可重入，失败复位必须在已持锁的此处直接赋值，不能再 acquire。
                 _dispatched = False
-            logger.error(f"[主动消息] 无法启动 AstrBot 重启线程喵: {e}")
-            return False, e
+                logger.error(f"[主动消息] 无法启动 AstrBot 重启线程喵: {e}")
+                return False, e
 
         logger.info("[主动消息] 已派发 AstrBot 重启任务喵（来源：指令/接口调用）。")
         return True, None
