@@ -150,15 +150,15 @@ class CommandSupportService:
         """把配置里的裸 ID 补全为完整 UMO 列表；无法确定时返回空列表。
 
         优先复用已知会话的原始 UMO，从而保留 PrivateMessage / GuildMessage
-        等具体类型，并返回该 target 在全部平台上的已知会话。
-        没有已知会话时，只有在唯一运行平台下才能确定目标平台；
-        多平台并存时宁可跳过并告警，也不要按平台顺序随便挑一个。
+        等具体类型，并返回该 target 在全部可用平台上的已知会话。
+        已知会话所在平台全部离线时不补全：改成其它平台会把消息发错人。
+        完全没有已知会话时，只有在唯一运行平台下才补全。
         """
         if not raw or not raw.strip():
             return []
 
         session_service = self.plugin.session_service
-        known = session_service.find_known_umos_by_target(
+        known, has_unavailable = session_service.find_known_umos_by_target(
             raw, group=is_group_type(message_type)
         )
         if known:
@@ -168,6 +168,15 @@ class CommandSupportService:
                 if normalized not in resolved:
                     resolved.append(normalized)
             return resolved
+
+        if has_unavailable:
+            # 已知会话存在但其平台离线：绝不补全到其它平台。
+            logger.warning(
+                f"[主动消息] 配置中的裸会话 ID「{raw}」对应的已知会话"
+                "所在平台当前不可用，已跳过（不会改发到其它平台）。"
+                "请确认平台已启动或改用完整会话 UMO。"
+            )
+            return []
 
         running = self._running_platform_ids()
         if len(running) != 1:

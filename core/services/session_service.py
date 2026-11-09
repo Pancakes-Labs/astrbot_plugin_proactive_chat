@@ -137,11 +137,18 @@ class SessionService:
             if platform.status in usable
         }
 
-    def find_known_umos_by_target(self, target_id: str, *, group: bool) -> list[str]:
-        """在已知会话中按目标 ID 与类型族查找全部可用的完整 UMO。
+    def find_known_umos_by_target(
+        self, target_id: str, *, group: bool
+    ) -> tuple[list[str], bool]:
+        """按目标 ID 与类型族查找已知会话中的完整 UMO。
 
         必须保留原有消息类型：配置侧按裸 ID 匹配，但状态、覆写与调度
         都挂在原始 UMO 上，造一个同族新键会拿不到这些数据。
+
+        Returns:
+            (可用 UMO 列表, 是否存在平台不可用的匹配项)。
+            第二个返回值让调用方区分「没有已知会话」和「已知会话所在平台离线」，
+            后者绝不能再补全到其它平台，否则会发给别的平台上的同 ID 目标。
         """
         plugin = self.plugin
         candidates: list[str] = []
@@ -154,9 +161,10 @@ class SessionService:
             except Exception as e:
                 logger.debug(f"[主动消息] 读取会话覆写列表失败喵: {e}")
 
+        # 空集合表示当前没有任何可用平台，此时不应放行任何历史会话。
         active_ids = self.active_platform_ids()
-        skipped: list[str] = []
         matched: list[str] = []
+        has_unavailable = False
         for candidate in candidates:
             parsed = self.parse_session_id(candidate)
             if not parsed:
@@ -166,19 +174,13 @@ class SessionService:
                 continue
             if is_group_type(msg_type) != group:
                 continue
-            if active_ids and platform not in active_ids:
-                if candidate not in skipped:
-                    skipped.append(candidate)
+            if platform not in active_ids:
+                has_unavailable = True
                 continue
             if candidate not in matched:
                 matched.append(candidate)
 
-        if skipped:
-            logger.debug(
-                f"[主动消息] 会话 {skipped} 所属平台当前不可用，已跳过，"
-                "不会改指向其它平台喵。"
-            )
-        return matched
+        return matched, has_unavailable
 
     def resolve_full_umo(
         self, target_id: str, msg_type: str, preferred_platform: str | None = None
