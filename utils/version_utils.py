@@ -41,29 +41,6 @@ def get_metadata_path() -> Path:
     return get_plugin_root() / "metadata.yaml"
 
 
-def get_plugin_name(default: str = "") -> str:
-    """读取插件元数据中的注册名，读取失败时回退到目录名。
-
-    AstrBot 的插件管理器按 metadata 里的 name 注册插件，而目录名可以任意。
-    用目录名去 reload 时，一旦两者不一致就会匹配不到插件，
-    部分版本会把「匹配不到」降级成重载全部插件。
-    """
-    try:
-        metadata_path = get_metadata_path()
-        if metadata_path.exists():
-            with open(metadata_path, encoding="utf-8") as f:
-                for line in f:
-                    match = re.match(r"^\s*name:\s*([^#\n]+)", line)
-                    if match:
-                        name = match.group(1).strip().strip('"').strip("'")
-                        if name:
-                            return name
-    except Exception as e:
-        logger.debug(f"[主动消息] 读取插件名失败喵，回退到目录名: {e}")
-
-    return default or get_plugin_root().name
-
-
 def get_plugin_version(default: str = "unknown", strip_v_prefix: bool = False) -> str:
     """通过读取插件根目录中的 metadata.yaml 获取插件版本号。"""
     try:
