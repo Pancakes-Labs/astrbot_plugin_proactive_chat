@@ -700,7 +700,7 @@ class SchedulerService:
             plugin._track_task(
                 asyncio.create_task(
                     self.handle_group_silence_callback(
-                        captured_session_id, idle_minutes
+                        captured_session_id, idle_minutes, timer_generation=token
                     )
                 )
             )
@@ -985,11 +985,12 @@ class SchedulerService:
             await self._notify_web_console("auto_trigger_finished")
 
     async def handle_group_silence_callback(
-        self, session_id: str, idle_minutes: int | float
+        self, session_id: str, idle_minutes: int | float, timer_generation: int = 0
     ) -> None:
         """在异步上下文中处理群聊沉默回调。
 
         本回调只负责“计划”主动消息；是否因未回复上限而暂停由 GATE 阶段统一判定。
+        timer_generation 用于识别“旧回调”。
         """
         plugin = self.plugin
         if getattr(plugin, "_terminating", False):
@@ -998,6 +999,16 @@ class SchedulerService:
         session_id = plugin.session_service.normalize_session_id(session_id)
         try:
             async with plugin.data_lock:
+                # 必须在持锁后重新比对代次：等锁期间可能已经重新计时。
+                if timer_generation and (
+                    self._current_timer_generation(f"silence:{session_id}")
+                    != timer_generation
+                ):
+                    logger.debug(
+                        f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 的沉默回调已被重置取代，跳过喵。"
+                    )
+                    return
+
                 if session_id not in plugin.group_timers:
                     return
 
