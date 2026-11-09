@@ -130,11 +130,22 @@ class CommandSupportService:
     # ------------------------------------------------------------------
     # 可启用会话枚举
     # ------------------------------------------------------------------
+    # 配置分组 -> 裸 ID 应按哪种消息类型补全为完整 UMO。
+    _SCOPE_MESSAGE_TYPES = {
+        "friend_settings": "FriendMessage",
+        "group_settings": "GroupMessage",
+    }
+
     def list_enabled_sessions(self) -> list[str]:
-        """枚举当前配置下真正生效（命中 session_list 且全局已启用）的会话。"""
+        """枚举当前配置下真正生效（命中 session_list 且全局已启用）的会话。
+
+        session_list 允许只写裸 target_id（ConfigService 就是这么匹配的），
+        这里必须补全成完整 UMO 再返回：否则全局发送/开关拿裸 ID 去查配置
+        会查不到，计时器与任务也无法按完整 UMO 匹配。
+        """
         plugin = self.plugin
         result: list[str] = []
-        for scope_key in ("friend_settings", "group_settings"):
+        for scope_key, message_type in self._SCOPE_MESSAGE_TYPES.items():
             settings = plugin.config.get(scope_key, {})
             if not settings.get("enable", False):
                 continue
@@ -142,6 +153,11 @@ class CommandSupportService:
                 if not isinstance(session, str) or not session:
                     continue
                 normalized = plugin.session_service.normalize_session_id(session)
+                if not plugin.session_service.parse_session_id(session):
+                    # 裸 ID 无法解析成 platform:type:id，按所属分组补全。
+                    normalized = plugin.session_service.normalize_session_id(
+                        plugin.session_service.resolve_full_umo(session, message_type)
+                    )
                 if normalized not in result:
                     result.append(normalized)
         return result

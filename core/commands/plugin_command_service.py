@@ -23,6 +23,7 @@ from ...utils.astrbot_restart import (
     restart_astrbot_in_background,
 )
 from ...utils.time_utils import is_quiet_time
+from ...utils.version_utils import get_plugin_name
 from ..domain.domain_enums import TriggerSource
 from .command_support_service import (
     SCOPE_CURRENT,
@@ -668,7 +669,8 @@ class PluginCommandService:
             yield event.plain_result("❌ 无法获取 AstrBot 插件管理器。")
             return
 
-        plugin_name = Path(__file__).resolve().parents[2].name
+        # 必须用元数据注册名：目录名不一致时 reload 会匹配不到插件。
+        plugin_name = get_plugin_name(Path(__file__).resolve().parents[2].name)
         yield event.plain_result("🔄 正在重载主动消息插件，请稍候…")
 
         try:
@@ -762,7 +764,7 @@ class PluginCommandService:
         if plugin_manager is None:
             raise RuntimeError("无法获取 AstrBot 插件管理器")
 
-        plugin_name = Path(__file__).resolve().parents[2].name
+        plugin_name = get_plugin_name(Path(__file__).resolve().parents[2].name)
 
         async def _run_reload() -> None:
             try:
