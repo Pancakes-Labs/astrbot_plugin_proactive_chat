@@ -458,6 +458,11 @@ class ApiRoutes:
                     )
                 )
 
+            # 会话 override 可能包含 persona_id，必须在广播前失效该会话的
+            # 人格缓存，否则状态卡片与任务列表会继续显示旧人格。
+            invalidate = getattr(state, "invalidate_persona_cache", None)
+            if callable(invalidate):
+                invalidate(normalized)
             await _broadcast_web_update("session-config")
             if not saved:
                 # 与 /api/config 保持一致：内存已改但磁盘没写成功，必须显式报错。
@@ -481,6 +486,10 @@ class ApiRoutes:
         async def reset_session_config(umo: str):
             normalized = plugin.session_service.normalize_session_id(umo)
             saved = await plugin.session_override_manager.delete_override(normalized)
+            # 删除覆写同样会改变生效人格，需与写入路径一致地失效缓存。
+            invalidate = getattr(state, "invalidate_persona_cache", None)
+            if callable(invalidate):
+                invalidate(normalized)
             await _broadcast_web_update("session-config")
             if not saved:
                 return JSONResponse(

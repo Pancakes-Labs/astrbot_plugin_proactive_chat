@@ -29,8 +29,13 @@ class StateBuilder:
         self._connection_counter = connection_counter or (lambda: 0)
         # 人格摘要缓存：广播每 300ms 一次，状态与任务各解析一遍，
         # 逐会话读对话管理器是真实 I/O，短 TTL 足够新鲜又能避免重复读盘。
+        # TTL 取 10 秒而不是 30 秒：会话级人格也可能在 /persona 等插件之外
+        # 的路径改变，缓存只是广播合并窗口的补充，不能当成权威来源。
         self._persona_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-        self._persona_cache_ttl = 30.0
+        self._persona_cache_ttl = 10.0
+        # 缓存代次：每次失效都递增。解析在 await 期间可能跨越一次失效，
+        # 写完前比对代次即可丢弃这次结果，避免把旧人格重新灌回缓存。
+        self._persona_cache_generation = 0
 
     # ------------------------------------------------------------------
     # 计时器元信息
@@ -273,7 +278,12 @@ class StateBuilder:
         return await notification_center.get_payload()
 
     def invalidate_persona_cache(self, session_id: str | None = None) -> None:
-        """清空人格摘要缓存；配置保存后调用，保证改人格立刻可见。"""
+        """清空人格摘要缓存；配置保存后调用，保证改人格立刻可见。
+
+        同时递增代次：若此刻有解析正在 await，它写回缓存前会发现代次已变，
+        从而放弃写入，否则失效会被这次迟到的结果撤销。
+        """
+        self._persona_cache_generation += 1
         if session_id is None:
             self._persona_cache.clear()
             return
@@ -294,6 +304,7 @@ class StateBuilder:
         result: dict[str, dict[str, Any]] = {}
         pending: list[str] = []
         now = time.time()
+        generation = self._persona_cache_generation
         for session in unique_sessions:
             cached = self._persona_cache.get(session)
             if (
@@ -313,14 +324,24 @@ class StateBuilder:
                 pending
             )
         except Exception as e:
+            # 解析整体失败时不写缓存：否则一次瞬时 I/O 故障会让面板在整个
+            # TTL 内都显示“未知人格”，而且恢复后也不会自动刷新。
             logger.debug(f"[主动消息] 构建人格摘要映射失败喵: {e}")
-            resolved = {}
+            return result
 
-        if isinstance(resolved, dict):
-            for session in pending:
-                persona = resolved.get(session, {})
-                result[session] = persona if isinstance(persona, dict) else {}
-                self._persona_cache[session] = (now, result[session])
+        if not isinstance(resolved, dict):
+            return result
+
+        # 解析期间缓存被失效（配置保存）时，这批结果可能基于旧配置，直接丢弃。
+        cache_valid = generation == self._persona_cache_generation
+
+        for session in pending:
+            persona = resolved.get(session, {})
+            summary = persona if isinstance(persona, dict) else {}
+            result[session] = summary
+            # 单个会话解析失败的摘要（ok=False）同样不缓存，留待下次广播重试。
+            if cache_valid and summary.get("ok", True):
+                self._persona_cache[session] = (now, summary)
         return result
 
     async def build_realtime_payload(self) -> dict[str, Any]:
