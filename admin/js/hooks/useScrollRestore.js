@@ -32,20 +32,31 @@
     }
 
     // 视口跨过断点后滚动容器可能从元素变成文档（或反之），
-    // 监听器与恢复逻辑都必须跟着换绑，否则后续滚动不会被记录。
-    function useScrollTarget(containerRef) {
+    // 监听器与恢复逻辑都必须跟着换绑，且 enabled 必须参与依赖。
+    function useScrollTarget(containerRef, enabled, allowWindow) {
         const [target, setTarget] = React.useState(null);
 
         // 用 layout 阶段解析首次目标：若推迟到绘制之后，恢复会晚一帧才生效，
         // 用户会先看到顶部再跳到记忆位置。
         React.useLayoutEffect(() => {
+            if (!enabled) {
+                setTarget(null);
+                return undefined;
+            }
+
             let disposed = false;
             let frame = 0;
 
             const sync = () => {
                 frame = 0;
                 if (disposed) return;
-                const next = resolveScrollTarget(containerRef);
+                let next = resolveScrollTarget(containerRef);
+                // allowWindow=false 的容器（如文档目录列表）在移动端会退化成
+                // 跟随文档滚动，而文档滚动已由 App 层统一恢复；
+                // 两边写同一个滚动源只会互相覆盖，这里直接放弃接管。
+                if (next && next.isWindow && !allowWindow) {
+                    next = null;
+                }
                 setTarget((prev) => {
                     const prevElement = prev && prev.element;
                     const nextElement = next && next.element;
@@ -75,19 +86,24 @@
                 window.removeEventListener('resize', scheduleSync);
                 window.removeEventListener('orientationchange', scheduleSync);
             };
-        }, [containerRef]);
+        }, [containerRef, enabled, allowWindow]);
 
         return target;
     }
 
     function useScrollRestore(containerRef, storageKey, options) {
         const enabled = !options || options.enabled !== false;
+        // 默认允许接管文档滚动；内部滚动区（如文档目录）应传 false。
+        const allowWindow = !options || options.allowWindow !== false;
         const restoringRef = React.useRef(false);
+        // 最新滚动位置的镜像：layout cleanup 阶段读到的 scrollTop 可能已被
+        // 新视图的 DOM 变更钳制，只有事件里记录下来的值才是可靠的。
+        const latestScrollTopRef = React.useRef(0);
         // 每次 storageKey 变化（切换视图）都必须重新走一遍恢复流程。
         // 主内容区在视图切换时复用同一个 DOM 节点，target 引用不会变，
         // 若只依赖 target，恢复 effect 不会重跑，表现就是“位置永远是初始的”。
         const restoreToken = String(storageKey || '');
-        const target = useScrollTarget(containerRef);
+        const target = useScrollTarget(containerRef, enabled, allowWindow);
 
         // 恢复阶段临时关闭平滑滚动，避免 scrollTop 赋值被动画接管。
         React.useLayoutEffect(() => {
@@ -95,6 +111,8 @@
             const element = target.element;
 
             const savedPos = window.ScrollDomain.readScrollTop(restoreToken);
+            // 以记忆值为初始基准，避免清理时把上一个 key 的残留值写进本 key。
+            latestScrollTopRef.current = savedPos;
             if (savedPos <= 0) {
                 restoringRef.current = false;
                 element.scrollTop = 0;
@@ -110,6 +128,7 @@
             const applyRestore = () => {
                 const maxTop = maxScrollTopOf(element, target.isWindow);
                 element.scrollTop = Math.min(savedPos, maxTop);
+                latestScrollTopRef.current = element.scrollTop;
                 return maxTop >= savedPos;
             };
 
@@ -133,13 +152,15 @@
             return () => {
                 if (frame) cancelAnimationFrame(frame);
                 element.style.scrollBehavior = previousBehavior;
-                // layout cleanup 发生在 DOM 更新之前，此刻 scrollTop 仍是本 key 的最终值。
-                // 若恢复尚未完成（内容还没撑开），当前 scrollTop 只是被钳制的临时值，
-                // 此时应保留原记忆值，否则“滚到很下面后立刻切页”会记成很浅的位置。
-                if (restoringRef.current && element.scrollTop < savedPos) {
+                // 不要在这里读 element.scrollTop：React 18 的 layout cleanup 在
+                // 子树 DOM 变更之后才执行，此时容器可能已被新视图替换或变矮，
+                // 读出来的值会被浏览器钳制，覆盖掉原本正确的位置。
+                const latestTop = latestScrollTopRef.current;
+                if (restoringRef.current && latestTop < savedPos) {
+                    // 恢复没跑完：记忆值比当前值更可信，保留原值。
                     window.ScrollDomain.writeScrollTop(restoreToken, savedPos);
                 } else {
-                    window.ScrollDomain.writeScrollTop(restoreToken, element.scrollTop);
+                    window.ScrollDomain.writeScrollTop(restoreToken, latestTop);
                 }
                 restoringRef.current = false;
             };
@@ -158,6 +179,8 @@
                 window.ScrollDomain.writeScrollTop(restoreToken, element.scrollTop);
             };
             const handleScroll = () => {
+                // 同步记录到 ref：cleanup 只信这个值，它对应钳制前的真实滚动位置。
+                latestScrollTopRef.current = element.scrollTop;
                 window.clearTimeout(timeout);
                 timeout = window.setTimeout(flushScrollTop, 120);
             };

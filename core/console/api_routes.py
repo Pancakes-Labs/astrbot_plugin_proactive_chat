@@ -30,8 +30,10 @@ except ImportError:  # pragma: no cover
     FileResponse = None  # type: ignore[assignment,misc]
     JSONResponse = None  # type: ignore[assignment,misc]
 
-# 运维类接口要求带一个跨站页面无法伪造的请求头：普通表单与跨站简单请求
-# 都设不了自定义头，因此即使未设置 WebUI 密码，第三方网页也无法借此重启进程。
+# 写操作接口统一要求带一个跨站页面无法伪造的请求头：带自定义头的请求必然
+# 触发 CORS 预检，而预检不会放行未列出的来源，因此即使未设置 WebUI 密码，
+# 第三方网页也无法用表单提交改动插件状态或重启进程。
+# 该校验的入口在 runtime_server 的 HTTP 中间件，这里定义常量供两处共用。
 OPS_HEADER_NAME = "x-requested-with"
 OPS_HEADER_VALUE = "AstrBotProactiveChatConsole"
 
@@ -309,6 +311,10 @@ class ApiRoutes:
 
             # 遥测开关是运行期缓存的，必须在内存配置更新后同步，否则要重启才生效。
             self._sync_telemetry_config()
+            # 配置可能改了人格，清掉人格摘要缓存，避免面板短时间仍显示旧值。
+            invalidate = getattr(state, "invalidate_persona_cache", None)
+            if callable(invalidate):
+                invalidate()
 
             try:
                 plugin.config.save_config()
@@ -452,6 +458,11 @@ class ApiRoutes:
                     )
                 )
 
+            # 会话 override 可能包含 persona_id，必须在广播前失效该会话的
+            # 人格缓存，否则状态卡片与任务列表会继续显示旧人格。
+            invalidate = getattr(state, "invalidate_persona_cache", None)
+            if callable(invalidate):
+                invalidate(normalized)
             await _broadcast_web_update("session-config")
             if not saved:
                 # 与 /api/config 保持一致：内存已改但磁盘没写成功，必须显式报错。
@@ -475,6 +486,10 @@ class ApiRoutes:
         async def reset_session_config(umo: str):
             normalized = plugin.session_service.normalize_session_id(umo)
             saved = await plugin.session_override_manager.delete_override(normalized)
+            # 删除覆写同样会改变生效人格，需与写入路径一致地失效缓存。
+            invalidate = getattr(state, "invalidate_persona_cache", None)
+            if callable(invalidate):
+                invalidate(normalized)
             await _broadcast_web_update("session-config")
             if not saved:
                 return JSONResponse(
@@ -854,6 +869,16 @@ class ApiRoutes:
                 "message": "已按当前配置重新开始计时",
             }
 
+        async def _build_full_update_payload() -> dict[str, Any]:
+            """构建 WebSocket 全量快照，状态与任务共用一次人格解析。"""
+            combined = await state.build_realtime_payload()
+            return {
+                "status": combined["status"],
+                "jobs": combined["jobs"],
+                "sessions": state.list_known_session_summaries(),
+                "notifications": await state.build_notification_payload(),
+            }
+
         # WebSocket 实时通道：连接后先推送一次全量快照，之后响应 ping/refresh。
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
@@ -872,15 +897,7 @@ class ApiRoutes:
 
             try:
                 await websocket.send_json(
-                    {
-                        "type": "full_update",
-                        "data": {
-                            "status": await state.build_status_payload(),
-                            "jobs": await state.collect_jobs_async(),
-                            "sessions": state.list_known_session_summaries(),
-                            "notifications": await state.build_notification_payload(),
-                        },
-                    }
+                    {"type": "full_update", "data": await _build_full_update_payload()}
                 )
 
                 while True:
@@ -906,12 +923,7 @@ class ApiRoutes:
                         await websocket.send_json(
                             {
                                 "type": "full_update",
-                                "data": {
-                                    "status": await state.build_status_payload(),
-                                    "jobs": await state.collect_jobs_async(),
-                                    "sessions": state.list_known_session_summaries(),
-                                    "notifications": await state.build_notification_payload(),
-                                },
+                                "data": await _build_full_update_payload(),
                             }
                         )
             except WebSocketDisconnect:

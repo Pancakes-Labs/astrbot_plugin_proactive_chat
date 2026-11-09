@@ -112,6 +112,8 @@ class ProactiveChatPlugin(star.Star):
         self.last_message_times: dict[str, float] = {}
         # 自动触发的计时起点：由「重新计时」写入，用于区分用户是否真说过话。
         self.auto_trigger_baselines: dict[str, float] = {}
+        # 群沉默的计时起点：仅由「重新计时」写入，不改动真实消息时间。
+        self.silence_baselines: dict[str, float] = {}
         self.auto_trigger_timers: dict[str, asyncio.TimerHandle] = {}
         # 与生命周期解耦的后台任务（如插件重载），terminate 时不可取消。
         self._detached_tasks: set[asyncio.Task[None]] = set()

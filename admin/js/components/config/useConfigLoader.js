@@ -59,6 +59,11 @@
                         return false;
                     }
                     setSessionLoading(true);
+                    // 切换会话后必须先清掉上一轮的人格，否则加载期间标签会显示
+                    // 上一个会话的人格；新请求失败时也会残留旧值。
+                    if (requestSeq === loadConfigSeqRef.current) {
+                        setSessionPersona(null);
+                    }
                     // 人格预览与配置读取互不阻塞：预览失败不应影响配置页可用性。
                     const personaPromise = api.getSessionPersona(currentSession)
                         .catch(() => null);
@@ -96,6 +101,10 @@
                 if (requestSeq === loadConfigSeqRef.current) {
                     console.error('加载配置失败', e);
                     setConfig(null);
+                    // 请求失败时人格预览同样不可信，清掉避免展示过期信息。
+                    if (currentMode === 'session') {
+                        setSessionPersona(null);
+                    }
                     // 页面此时只剩“无法加载配置”的静态空态，用 toast 说明具体原因。
                     if (window.Toast) {
                         window.Toast.error((e && e.message) || '配置加载失败，请稍后重试', {

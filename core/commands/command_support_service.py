@@ -11,6 +11,16 @@ import time
 from datetime import datetime
 from typing import Any
 
+from astrbot.api import logger
+
+from ..adapters.astrbot_platform import iter_active_platform_instances
+from ..domain.session_key import is_group_type
+
+try:  # pragma: no cover - 取决于 AstrBot 版本
+    from astrbot.core.platform.platform import PlatformStatus
+except ImportError:  # pragma: no cover
+    PlatformStatus = None  # type: ignore[assignment,misc]
+
 # 作用域取值
 SCOPE_CURRENT = "current"
 SCOPE_GLOBAL = "global"
@@ -130,20 +140,96 @@ class CommandSupportService:
     # ------------------------------------------------------------------
     # 可启用会话枚举
     # ------------------------------------------------------------------
+    # 配置分组 -> 裸 ID 应按哪种消息类型补全为完整 UMO。
+    _SCOPE_MESSAGE_TYPES = {
+        "friend_settings": "FriendMessage",
+        "group_settings": "GroupMessage",
+    }
+
+    def _resolve_bare_sessions(self, raw: str, message_type: str) -> list[str]:
+        """把配置里的裸 ID 补全为完整 UMO 列表；无法确定时返回空列表。
+
+        优先复用已知会话的原始 UMO，从而保留 PrivateMessage / GuildMessage
+        等具体类型，并返回该 target 在全部可用平台上的已知会话。
+        已知会话所在平台全部离线时不补全：改成其它平台会把消息发错人。
+        完全没有已知会话时，只有在唯一运行平台下才补全。
+        """
+        if not raw or not raw.strip():
+            return []
+
+        session_service = self.plugin.session_service
+        known, has_unavailable = session_service.find_known_umos_by_target(
+            raw, group=is_group_type(message_type)
+        )
+        if known:
+            resolved: list[str] = []
+            for umo in known:
+                normalized = session_service.normalize_session_id(umo)
+                if normalized not in resolved:
+                    resolved.append(normalized)
+            return resolved
+
+        if has_unavailable:
+            # 已知会话存在但其平台离线：绝不补全到其它平台。
+            logger.warning(
+                f"[主动消息] 配置中的裸会话 ID「{raw}」对应的已知会话"
+                "所在平台当前不可用，已跳过（不会改发到其它平台）。"
+                "请确认平台已启动或改用完整会话 UMO。"
+            )
+            return []
+
+        running = self._running_platform_ids()
+        if len(running) != 1:
+            logger.warning(
+                f"[主动消息] 配置中的裸会话 ID「{raw}」无法确定所属平台"
+                f"（当前运行平台 {len(running)} 个），已跳过。"
+                "请改用完整会话 UMO。"
+            )
+            return []
+        return [f"{running[0]}:{message_type}:{raw}"]
+
+    def _running_platform_ids(self) -> list[str]:
+        """列出当前处于运行状态的平台实例 ID。"""
+        try:
+            instances = iter_active_platform_instances(
+                self.plugin.context.platform_manager
+            )
+        except Exception as e:
+            logger.debug(f"[主动消息] 读取平台实例失败喵: {e}")
+            return []
+        if PlatformStatus is None:
+            return []
+        return [
+            str(platform.meta().id)
+            for platform in instances
+            if platform.status == PlatformStatus.RUNNING
+        ]
+
     def list_enabled_sessions(self) -> list[str]:
-        """枚举当前配置下真正生效（命中 session_list 且全局已启用）的会话。"""
+        """枚举当前配置下真正生效（命中 session_list 且全局已启用）的会话。
+
+        session_list 允许只写裸 target_id（ConfigService 就是这么匹配的），
+        这里必须补全成完整 UMO 再返回：否则全局发送/开关拿裸 ID 去查配置
+        会查不到，计时器与任务也无法按完整 UMO 匹配。
+        """
         plugin = self.plugin
         result: list[str] = []
-        for scope_key in ("friend_settings", "group_settings"):
+        for scope_key, message_type in self._SCOPE_MESSAGE_TYPES.items():
             settings = plugin.config.get(scope_key, {})
             if not settings.get("enable", False):
                 continue
             for session in settings.get("session_list", []) or []:
                 if not isinstance(session, str) or not session:
                     continue
-                normalized = plugin.session_service.normalize_session_id(session)
-                if normalized not in result:
-                    result.append(normalized)
+                if plugin.session_service.parse_session_id(session):
+                    # 完整 UMO 归一后只对应一个会话。
+                    candidates = [plugin.session_service.normalize_session_id(session)]
+                else:
+                    # 裸 ID 可能命中同 target 在多个平台上的会话，全部展开。
+                    candidates = self._resolve_bare_sessions(session, message_type)
+                for normalized in candidates:
+                    if normalized and normalized not in result:
+                        result.append(normalized)
         return result
 
     def base_config_of(self, session_id: str) -> dict | None:

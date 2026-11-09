@@ -32,6 +32,23 @@ from .command_support_service import (
 )
 from .forward_helper import FORWARD_FAILED, FORWARD_NAME, send_forward_blocks
 
+try:  # pragma: no cover - 取决于 AstrBot 版本
+    from astrbot.core.star.star import star_registry as _star_registry_impl
+except ImportError:  # pragma: no cover
+    _star_registry_impl = None
+
+
+def _star_registry() -> list:
+    """返回 AstrBot 模块级插件注册表；不可用时返回空列表。
+
+    star_registry 是模块级变量而不是 PluginManager 的属性，
+    直接读取它可以避免依赖特定版本的管理器内部结构。
+    """
+    if _star_registry_impl is None:
+        return []
+    return list(_star_registry_impl)
+
+
 # 提示语前缀常量，避免多处手写不一致。
 _DENY = "🚫 权限不足：此命令仅限管理员使用。"
 
@@ -657,6 +674,56 @@ class PluginCommandService:
     # ------------------------------------------------------------------
     # 5. 重载插件
     # ------------------------------------------------------------------
+    def _resolve_registered_plugin_name(self, plugin_manager: Any) -> str:
+        """解析插件管理器当前注册的本插件名称。
+
+        AstrBot 的 reload(name) 匹配不到名字时会退化成重载全部插件，
+        且按名称取注册表中第一个匹配项，所以这里必须优先按运行期注册信息
+        反查，并在名称重复时放弃重载。返回空串表示无法确认目标。
+        """
+        dir_name = Path(__file__).resolve().parents[2].name
+        try:
+            registry = plugin_manager.star_registry
+            if not isinstance(registry, list):
+                registry = None
+        except Exception:  # noqa: BLE001 - 不同版本管理器结构可能不同
+            registry = None
+
+        if registry is None:
+            registry = _star_registry()
+
+        entries = [item for item in (registry or []) if item is not None]
+        target_name = ""
+        for metadata in entries:
+            name = str(getattr(metadata, "name", "") or "")
+            module_path = str(getattr(metadata, "module_path", "") or "")
+            # module_path 形如 data.plugins.<目录名>.main，取倒数第二段比对目录名。
+            segments = module_path.split(".")
+            if name and len(segments) >= 2 and segments[-2] == dir_name:
+                target_name = name
+                break
+
+        if not target_name:
+            logger.warning(
+                "[主动消息] 未能在插件注册表中定位本插件，已放弃重载以避免重载全部插件喵。"
+            )
+            return ""
+
+        # reload() 按名称取首个匹配项：重名时会重载别的插件而不是本插件。
+        same_name = [
+            item
+            for item in entries
+            if str(getattr(item, "name", "") or "") == target_name
+        ]
+        if len(same_name) > 1:
+            logger.warning(
+                f"[主动消息] 插件注册名「{target_name}」在注册表中不唯一"
+                f"（{len(same_name)} 个），已放弃重载以避免误重载其它插件喵。"
+            )
+            return ""
+
+        return target_name
+
     async def handle_reload_plugin(self, event: Any):
         """重载本插件（等价于 AstrBot WebUI 的重载插件）。"""
         if await self._admin_denied(event):
@@ -668,7 +735,14 @@ class PluginCommandService:
             yield event.plain_result("❌ 无法获取 AstrBot 插件管理器。")
             return
 
-        plugin_name = Path(__file__).resolve().parents[2].name
+        # 必须用运行期注册名：目录名或 metadata 名称不一致时 reload 会
+        # 匹配不到插件，并被 AstrBot 降级为重载全部插件。
+        plugin_name = self._resolve_registered_plugin_name(plugin_manager)
+        if not plugin_name:
+            yield event.plain_result(
+                "❌ 无法确认本插件的注册名称，已取消重载以避免影响其它插件。"
+            )
+            return
         yield event.plain_result("🔄 正在重载主动消息插件，请稍候…")
 
         try:
@@ -762,7 +836,9 @@ class PluginCommandService:
         if plugin_manager is None:
             raise RuntimeError("无法获取 AstrBot 插件管理器")
 
-        plugin_name = Path(__file__).resolve().parents[2].name
+        plugin_name = self._resolve_registered_plugin_name(plugin_manager)
+        if not plugin_name:
+            raise RuntimeError("无法确认本插件的注册名称，已取消重载")
 
         async def _run_reload() -> None:
             try:

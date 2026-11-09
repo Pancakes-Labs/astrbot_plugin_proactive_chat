@@ -40,9 +40,19 @@ _DSML_TOKEN_RE = re.compile(
 # 这些不构成闭合配对，只剥离标签本身，避免误伤后面的正文。
 _SPECIAL_TOKEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}{_TAG_BODY}{_BAR}{_TAG_BODY}>")
 
-# 被 max_tokens 截断的开标签：有 < 和竖线，但到文本末尾都没等到 >。
-# 这类残片不会被上面两条正则匹配，必须单独识别，否则会原样发给用户。
-_TRUNCATED_MARKER_RE = re.compile(rf"<(?:/)?{_TAG_BODY}{_BAR}{_TAG_BODY}\Z")
+# 被 max_tokens 截断的开标签：< 或 </ 后紧跟竖线（允许中间有空白）。
+# 匹配时只在「最后一个 > 之后的后缀」里搜索：残片必然没有闭合 >，
+# 因此不可能出现在最后一个 > 之前。这样每个 < 起点只扫描一次短后缀，
+# 避免大量 <|x 片段导致 O(n^2) 扫描。
+# 允许跨行是因为标签内部可能已经带了换行；要求竖线紧贴 < 则保证普通正文
+# （如 “x < 5 | 6”，< 后是数字）不会被误删。
+_TRUNCATED_OPEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}")
+
+# 跨行书写并已被孤立的结束标签（如 </｜dsml｜ 换行 >）：只剔除标签本身，
+# 保留其后的正文。单行孤儿结束标签已由 _SPECIAL_TOKEN_RE 处理，
+# 这里只补跨行这一种漏网情况，避免误吞后续正文。
+# 标签体限制长度上限，防止大量 “</” 使惰性匹配退化成二次扫描。
+_ORPHAN_CLOSING_TAG_RE = re.compile(rf"<\s*/\s*{_BAR}[^<]{{0,200}}?{_BAR}\s*>")
 
 _SEND_INVOKE_RE = re.compile(
     r"invoke\s+name\s*=\s*[\"']send_message_to_user[\"']",
@@ -262,18 +272,29 @@ def _strip_truncated_marker(text: str) -> str:
     """剥离被截断的开标签残片。
 
     生成在标签内部结束时（如 <｜dsml｜ invoke name="send_message_to_user），
-    没有闭合 > 的残片不会被标签正则命中，只能按“以 < 开头且含竖线”识别。
+    没有闭合 > 的残片不会被标签正则命中，只能按“<｜ 起始且未闭合”识别。
+    不要放宽成“最后一个 < 之后出现过竖线就来一刀”，
+    普通正文（比较运算、表格竖线）会被静默截断，用户收到的是残缺消息。
+
+    只做两件事：先摘掉跨行的孤立结束标签（保留其后正文），
+    再把没有闭合 > 的残片连同其后内容一并丢弃。
     """
-    if "<" not in text or _BAR_CHARS.isdisjoint(text):
+    if "<" not in text:
         return text
-    last_lt = text.rfind("<")
-    tail = text[last_lt:]
-    if not _BAR_CHARS.intersection(tail):
+
+    # 孤立结束标签只是标签本身脏，后面的正文要留着。
+    text = _ORPHAN_CLOSING_TAG_RE.sub("", text)
+
+    # 截断残片必定位于最后一个 > 之后，只在该后缀里查找即可。
+    suffix_start = text.rfind(">") + 1
+    suffix = text[suffix_start:]
+    if "<" not in suffix:
         return text
-    # 残片里若已经出现 > 说明标签是完整的，交给正常规则处理。
-    if ">" in tail:
+
+    match = _TRUNCATED_OPEN_RE.search(suffix)
+    if match is None:
         return text
-    return text[:last_lt].rstrip()
+    return text[: suffix_start + match.start()].rstrip()
 
 
 def extract_payload_text(text: str) -> str:

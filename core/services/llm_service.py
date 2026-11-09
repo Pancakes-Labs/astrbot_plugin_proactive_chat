@@ -18,6 +18,7 @@ from ..domain.prompt_placeholders import (
     PLACEHOLDER_UNANSWERED_COUNT,
     contains_placeholder,
     render_placeholders,
+    strip_placeholders,
 )
 from ..domain.prompt_templates import resolve_active_prompt
 from ..domain.tool_markup_cleaner import clean_llm_text
@@ -181,10 +182,14 @@ class LlmService:
             motivation_template = resolve_active_prompt(session_config) or ""
 
         if prepared_prompt is None:
-            final_user_simulation_prompt = render_placeholders(
-                motivation_template,
-                current_time=format_current_time(plugin.timezone),
-                unanswered_count=unanswered_count,
+            # 兜底渲染与 PROMPT 阶段保持一致：流水占位符不在本链路提供，
+            # 必须清掉字面残留，不能让模型直接读到标记。
+            final_user_simulation_prompt = strip_placeholders(
+                render_placeholders(
+                    motivation_template,
+                    current_time=format_current_time(plugin.timezone),
+                    unanswered_count=unanswered_count,
+                )
             )
         else:
             final_user_simulation_prompt = prepared_prompt

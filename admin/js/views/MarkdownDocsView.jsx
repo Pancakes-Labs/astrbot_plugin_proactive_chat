@@ -93,10 +93,12 @@ function MarkdownDocsView() {
     }, [selectedMarkdownPath]);
 
     // 文档目录是独立滚动容器，需要单独恢复与记录位置。
+    // allowWindow=false：移动端列表 overflow 会变成 visible，此时滚动其实发生在
+    // 文档上，而文档滚动已由 App 层统一恢复，两边都接管会互相覆盖。
     window.useScrollRestore(
         fileListRef,
         window.ScrollDomain.buildScrollKey('docs_file_list'),
-        { enabled: markdownFiles.length > 0 }
+        { enabled: markdownFiles.length > 0, allowWindow: false }
     );
 
     React.useEffect(() => {
