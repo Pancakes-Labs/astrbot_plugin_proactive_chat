@@ -652,10 +652,14 @@ class SchedulerService:
     # ------------------------------------------------------------------
     # 群聊沉默计时
     # ------------------------------------------------------------------
-    async def reset_group_silence_timer(self, session_id: str) -> None:
+    async def reset_group_silence_timer(
+        self, session_id: str, *, fresh_start: bool = False
+    ) -> None:
         """重置指定群聊的沉默倒计时。
 
         先取消旧计时器（含原始键与规范键），再按配置的静默分钟数重新计时。
+        fresh_start=True 表示由「重新计时」主动重建：此时沉默起点改为当前时刻，
+        写进 silence_baselines，而不是覆盖用户的真实发言时间。
         """
         plugin = self.plugin
         normalized_session_id = plugin.session_service.normalize_session_id(session_id)
@@ -673,6 +677,13 @@ class SchedulerService:
                     )
                 finally:
                     del plugin.group_timers[timer_key]
+
+        if fresh_start:
+            # 独立起点：卡片与日志都从这里读，不动 last_message_times。
+            plugin.silence_baselines[normalized_session_id] = time.time()
+        else:
+            # 真实的用户发言：起点随消息时间走，清掉人为起点以免继续生效。
+            plugin.silence_baselines.pop(normalized_session_id, None)
 
         idle_minutes = session_config.get("group_idle_trigger_minutes", 10)
         generation = self._next_timer_generation(f"silence:{normalized_session_id}")
@@ -765,19 +776,20 @@ class SchedulerService:
                     )
                     return {"ok": False, "reason": "reschedule_failed"}
 
-            if "group_silence" in kinds:
-                for timer_key in (session_id, normalized_session_id):
-                    timer = plugin.group_timers.pop(timer_key, None)
-                    if timer is None:
-                        continue
-                    # 摘除后让旧回调失效，避免它再去改动新登记的任务。
-                    self._next_timer_generation(f"silence:{timer_key}")
-                    try:
-                        timer.cancel()
-                    except Exception as e:
-                        logger.warning(f"[主动消息] 取消沉默计时器时出错喵: {e}")
+            # 只结束其中之一也必须摘掉另一类计时器：
+            # 残留的兄弟计时器到点后会再排一次任务，把刚登记的时间覆盖掉。
+            # 代次递增确保它的回调不会继续生效。
+            for timer_key in (session_id, normalized_session_id):
+                timer = plugin.group_timers.pop(timer_key, None)
+                if timer is None:
+                    continue
+                self._next_timer_generation(f"silence:{timer_key}")
+                try:
+                    timer.cancel()
+                except Exception as e:
+                    logger.warning(f"[主动消息] 取消沉默计时器时出错喵: {e}")
 
-            if "auto_trigger" in kinds and has_auto_timer:
+            if has_auto_timer:
                 await self.cancel_auto_trigger(normalized_session_id)
                 self._next_timer_generation(f"auto:{normalized_session_id}")
 
@@ -830,13 +842,13 @@ class SchedulerService:
                     timer_kind == "group_silence" and idle_minutes > 0
                 ) or has_group_timer
                 if should_reset_group:
-                    now = time.time()
-                    # 群沉默的起点是“用户最后发言时间”，同步内存态与临时状态。
-                    plugin.last_message_times[normalized_session_id] = now
-                    plugin.session_temp_state.setdefault(normalized_session_id, {})[
-                        "last_user_time"
-                    ] = now
-                    await self.reset_group_silence_timer(normalized_session_id)
+                    # 不能改写 last_message_times：那是用户的真实发言时间，
+                    # 抬高它会让自动触发判定认为“刚有新消息”而跳过，
+                    # 也会让 REVIEW 阶段把本次生成误判成新消息而丢弃结果。
+                    # 重新计时的起点单独记录，卡片优先读取这个值。
+                    await self.reset_group_silence_timer(
+                        normalized_session_id, fresh_start=True
+                    )
                     reset_done = True
 
             if "auto_trigger" in kinds:
@@ -990,6 +1002,8 @@ class SchedulerService:
                     return
 
                 del plugin.group_timers[session_id]
+                # 计时器已结束，人为起点随之失效，避免下次重建时沿用旧起点。
+                plugin.silence_baselines.pop(session_id, None)
 
                 if session_id not in plugin.session_data:
                     logger.info(
