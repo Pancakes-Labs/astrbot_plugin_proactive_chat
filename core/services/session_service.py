@@ -117,11 +117,30 @@ class SessionService:
             log_str += f" ({session_name})"
         return log_str
 
-    def find_known_umos_by_target(self, target_id: str, *, group: bool) -> list[str]:
-        """在已知会话中按目标 ID 与类型族查找全部已存在的完整 UMO。
+    def active_platform_ids(self) -> set[str]:
+        """返回当前可用（运行中或待上线）的平台实例 ID 集合。"""
+        try:
+            instances = iter_active_platform_instances(
+                self.plugin.context.platform_manager
+            )
+        except Exception as e:
+            logger.debug(f"[主动消息] 读取平台实例失败喵: {e}")
+            return set()
 
-        必须保留原有消息类型（PrivateMessage / FriendMessage、GuildMessage /
-        GroupMessage 之间不能互换）：配置侧按裸 ID 匹配，但状态、覆写与调度
+        usable = {PlatformStatus.RUNNING}
+        pending = getattr(PlatformStatus, "PENDING", None)
+        if pending is not None:
+            usable.add(pending)
+        return {
+            str(platform.meta().id)
+            for platform in instances
+            if platform.status in usable
+        }
+
+    def find_known_umos_by_target(self, target_id: str, *, group: bool) -> list[str]:
+        """在已知会话中按目标 ID 与类型族查找全部可用的完整 UMO。
+
+        必须保留原有消息类型：配置侧按裸 ID 匹配，但状态、覆写与调度
         都挂在原始 UMO 上，造一个同族新键会拿不到这些数据。
         """
         plugin = self.plugin
@@ -135,16 +154,30 @@ class SessionService:
             except Exception as e:
                 logger.debug(f"[主动消息] 读取会话覆写列表失败喵: {e}")
 
+        active_ids = self.active_platform_ids()
+        skipped: list[str] = []
         matched: list[str] = []
         for candidate in candidates:
             parsed = self.parse_session_id(candidate)
             if not parsed:
                 continue
-            _, msg_type, candidate_target = parsed
+            platform, msg_type, candidate_target = parsed
             if str(candidate_target) != str(target_id):
                 continue
-            if is_group_type(msg_type) == group and candidate not in matched:
+            if is_group_type(msg_type) != group:
+                continue
+            if active_ids and platform not in active_ids:
+                if candidate not in skipped:
+                    skipped.append(candidate)
+                continue
+            if candidate not in matched:
                 matched.append(candidate)
+
+        if skipped:
+            logger.debug(
+                f"[主动消息] 会话 {skipped} 所属平台当前不可用，已跳过，"
+                "不会改指向其它平台喵。"
+            )
         return matched
 
     def resolve_full_umo(
