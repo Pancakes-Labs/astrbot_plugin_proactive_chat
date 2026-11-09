@@ -40,9 +40,9 @@ _DSML_TOKEN_RE = re.compile(
 # 这些不构成闭合配对，只剥离标签本身，避免误伤后面的正文。
 _SPECIAL_TOKEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}{_TAG_BODY}{_BAR}{_TAG_BODY}>")
 
-# 被 max_tokens 截断的开标签：有 < 和竖线，但到文本末尾都没等到 >。
-# 这类残片不会被上面两条正则匹配，必须单独识别，否则会原样发给用户。
-_TRUNCATED_MARKER_RE = re.compile(rf"<(?:/)?{_TAG_BODY}{_BAR}{_TAG_BODY}\Z")
+# 被 max_tokens 截断的开标签：竖线紧跟 <（可带一个斜杠），直到文本末尾都没
+# 等到 >。真实残片一定以 <｜ 或 </｜ 起始且不跨行，所以必须要求竖线紧贴 <。
+_TRUNCATED_MARKER_RE = re.compile(r"<(?:/)?[｜|][^<>\n]*\s*\Z")
 
 _SEND_INVOKE_RE = re.compile(
     r"invoke\s+name\s*=\s*[\"']send_message_to_user[\"']",
@@ -262,18 +262,16 @@ def _strip_truncated_marker(text: str) -> str:
     """剥离被截断的开标签残片。
 
     生成在标签内部结束时（如 <｜dsml｜ invoke name="send_message_to_user），
-    没有闭合 > 的残片不会被标签正则命中，只能按“以 < 开头且含竖线”识别。
+    没有闭合 > 的残片不会被标签正则命中，只能按“<｜ 起始且未闭合”识别。
+    不要放宽成“最后一个 < 之后出现过竖线就来一刀”，
+    普通正文（比较运算、表格竖线）会被静默截断，用户收到的是残缺消息。
     """
-    if "<" not in text or _BAR_CHARS.isdisjoint(text):
+    if "<" not in text:
         return text
-    last_lt = text.rfind("<")
-    tail = text[last_lt:]
-    if not _BAR_CHARS.intersection(tail):
+    match = _TRUNCATED_MARKER_RE.search(text)
+    if match is None:
         return text
-    # 残片里若已经出现 > 说明标签是完整的，交给正常规则处理。
-    if ">" in tail:
-        return text
-    return text[:last_lt].rstrip()
+    return text[: match.start()].rstrip()
 
 
 def extract_payload_text(text: str) -> str:
