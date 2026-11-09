@@ -678,8 +678,8 @@ class PluginCommandService:
         """解析插件管理器当前注册的本插件名称。
 
         AstrBot 的 reload(name) 匹配不到名字时会退化成重载全部插件，
-        所以这里必须优先按运行期注册信息反查，而不是读文件或猜目录名。
-        返回空串表示无法确认目标，调用方应放弃重载。
+        且按名称取注册表中第一个匹配项，所以这里必须优先按运行期注册信息
+        反查，并在名称重复时放弃重载。返回空串表示无法确认目标。
         """
         dir_name = Path(__file__).resolve().parents[2].name
         try:
@@ -692,18 +692,37 @@ class PluginCommandService:
         if registry is None:
             registry = _star_registry()
 
-        for metadata in registry or []:
+        entries = [item for item in (registry or []) if item is not None]
+        target_name = ""
+        for metadata in entries:
             name = str(getattr(metadata, "name", "") or "")
             module_path = str(getattr(metadata, "module_path", "") or "")
             # module_path 形如 data.plugins.<目录名>.main，取倒数第二段比对目录名。
             segments = module_path.split(".")
             if name and len(segments) >= 2 and segments[-2] == dir_name:
-                return name
+                target_name = name
+                break
 
-        logger.warning(
-            "[主动消息] 未能在插件注册表中定位本插件，已放弃重载以避免重载全部插件喵。"
-        )
-        return ""
+        if not target_name:
+            logger.warning(
+                "[主动消息] 未能在插件注册表中定位本插件，已放弃重载以避免重载全部插件喵。"
+            )
+            return ""
+
+        # reload() 按名称取首个匹配项：重名时会重载别的插件而不是本插件。
+        same_name = [
+            item
+            for item in entries
+            if str(getattr(item, "name", "") or "") == target_name
+        ]
+        if len(same_name) > 1:
+            logger.warning(
+                f"[主动消息] 插件注册名「{target_name}」在注册表中不唯一"
+                f"（{len(same_name)} 个），已放弃重载以避免误重载其它插件喵。"
+            )
+            return ""
+
+        return target_name
 
     async def handle_reload_plugin(self, event: Any):
         """重载本插件（等价于 AstrBot WebUI 的重载插件）。"""
