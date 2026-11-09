@@ -724,7 +724,7 @@ class ApiRoutes:
                 return JSONResponse({"error": "指令服务未就绪"}, status_code=503)
 
             try:
-                ok, message = await service.web_restart_astrbot()
+                ok, message, status_code = await service.web_restart_astrbot()
             except Exception as e:
                 logger.error(f"[主动消息] Web 端重启 AstrBot 失败喵: {e}")
                 return JSONResponse(
@@ -732,7 +732,11 @@ class ApiRoutes:
                 )
 
             if not ok:
-                return JSONResponse({"error": message}, status_code=400)
+                # 409 表示已有重启任务在跑（幂等跳过），不是真的失败。
+                return JSONResponse(
+                    {"ok": False, "error": message, "in_progress": status_code == 409},
+                    status_code=status_code,
+                )
             return {"ok": True, "message": message}
 
         # 立即触发一次主动消息（异步执行，占用期间拒绝重复触发）。

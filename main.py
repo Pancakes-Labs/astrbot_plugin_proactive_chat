@@ -318,6 +318,8 @@ class ProactiveChatPlugin(star.Star):
         async for result in self.command_service.handle_reload_plugin(event):
             yield result
 
+    # priority 高于默认值 0，保证与其他插件注册同名指令时本插件先接管。
+    # handler 内部会在回复后调用 stop_event()，后续同名 handler 直接跳过。
     @filter.command(
         "重启AstrBot",
         alias={
@@ -329,6 +331,7 @@ class ProactiveChatPlugin(star.Star):
             "重载 astrbot",
             "重载astrbot",
         },
+        priority=100,
     )
     async def cmd_restart_astrbot(self, event: AstrMessageEvent):
         """重启整个 AstrBot 进程。"""

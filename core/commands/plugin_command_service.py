@@ -17,6 +17,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ...utils.astrbot_restart import (
+    RestartAlreadyInProgress,
     is_demo_mode,
     is_desktop_managed,
     restart_astrbot_in_background,
@@ -694,13 +695,32 @@ class PluginCommandService:
 
         return MessageChain([Comp.Plain(text)])
 
+    @staticmethod
+    def _stop_event(event: Any) -> None:
+        """终止事件传播，避免同名指令被其它插件重复执行。"""
+        try:
+            event.stop_event()
+        except Exception:  # noqa: BLE001 - 老版本事件对象可能没有该方法
+            pass
+
     # ------------------------------------------------------------------
     # 6. 重启 AstrBot
     # ------------------------------------------------------------------
     async def handle_restart_astrbot(self, event: Any):
-        """重启整个 AstrBot 进程。"""
+        """重启整个 AstrBot 进程。
+
+        AstrBot 不会对同名指令去重，多个插件注册相同指令名与别名时，这些
+        handler 都会被激活并依次执行。因此每条分支结束时都必须终止事件
+        传播，否则用户会收到多份互相矛盾的提示，甚至触发两次进程重启
+        （Windows 非 frozen 环境下会真的起两个实例）。
+
+        先派发再回复：派发是同步且幂等的，能立刻拿到真实结果，避免先喊
+        「已触发」后又补一条「已有任务在进行中」的自相矛盾提示。重启线程
+        内部会 sleep 数秒，足够本次回复送达平台。
+        """
         if await self._admin_denied(event):
             yield event.plain_result(_DENY)
+            self._stop_event(event)
             return
 
         if is_desktop_managed():
@@ -708,24 +728,30 @@ class PluginCommandService:
                 "❌ 当前由 AstrBot Desktop 托管运行，无法通过核心命令重启。\n"
                 "请从桌面客户端执行重启或更新。"
             )
+            self._stop_event(event)
             return
 
         if is_demo_mode():
             yield event.plain_result("❌ 演示模式（DEMO_MODE）下不允许执行此操作。")
+            self._stop_event(event)
+            return
+
+        ok, error = restart_astrbot_in_background()
+        if not ok:
+            if isinstance(error, RestartAlreadyInProgress):
+                yield event.plain_result("⏳ 已有 AstrBot 重启任务在进行中，请稍候…")
+            else:
+                yield event.plain_result(
+                    f"❌ 触发 AstrBot 重启失败：{error or '未知原因'}\n请查看服务端日志。"
+                )
+            self._stop_event(event)
             return
 
         yield event.plain_result(
             "🔄 已触发 AstrBot 重启，进程将在数秒内重新启动，请稍候…"
         )
-
-        ok, error = restart_astrbot_in_background()
-        if not ok:
-            await self.plugin.context.send_message(
-                event.unified_msg_origin,
-                self._plain_chain(
-                    f"❌ 触发 AstrBot 重启失败：{error or '未知原因'}\n请查看服务端日志。"
-                ),
-            )
+        # 终止传播：本分支已独占处理，后续同名 handler 直接跳过。
+        self._stop_event(event)
 
     # ------------------------------------------------------------------
     # Web 端复用入口（供 /api/plugin/reload 与 /api/astrbot/restart 调用）
@@ -755,22 +781,32 @@ class PluginCommandService:
         background_tasks.add_task(_dispatch)
         return "正在重载主动消息插件，请稍候…"
 
-    async def web_restart_astrbot(self) -> tuple[bool, str]:
-        """Web 管理端重启 AstrBot 进程，返回 (ok, message)。"""
+    async def web_restart_astrbot(self) -> tuple[bool, str, int]:
+        """Web 管理端重启 AstrBot 进程。
+
+        Returns:
+            (ok, message, http_status)。http_status 由调用方直接用于响应码，
+            「已有重启任务在进行中」用 409 与真正的失败区分，避免前端把
+            幂等跳过误判为故障。
+        """
         if is_desktop_managed():
-            return False, (
+            return (
+                False,
                 "当前由 AstrBot Desktop 托管运行，无法通过核心命令重启。\n"
-                "请从桌面客户端执行重启或更新。"
+                "请从桌面客户端执行重启或更新。",
+                400,
             )
         if is_demo_mode():
-            return False, "演示模式（DEMO_MODE）下不允许执行此操作。"
+            return False, "演示模式（DEMO_MODE）下不允许执行此操作。", 400
 
         ok, error = restart_astrbot_in_background()
         if not ok:
+            if isinstance(error, RestartAlreadyInProgress):
+                return False, "已有 AstrBot 重启任务在进行中，请稍候…", 409
             logger.error(f"[主动消息] Web 端触发 AstrBot 重启失败喵: {error}")
-            return False, "触发 AstrBot 重启失败，请查看服务端日志"
+            return False, "触发 AstrBot 重启失败，请查看服务端日志", 500
 
-        return True, "已触发 AstrBot 重启，进程将在数秒内重新启动，请稍候…"
+        return True, "已触发 AstrBot 重启，进程将在数秒内重新启动，请稍候…", 200
 
 
 __all__ = [
