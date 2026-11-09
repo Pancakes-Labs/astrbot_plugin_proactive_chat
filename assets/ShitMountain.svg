@@ -22,6 +22,6 @@
   <!-- 分数指示器 -->
   <g transform="translate(185, 13)" fill="#5D4037">
     <text x="35" y="10" font-size="9" class="text-regular" text-anchor="middle">SCORE</text>
-    <text x="35" y="28" font-size="18" class="text-bold" text-anchor="middle">39.98</text>
+    <text x="35" y="28" font-size="18" class="text-bold" text-anchor="middle">34.22</text>
   </g>
 </svg>
