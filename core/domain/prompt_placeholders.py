@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 PLACEHOLDER_CURRENT_TIME = "{{current_time}}"
@@ -42,8 +43,9 @@ def render_placeholders(
 ) -> str:
     """按给定值替换占位符。
 
-    替换顺序与旧实现保持一致：先注入流水正文，再替换计数与时间，
-    保证正文里出现的同名字样也能被后续步骤处理。
+    只扫描原模板一遍，替换进去的内容不会再次被解析。
+    这样历史消息正文里出现的 {{current_time}} 字面量会原样保留，
+    不会被后续步骤当成占位符二次改写。
 
     Args:
         text: 模板正文，非字符串时按字符串形式处理。
@@ -57,22 +59,35 @@ def render_placeholders(
     """
     if text is None:
         return ""
-    rendered = text if isinstance(text, str) else str(text)
+    template = text if isinstance(text, str) else str(text)
 
-    if platform_history_lines is not None:
-        rendered = rendered.replace(
-            PLACEHOLDER_PLATFORM_HISTORY_LINES, str(platform_history_lines)
-        )
-    if platform_history_last_time is not None:
-        rendered = rendered.replace(
-            PLACEHOLDER_PLATFORM_HISTORY_LAST_TIME,
-            str(platform_history_last_time),
-        )
-    if unanswered_count is not None:
-        rendered = rendered.replace(PLACEHOLDER_UNANSWERED_COUNT, str(unanswered_count))
+    values: dict[str, str] = {}
     if current_time is not None:
-        rendered = rendered.replace(PLACEHOLDER_CURRENT_TIME, str(current_time))
-    return rendered
+        values[PLACEHOLDER_CURRENT_TIME] = str(current_time)
+    if unanswered_count is not None:
+        values[PLACEHOLDER_UNANSWERED_COUNT] = str(unanswered_count)
+    if platform_history_lines is not None:
+        values[PLACEHOLDER_PLATFORM_HISTORY_LINES] = str(platform_history_lines)
+    if platform_history_last_time is not None:
+        values[PLACEHOLDER_PLATFORM_HISTORY_LAST_TIME] = str(platform_history_last_time)
+    if not values:
+        return template
+
+    # 一次扫描完成全部替换；re.sub 不会对替换结果再次匹配。
+    pattern = "|".join(re.escape(key) for key in values)
+    return re.sub(pattern, lambda m: values[m.group(0)], template)
+
+
+def strip_placeholders(text: Any) -> str:
+    """移除模板中所有仍未替换的占位符。
+
+    仅用于提示词兜底：模板里写了本链路不提供的占位符时，
+    宁可留空也不要让模型看到 {{platform_history_lines}} 这种字面标记。
+    """
+    if not isinstance(text, str) or not text:
+        return "" if text is None else str(text)
+    pattern = "|".join(re.escape(key) for key in PLACEHOLDERS)
+    return re.sub(pattern, "", text)
 
 
 __all__ = [
@@ -83,4 +98,5 @@ __all__ = [
     "PLACEHOLDER_UNANSWERED_COUNT",
     "contains_placeholder",
     "render_placeholders",
+    "strip_placeholders",
 ]

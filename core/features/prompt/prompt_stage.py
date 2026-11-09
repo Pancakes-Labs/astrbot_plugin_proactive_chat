@@ -15,7 +15,7 @@ from typing import Any
 from ....utils.time_utils import format_current_time
 from ...domain.domain_enums import HookPoint, StageResult
 from ...domain.prompt_block import PromptBlock
-from ...domain.prompt_placeholders import render_placeholders
+from ...domain.prompt_placeholders import render_placeholders, strip_placeholders
 from ...domain.prompt_templates import resolve_active_template
 from ...pipeline.stage_protocol import BaseStage
 
@@ -40,10 +40,14 @@ class PromptStage(BaseStage):
         template_text = str(template.get("text") or "")
 
         # 占位符在这里一次替换完毕，DELIBERATE 阶段拿到的就是成品正文。
-        rendered_text = render_placeholders(
-            template_text,
-            current_time=format_current_time(plugin.timezone),
-            unanswered_count=ctx.unanswered_count,
+        # 平台流水占位符由流水格式化链路负责；若用户模板里手写了它，
+        # 这里必须清掉残留，否则模型会看到 {{platform_history_lines}} 字面标记。
+        rendered_text = strip_placeholders(
+            render_placeholders(
+                template_text,
+                current_time=format_current_time(plugin.timezone),
+                unanswered_count=ctx.unanswered_count,
+            )
         )
 
         # 只清理本阶段此前的产物，保留其他 PROMPT 阶段写入的块。
