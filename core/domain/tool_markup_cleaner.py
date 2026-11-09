@@ -41,10 +41,19 @@ _DSML_TOKEN_RE = re.compile(
 _SPECIAL_TOKEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}{_TAG_BODY}{_BAR}{_TAG_BODY}>")
 
 # 被 max_tokens 截断的开标签：竖线紧跟 <（可带一个斜杠与少量空白），直到文本
-# 末尾都没等到 >。真实残片一定以 <｜ 或 </｜ 起始且不跨行，所以要允许
-# < 后的空白（与 _DSML_TOKEN_RE / _SPECIAL_TOKEN_RE 保持一致），
-# 但不能放宽成“< 之后任意位置出现竖线”，否则普通正文会被整段删掉。
-_TRUNCATED_MARKER_RE = re.compile(r"<(?:/)?\s*[｜|][^<>\n]*\s*\Z")
+# 末尾都没等到 >。真实残片一定以 <｜ 或 </｜ 起始，所以要允许 < 后的空白
+# （与 _DSML_TOKEN_RE / _SPECIAL_TOKEN_RE 保持一致），但不能放宽成
+# “< 之后任意位置出现竖线”，否则普通正文会被整段删掉。
+# 结尾不再追加 \s*：它和 [^<>\n]* 重叠，长空白输入会触发大量回溯。
+# 尾部空白交给调用方的 rstrip 处理。
+_TRUNCATED_MARKER_RE = re.compile(r"<(?:/)?\s*[｜|][^<>\n]*\Z")
+# 明确的 DSML 前缀被截断时允许跨行：生成在标签内部结束，后续内容都属于该标签，
+# 与 _iter_dsml_regions 的“配对失败丢弃到末尾”保持一致。
+# 这里要求出现 dsml 关键字，普通正文不会被这条规则命中。
+_TRUNCATED_DSML_RE = re.compile(
+    rf"<(?:/)?\s*{_BAR}\s*dsml\s*{_BAR}.*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
 
 _SEND_INVOKE_RE = re.compile(
     r"invoke\s+name\s*=\s*[\"']send_message_to_user[\"']",
@@ -267,13 +276,16 @@ def _strip_truncated_marker(text: str) -> str:
     没有闭合 > 的残片不会被标签正则命中，只能按“<｜ 起始且未闭合”识别。
     不要放宽成“最后一个 < 之后出现过竖线就来一刀”，
     普通正文（比较运算、表格竖线）会被静默截断，用户收到的是残缺消息。
+
+    两条规则依次尝试：先处理带 dsml 关键字、允许跨行的残片，再处理同行残片。
     """
     if "<" not in text:
         return text
-    match = _TRUNCATED_MARKER_RE.search(text)
-    if match is None:
-        return text
-    return text[: match.start()].rstrip()
+    for pattern in (_TRUNCATED_DSML_RE, _TRUNCATED_MARKER_RE):
+        match = pattern.search(text)
+        if match is not None:
+            return text[: match.start()].rstrip()
+    return text
 
 
 def extract_payload_text(text: str) -> str:
