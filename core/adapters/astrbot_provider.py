@@ -258,6 +258,26 @@ async def invoke_provider(provider: Any, req: Any, *, max_tool_rounds: int = 1) 
     文本式工具调用标记（DSML 等）不属于原生 tool_calls，核心不会拦截，
     因此这里额外判定一次并同样回灌提示，尽量在源头拿到干净回复。
     """
+    # 前置钩子可能已改写 prompt，这里保存钩子后的值作为重试的基准；
+    # 重试期间追加的纠错提示只用于本次请求，结束后必须还原，
+    # 否则它会随 final_user_prompt 一起写进对话历史永久回灌给模型。
+    original_prompt = getattr(req, "prompt", None)
+    try:
+        return await _invoke_provider_rounds(
+            provider, req, max_tool_rounds=max_tool_rounds
+        )
+    finally:
+        if original_prompt is not None:
+            try:
+                req.prompt = original_prompt
+            except Exception:  # pragma: no cover - 只读属性兜底
+                pass
+
+
+async def _invoke_provider_rounds(
+    provider: Any, req: Any, *, max_tool_rounds: int = 1
+) -> Any:
+    """执行 Provider 调用与工具标记重试循环（不改动 req 的初始状态）。"""
     response = await _call_text_chat(provider, req)
     if isinstance(response, str):
         response = LLMResponse(role="assistant", completion_text=response)
