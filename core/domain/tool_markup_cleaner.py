@@ -40,9 +40,11 @@ _DSML_TOKEN_RE = re.compile(
 # 这些不构成闭合配对，只剥离标签本身，避免误伤后面的正文。
 _SPECIAL_TOKEN_RE = re.compile(rf"<(?:/)?\s*{_BAR}{_TAG_BODY}{_BAR}{_TAG_BODY}>")
 
-# 被 max_tokens 截断的开标签：竖线紧跟 <（可带一个斜杠），直到文本末尾都没
-# 等到 >。真实残片一定以 <｜ 或 </｜ 起始且不跨行，所以必须要求竖线紧贴 <。
-_TRUNCATED_MARKER_RE = re.compile(r"<(?:/)?[｜|][^<>\n]*\s*\Z")
+# 被 max_tokens 截断的开标签：竖线紧跟 <（可带一个斜杠与少量空白），直到文本
+# 末尾都没等到 >。真实残片一定以 <｜ 或 </｜ 起始且不跨行，所以要允许
+# < 后的空白（与 _DSML_TOKEN_RE / _SPECIAL_TOKEN_RE 保持一致），
+# 但不能放宽成“< 之后任意位置出现竖线”，否则普通正文会被整段删掉。
+_TRUNCATED_MARKER_RE = re.compile(r"<(?:/)?\s*[｜|][^<>\n]*\s*\Z")
 
 _SEND_INVOKE_RE = re.compile(
     r"invoke\s+name\s*=\s*[\"']send_message_to_user[\"']",
