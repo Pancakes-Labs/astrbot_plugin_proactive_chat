@@ -11,6 +11,16 @@ import time
 from datetime import datetime
 from typing import Any
 
+from astrbot.api import logger
+
+from ..adapters.astrbot_platform import iter_active_platform_instances
+from ..domain.session_key import is_group_type
+
+try:  # pragma: no cover - 取决于 AstrBot 版本
+    from astrbot.core.platform.platform import PlatformStatus
+except ImportError:  # pragma: no cover
+    PlatformStatus = None  # type: ignore[assignment,misc]
+
 # 作用域取值
 SCOPE_CURRENT = "current"
 SCOPE_GLOBAL = "global"
@@ -136,6 +146,50 @@ class CommandSupportService:
         "group_settings": "GroupMessage",
     }
 
+    def _resolve_bare_session(self, raw: str, message_type: str) -> str:
+        """把配置里的裸 ID 补全为完整 UMO；无法确定时返回空串。
+
+        优先复用已知会话的原始 UMO，从而保留 PrivateMessage / GuildMessage
+        等具体类型。没有已知会话时，只有在唯一运行平台下才能确定目标平台；
+        多平台并存时宁可跳过并告警，也不要按平台顺序随便挑一个。
+        """
+        if not raw or not raw.strip():
+            return ""
+
+        session_service = self.plugin.session_service
+        known = session_service.find_known_umo_by_target(
+            raw, group=is_group_type(message_type)
+        )
+        if known:
+            return session_service.normalize_session_id(known)
+
+        running = self._running_platform_ids()
+        if len(running) != 1:
+            logger.warning(
+                f"[主动消息] 配置中的裸会话 ID「{raw}」无法确定所属平台"
+                f"（当前运行平台 {len(running)} 个），已跳过。"
+                "请改用完整会话 UMO。"
+            )
+            return ""
+        return f"{running[0]}:{message_type}:{raw}"
+
+    def _running_platform_ids(self) -> list[str]:
+        """列出当前处于运行状态的平台实例 ID。"""
+        try:
+            instances = iter_active_platform_instances(
+                self.plugin.context.platform_manager
+            )
+        except Exception as e:
+            logger.debug(f"[主动消息] 读取平台实例失败喵: {e}")
+            return []
+        if PlatformStatus is None:
+            return []
+        return [
+            str(platform.meta().id)
+            for platform in instances
+            if platform.status == PlatformStatus.RUNNING
+        ]
+
     def list_enabled_sessions(self) -> list[str]:
         """枚举当前配置下真正生效（命中 session_list 且全局已启用）的会话。
 
@@ -152,12 +206,12 @@ class CommandSupportService:
             for session in settings.get("session_list", []) or []:
                 if not isinstance(session, str) or not session:
                     continue
-                normalized = plugin.session_service.normalize_session_id(session)
-                if not plugin.session_service.parse_session_id(session):
-                    # 裸 ID 无法解析成 platform:type:id，按所属分组补全。
-                    normalized = plugin.session_service.normalize_session_id(
-                        plugin.session_service.resolve_full_umo(session, message_type)
-                    )
+                if plugin.session_service.parse_session_id(session):
+                    normalized = plugin.session_service.normalize_session_id(session)
+                else:
+                    normalized = self._resolve_bare_session(session, message_type)
+                    if not normalized:
+                        continue
                 if normalized not in result:
                     result.append(normalized)
         return result

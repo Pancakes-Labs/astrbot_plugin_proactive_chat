@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from astrbot.api import logger
 from astrbot.core.platform.platform import PlatformStatus
 
 from ..adapters.astrbot_platform import iter_active_platform_instances
@@ -115,6 +116,35 @@ class SessionService:
         if session_name:
             log_str += f" ({session_name})"
         return log_str
+
+    def find_known_umo_by_target(self, target_id: str, *, group: bool) -> str | None:
+        """在已知会话中按目标 ID 与类型族查找已存在的完整 UMO。
+
+        必须保留原有消息类型（PrivateMessage / FriendMessage、GuildMessage /
+        GroupMessage 之间不能互换）：配置侧按裸 ID 匹配，但状态、覆写与调度
+        都挂在原始 UMO 上，造一个同族新键会拿不到这些数据。
+        """
+        plugin = self.plugin
+        candidates: list[str] = []
+        candidates.extend(str(key) for key in plugin.session_data.keys())
+        manager = getattr(plugin, "session_override_manager", None)
+        list_sessions = getattr(manager, "list_sessions", None)
+        if callable(list_sessions):
+            try:
+                candidates.extend(str(key) for key in list_sessions())
+            except Exception as e:
+                logger.debug(f"[主动消息] 读取会话覆写列表失败喵: {e}")
+
+        for candidate in candidates:
+            parsed = self.parse_session_id(candidate)
+            if not parsed:
+                continue
+            _, msg_type, candidate_target = parsed
+            if str(candidate_target) != str(target_id):
+                continue
+            if is_group_type(msg_type) == group:
+                return candidate
+        return None
 
     def resolve_full_umo(
         self, target_id: str, msg_type: str, preferred_platform: str | None = None
