@@ -14,7 +14,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ...utils.version_utils import get_plugin_version
-from .api_routes import ApiRoutes
+from .api_routes import OPS_HEADER_NAME, OPS_HEADER_VALUE, ApiRoutes
 from .realtime_channel import RealtimeChannel
 from .state_builder import StateBuilder
 from .token_auth import TokenAuth
@@ -42,6 +42,13 @@ except ImportError:
 
 
 _PORT_FALLBACK_MAX_ATTEMPTS = 20
+
+# 只读方法不参与跨站来源校验：GET 无副作用，且 OPTIONS 必须放行给 CORS 预检。
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# 登录必须能在尚未拿到令牌时提交，其余写接口一律要求自定义头。
+_WRITE_GUARD_EXEMPT_PATHS = frozenset({"/api/login"})
+# 视为仅本机可达的监听地址，其余地址都会把管理端暴露到网络上。
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", ""})
 
 
 def is_running_in_docker() -> bool:
@@ -128,10 +135,21 @@ class WebConsoleServer:
             allow_headers=["*"],
         )
 
-        # HTTP 鉴权中间件：启用鉴权后，除登录与鉴权信息接口外，
-        # 其余 /api 前缀请求都必须携带有效 Bearer 令牌。
+        # HTTP 鉴权中间件：先做跨站来源校验，再按开关校验 Bearer 令牌。
+        # 跨站校验对所有写方法生效，未设置密码时同样不跳过。
         @self.app.middleware("http")
         async def auth_middleware(request: Request, call_next):
+            if (
+                request.method not in _SAFE_METHODS
+                and request.url.path.startswith("/api")
+                and request.url.path not in _WRITE_GUARD_EXEMPT_PATHS
+                and request.headers.get(OPS_HEADER_NAME, "") != OPS_HEADER_VALUE
+            ):
+                return JSONResponse(
+                    {"error": "请求来源不受信任，请从管理端页面操作"},
+                    status_code=403,
+                )
+
             if not self.token_auth.enabled:
                 return await self._with_static_cache_policy(request, call_next)
 
@@ -255,8 +273,11 @@ class WebConsoleServer:
             # 构建开始前先清标记：构建期间的新请求会重新置位，触发下一轮。
             self._broadcast_dirty = False
 
-            status = await self.state_builder.build_status_payload()
-            jobs = await self.state_builder.collect_jobs_async()
+            # 合并构建：状态卡片与任务列表共享同一份人格解析缓存，
+            # 避免同一会话在一轮广播里被解析两次。
+            combined = await self.state_builder.build_realtime_payload()
+            status = combined["status"]
+            jobs = combined["jobs"]
 
             payload = {
                 "type": "update",
@@ -369,6 +390,14 @@ class WebConsoleServer:
 
         host = web_admin.get("host", "127.0.0.1")
         configured_port = int(web_admin.get("port", 4100))
+
+        # 监听非回环地址且未设密码时，局域网内任何人都能直接操作管理端
+        # （改配置、结束计时器、重启进程）。这里只告警，交给用户决定。
+        if host not in _LOOPBACK_HOSTS and not web_admin.get("password", ""):
+            logger.warning(
+                f"[主动消息] Web 管理端监听端口 {host} 且未设置访问密码喵："
+                "同一网络内的任何人都能打开并操作管理端，建议设置访问密码。"
+            )
 
         in_docker = is_running_in_docker()
         port = self._resolve_bind_port(

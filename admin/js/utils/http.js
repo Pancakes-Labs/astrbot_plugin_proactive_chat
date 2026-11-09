@@ -3,10 +3,17 @@
  */
 
 (function () {
+    // 后端对写接口做跨站来源校验：带自定义头会触发 CORS 预检，
+    // 未授权站点无法伪造。所有请求（含 GET）统一携带，调用方无需关心。
+    const CONSOLE_HEADERS = {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'AstrBotProactiveChatConsole',
+    };
+
     function buildHeaders(extra) {
         // 所有请求默认发送 JSON；如调用方有额外头信息，再在此基础上合并。
         return window.AuthUtil.withAuthHeaders(
-            Object.assign({ 'Content-Type': 'application/json' }, extra || {})
+            Object.assign({}, CONSOLE_HEADERS, extra || {})
         );
     }
 
