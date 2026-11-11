@@ -16,6 +16,13 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..domain.config_keys import (
+    ENABLED_KEY,
+    NOTIFICATION_SETTINGS_KEY,
+    SESSION_DEFAULTS_KEY,
+    TELEMETRY_CONFIG_KEY,
+    WEB_ADMIN_KEY,
+)
 from ..domain.domain_enums import TriggerSource
 
 # 注意：WebSocket / FileResponse / JSONResponse 必须在模块全局命名空间可用。
@@ -186,11 +193,10 @@ class ApiRoutes:
             # 返回所有可编辑分组，保证前端渲染的字段与服务端保存范围一致。
             return {
                 "admin_users": [str(item) for item in admin_users],
-                "friend_settings": _config_group("friend_settings"),
-                "group_settings": _config_group("group_settings"),
+                SESSION_DEFAULTS_KEY: _config_group(SESSION_DEFAULTS_KEY),
                 "web_admin": web_admin,
-                "notification_settings": _config_group("notification_settings"),
-                "telemetry_config": _config_group("telemetry_config"),
+                "notification_settings": _config_group(NOTIFICATION_SETTINGS_KEY),
+                "telemetry_config": _config_group(TELEMETRY_CONFIG_KEY),
             }
 
         # 可用人格列表：直接读 AstrBot 的 persona_manager，与 WebUI 保持同源。
@@ -233,11 +239,10 @@ class ApiRoutes:
         @app.post("/api/config")
         async def update_config(payload: dict[str, Any]):
             allowed_keys = {
-                "friend_settings",
-                "group_settings",
-                "web_admin",
-                "notification_settings",
-                "telemetry_config",
+                SESSION_DEFAULTS_KEY,
+                WEB_ADMIN_KEY,
+                NOTIFICATION_SETTINGS_KEY,
+                TELEMETRY_CONFIG_KEY,
             }
             # 分组必须是对象：若写入 null，后续 GET /api/config 的 dict(...) 会抛错，
             # 配置编辑器将无法重新加载，只能手动改配置文件才能恢复。
@@ -296,13 +301,13 @@ class ApiRoutes:
             for key in allowed_keys:
                 if key not in payload:
                     continue
-                if key == "web_admin":
-                    # 走 _config_group。
-                    old = _config_group("web_admin")
-                    old.update(payload.get("web_admin", {}))
-                    if "password" in payload.get("web_admin", {}):
-                        old["password"] = payload["web_admin"]["password"]
-                    self.config["web_admin"] = old
+                if key == WEB_ADMIN_KEY:
+                    # 走 _config_group 保留未提交的既有字段（如密码）。
+                    old = _config_group(WEB_ADMIN_KEY)
+                    old.update(payload.get(WEB_ADMIN_KEY, {}))
+                    if "password" in payload.get(WEB_ADMIN_KEY, {}):
+                        old["password"] = payload[WEB_ADMIN_KEY]["password"]
+                    self.config[WEB_ADMIN_KEY] = old
                 else:
                     self.config[key] = payload[key]
 
@@ -354,7 +359,9 @@ class ApiRoutes:
                         ),
                         "has_override": bool(override),
                         "override_keys": list(override.keys()),
-                        "enabled": bool(effective and effective.get("enable", False)),
+                        "enabled": bool(
+                            effective and effective.get(ENABLED_KEY, False)
+                        ),
                         "next_trigger_time": plugin.session_data.get(session, {}).get(
                             "next_trigger_time"
                         ),
@@ -517,7 +524,7 @@ class ApiRoutes:
         async def reschedule_job(umo: str):
             normalized = plugin.session_service.normalize_session_id(umo)
             session_config = plugin.config_service.get_session_config(normalized)
-            if not session_config or not session_config.get("enable", False):
+            if not session_config or not session_config.get(ENABLED_KEY, False):
                 return JSONResponse(
                     {
                         "ok": False,
