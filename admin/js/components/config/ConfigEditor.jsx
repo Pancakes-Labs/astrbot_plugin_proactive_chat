@@ -22,11 +22,12 @@
  }
 
  // 保存前递归清理配置：数组中的字符串去首尾空白，并去掉空项，减小脏数据概率。
+ // 注意：模板列表是“对象数组”，必须递归进去清理正文空白，但绝不能当字符串过滤掉。
  function cleanConfig(obj) {
     if (Array.isArray(obj)) {
         return obj
-            .map((item) => (typeof item === 'string' ? item.trim() : item))
-            .filter((item) => item !== '');
+            .map((item) => (typeof item === 'string' ? item.trim() : cleanConfig(item)))
+            .filter((item) => item !== '' && item !== null && item !== undefined);
     }
     if (obj && typeof obj === 'object') {
         const next = {};
@@ -168,8 +169,12 @@ function ConfigEditor() {
     // 派生变量在渲染前统一计算，避免 JSX 中出现过多内联判断。
     const currentSessionType = window.SessionDomain.detectSessionType(selectedSession);
     const sessionSchemaEntries = mode === 'session' ? getSessionSchemaEntries(schema, currentSessionType) : [];
-    const schemaEntries = mode === 'session' ? sessionSchemaEntries : Object.entries(schema || {});
-    const sessionEnabled = mode === 'session' ? Boolean(config && config.enable) : false;
+    // 全局模式需过滤迁移期隐藏字段，避免把内部结构暴露给用户编辑。
+    const hiddenRootKeys = window.ConfigShared.HIDDEN_ROOT_KEYS || [];
+    const schemaEntries = mode === 'session'
+        ? sessionSchemaEntries
+        : Object.entries(schema || {}).filter(([key]) => !hiddenRootKeys.includes(key));
+    const sessionEnabled = mode === 'session' ? Boolean(config && config.enabled) : false;
     const sessionTypeLabel = currentSessionType === 'group' ? '群聊' : '私聊';
     // config 为空时（无可用会话 / 请求失败）没有可提交内容，需一并禁用保存。
     const canSaveConfig = Boolean(config) && (mode !== 'session' || sessionConfigState.baseAvailable);
@@ -272,7 +277,7 @@ function ConfigEditor() {
         if (!ok) return;
 
         if (mode === 'session') {
-            const sessionDefaults = { enable: true };
+            const sessionDefaults = { enabled: true };
             schemaEntries.forEach(([key, value]) => {
                 if (value && value.type === 'object' && value.items) {
                     sessionDefaults[key] = generateDefaults(value.items);
@@ -445,7 +450,7 @@ function ConfigEditor() {
                                         checked={sessionEnabled}
                                         onChange={(e) => {
                                             isDirtyRef.current = true;
-                                            setConfig(Object.assign({}, config, { enable: e.target.checked }));
+                                            setConfig(Object.assign({}, config, { enabled: e.target.checked }));
                                         }}
                                     />
                                 </Box>
@@ -465,6 +470,8 @@ function ConfigEditor() {
                                 path=""
                                 expandedKeys={expandedKeys}
                                 onToggleExpand={handleToggleExpand}
+                                // 会话模式传当前会话类型，全局模式传空串表示不过滤。
+                                sessionType={mode === 'session' ? currentSessionType : ''}
                             />
                         </Box>
                     ))}
