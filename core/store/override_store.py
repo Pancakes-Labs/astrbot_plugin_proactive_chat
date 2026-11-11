@@ -13,28 +13,16 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..domain.config_keys import OVERRIDABLE_ROOT_KEYS
+
 
 class OverrideStore:
     """负责会话级差异配置的加载、存储与合并。"""
 
     OVERRIDES_FILE = "session_overrides.json"
 
-    # 仅允许会话覆写这些根字段，避免污染全局配置
-    ALLOWED_ROOT_KEYS = {
-        "enable",
-        "session_name",
-        # 会话级专用人格，需允许覆写才能按会话差异化指定。
-        "persona_id",
-        "proactive_prompt",
-        # 多提示词模板：预留会话级覆写能力，便于后续按会话细分模板。
-        "prompt_templates",
-        "context_settings",
-        "auto_trigger_settings",
-        "schedule_settings",
-        "tts_settings",
-        "segmented_reply_settings",
-        "group_idle_trigger_minutes",
-    }
+    # 仅允许会话覆写这些根字段，与 session_defaults 的二级结构保持同形。
+    ALLOWED_ROOT_KEYS = OVERRIDABLE_ROOT_KEYS
 
     def __init__(self, storage_dir: Path):
         self.storage_dir = Path(storage_dir)

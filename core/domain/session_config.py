@@ -9,15 +9,26 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# 一级配置块名称（与 _conf_schema.json 完全一致）
-FRIEND_SETTINGS_KEY = "friend_settings"
-GROUP_SETTINGS_KEY = "group_settings"
-WEB_ADMIN_KEY = "web_admin"
-NOTIFICATION_SETTINGS_KEY = "notification_settings"
-TELEMETRY_CONFIG_KEY = "telemetry_config"
-
-# 会话内二级配置段
-SCHEDULE_SETTINGS_KEY = "schedule_settings"
+from .config_keys import (
+    ADMIN_USERS_KEY,
+    CONTEXT_SETTINGS_KEY,
+    ENABLED_KEY,
+    GROUP_SILENCE_SETTINGS_KEY,
+    LEGACY_FRIEND_SETTINGS_KEY,
+    LEGACY_GROUP_SETTINGS_KEY,
+    LEGACY_TYPE_FALLBACK_KEY,
+    NOTIFICATION_SETTINGS_KEY,
+    PERSONA_ID_KEY,
+    PROMPT_SETTINGS_KEY,
+    SCHEDULE_SETTINGS_KEY,
+    SEGMENTED_REPLY_SETTINGS_KEY,
+    SESSION_DEFAULTS_KEY,
+    SESSION_LIST_KEY,
+    STARTUP_CHECK_SETTINGS_KEY,
+    TELEMETRY_CONFIG_KEY,
+    TTS_SETTINGS_KEY,
+    WEB_ADMIN_KEY,
+)
 
 # 会话类型标签
 SESSION_TYPE_FRIEND = "friend"
@@ -29,7 +40,7 @@ class SessionConfig:
     """会话最终生效配置的只读视图。
 
     Attributes:
-        raw: 合并 base + override 后的原始 dict，保持与旧实现完全一致的结构。
+        raw: 合并 base + override 后的原始 dict，保持与运行时结构一致。
         session_type: friend 或 group。
         from_session_list: 是否命中全局 session_list。
         has_override: 是否存在会话级覆写。
@@ -53,7 +64,7 @@ class SessionConfig:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.raw.get("enable", False))
+        return bool(self.raw.get(ENABLED_KEY, False))
 
     def section(self, key: str) -> dict[str, Any]:
         """读取某个配置段，非 dict 时返回空 dict。"""
@@ -64,10 +75,63 @@ class SessionConfig:
         return self.raw.get(key, default)
 
     @property
+    def persona_id(self) -> str:
+        return str(self.raw.get(PERSONA_ID_KEY) or "").strip()
+
+    @property
     def schedule_settings(self) -> dict[str, Any]:
         return self.section(SCHEDULE_SETTINGS_KEY)
 
     @property
+    def context_settings(self) -> dict[str, Any]:
+        return self.section(CONTEXT_SETTINGS_KEY)
+
+    @property
+    def prompt_settings(self) -> dict[str, Any]:
+        return self.section(PROMPT_SETTINGS_KEY)
+
+    @property
+    def startup_check_settings(self) -> dict[str, Any]:
+        return self.section(STARTUP_CHECK_SETTINGS_KEY)
+
+    @property
+    def group_silence_settings(self) -> dict[str, Any]:
+        return self.section(GROUP_SILENCE_SETTINGS_KEY)
+
+    @property
+    def tts_settings(self) -> dict[str, Any]:
+        return self.section(TTS_SETTINGS_KEY)
+
+    @property
+    def segmented_reply_settings(self) -> dict[str, Any]:
+        return self.section(SEGMENTED_REPLY_SETTINGS_KEY)
+
+    @property
     def quiet_hours_enabled(self) -> bool:
-        """是否启用免打扰时段；未显式配置时按启用处理，兼容旧配置。"""
-        return bool(self.schedule_settings.get("enable_quiet_hours", True))
+        """是否启用免打扰时段；未显式配置时按启用处理。"""
+        return bool(self.schedule_settings.get("quiet_hours_enabled", True))
+
+
+__all__ = [
+    "ADMIN_USERS_KEY",
+    "CONTEXT_SETTINGS_KEY",
+    "ENABLED_KEY",
+    "GROUP_SILENCE_SETTINGS_KEY",
+    "LEGACY_FRIEND_SETTINGS_KEY",
+    "LEGACY_GROUP_SETTINGS_KEY",
+    "LEGACY_TYPE_FALLBACK_KEY",
+    "NOTIFICATION_SETTINGS_KEY",
+    "PERSONA_ID_KEY",
+    "PROMPT_SETTINGS_KEY",
+    "SCHEDULE_SETTINGS_KEY",
+    "SEGMENTED_REPLY_SETTINGS_KEY",
+    "SESSION_DEFAULTS_KEY",
+    "SESSION_LIST_KEY",
+    "SESSION_TYPE_FRIEND",
+    "SESSION_TYPE_GROUP",
+    "STARTUP_CHECK_SETTINGS_KEY",
+    "SessionConfig",
+    "TELEMETRY_CONFIG_KEY",
+    "TTS_SETTINGS_KEY",
+    "WEB_ADMIN_KEY",
+]
