@@ -13,6 +13,7 @@ from astrbot.api import logger
 
 from ...utils.time_utils import is_quiet_time
 from ..adapters.astrbot_conversation import add_message_pair, verify_message_persisted
+from ..domain.config_keys import ENABLED_KEY
 from ..domain.domain_enums import HookPoint, StageResult, TriggerSource
 from ..domain.request_context import ProactiveContext
 from ..domain.session_key import is_friend_type, is_group_type
@@ -165,12 +166,12 @@ class FlowOrchestrator:
         session_config = plugin.config_service.get_session_config(session_id)
         if not session_config:
             return False, "session_config_missing"
-        if not session_config.get("enable", False):
+        if not session_config.get(ENABLED_KEY, False):
             return False, "session_disabled"
 
         schedule_conf = session_config.get("schedule_settings", {})
         # 免打扰开关缺省视为开启，保持旧配置行为不变。
-        if schedule_conf.get("enable_quiet_hours", True) and is_quiet_time(
+        if schedule_conf.get("quiet_hours_enabled", True) and is_quiet_time(
             schedule_conf.get("quiet_hours", "1-7"), plugin.timezone
         ):
             return False, "quiet_hours"

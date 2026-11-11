@@ -600,7 +600,7 @@ class SenderService:
                 logger.debug("[主动消息] 装饰后消息链为空，跳过文本发送喵。")
 
             # 可选分段：分段后逐条发送，条目数与装饰后链不同即认为生效。
-            enable_seg = seg_conf.get("enable", False)
+            enable_seg = seg_conf.get("enabled", False)
             send_chain = decorated_chain
             segmented = False
             if enable_seg and decorated_chain:
