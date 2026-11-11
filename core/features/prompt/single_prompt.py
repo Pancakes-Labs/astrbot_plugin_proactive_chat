@@ -10,9 +10,11 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ...domain.config_keys import SESSION_DEFAULTS_KEY
 from ...domain.domain_enums import HookPoint, StageResult
 from ...domain.llm_outcome import LlmOutcome
 from ...domain.prompt_block import PromptBlock
+from ...domain.prompt_templates import PROMPT_SETTINGS_KEY, TEMPLATES_KEY
 from ...domain.tool_markup_cleaner import (
     clean_chain_components,
     clean_llm_text,
@@ -114,27 +116,11 @@ class SinglePromptFeature:
     """DELIBERATE 阶段功能（默认单一提示词）。"""
 
     name = "single_prompt_feature"
-    # 本功能消费的提示词字段：旧单字符串与新的模板列表并存。
-    # 模板列表当前不开放编辑（issue #45），仅在 schema 中占位，
-    # 用于承载迁移留档并打通后续多模板注入的落点。
-    CONFIG_SECTIONS = ("friend_settings", "group_settings")
-    PROMPT_TEMPLATES_SCHEMA = {
-        "type": "list",
-        # invisible 是 AstrBot 面板与本站配置页共同识别的隐藏标记：
-        # 当前版本仍以 proactive_prompt 为唯一入口，模板列表只作结构预留。
-        "invisible": True,
-        "default": [],
-        "description": "主动消息提示词模板列表",
-        "hint": "预留字段，用于承载多提示词模板，当前版本暂未开放编辑。",
-        "items": {
-            "id": {"type": "string", "default": ""},
-            "name": {"type": "string", "default": ""},
-            "role": {"type": "string", "default": "task"},
-            "text": {"type": "text", "default": ""},
-            "enabled": {"type": "bool", "default": True},
-            "weight": {"type": "int", "default": 100},
-        },
-    }
+    # 模板列表已在 _conf_schema.json 中正式声明，这里不再重复注入。
+    CONFIG_SECTION = SESSION_DEFAULTS_KEY
+    PROMPT_TEMPLATES_PATH = (
+        f"{SESSION_DEFAULTS_KEY}.{PROMPT_SETTINGS_KEY}.{TEMPLATES_KEY}"
+    )
 
     def __init__(self, orchestrator: Any) -> None:
         self.orchestrator = orchestrator
@@ -146,16 +132,10 @@ class SinglePromptFeature:
             priority=10,
         )
 
-    def config_schema(self) -> dict[str, Any]:
-        """把模板字段声明到两个会话配置分组下。
-
-        使用点号路径，避免与其它 Feature 在 friend_settings 内互相覆盖。
-        """
-        return {
-            f"{section}.prompt_templates": self.PROMPT_TEMPLATES_SCHEMA
-            for section in self.CONFIG_SECTIONS
-        }
+    def config_schema(self) -> dict[str, Any] | None:
+        """模板字段由静态 schema 声明，Feature 不再重复声明。"""
+        return None
 
     def default_config(self) -> dict[str, Any]:
-        """模板列表默认为空，运行时回退到旧版单条提示词。"""
-        return {f"{section}.prompt_templates": [] for section in self.CONFIG_SECTIONS}
+        """模板列表默认为空，运行时回退到内置默认模板。"""
+        return {self.PROMPT_TEMPLATES_PATH: []}
