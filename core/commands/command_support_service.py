@@ -14,6 +14,11 @@ from typing import Any
 from astrbot.api import logger
 
 from ..adapters.astrbot_platform import iter_active_platform_instances
+from ..domain.config_keys import (
+    ENABLED_KEY,
+    SESSION_DEFAULTS_KEY,
+    SESSION_LIST_KEY,
+)
 from ..domain.session_key import is_group_type
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
@@ -140,11 +145,9 @@ class CommandSupportService:
     # ------------------------------------------------------------------
     # 可启用会话枚举
     # ------------------------------------------------------------------
-    # 配置分组 -> 裸 ID 应按哪种消息类型补全为完整 UMO。
-    _SCOPE_MESSAGE_TYPES = {
-        "friend_settings": "FriendMessage",
-        "group_settings": "GroupMessage",
-    }
+    # 裸 ID 补全时按消息类型分别处理：会话列表已合并，只能按解析结果分流。
+    _FRIEND_MESSAGE_TYPE = "FriendMessage"
+    _GROUP_MESSAGE_TYPE = "GroupMessage"
 
     def _resolve_bare_sessions(self, raw: str, message_type: str) -> list[str]:
         """把配置里的裸 ID 补全为完整 UMO 列表；无法确定时返回空列表。
@@ -213,23 +216,25 @@ class CommandSupportService:
         会查不到，计时器与任务也无法按完整 UMO 匹配。
         """
         plugin = self.plugin
+        defaults = plugin.config.get(SESSION_DEFAULTS_KEY, {})
+        if not isinstance(defaults, dict) or not defaults.get(ENABLED_KEY, False):
+            return []
+
         result: list[str] = []
-        for scope_key, message_type in self._SCOPE_MESSAGE_TYPES.items():
-            settings = plugin.config.get(scope_key, {})
-            if not settings.get("enable", False):
+        for session in defaults.get(SESSION_LIST_KEY, []) or []:
+            if not isinstance(session, str) or not session:
                 continue
-            for session in settings.get("session_list", []) or []:
-                if not isinstance(session, str) or not session:
-                    continue
-                if plugin.session_service.parse_session_id(session):
-                    # 完整 UMO 归一后只对应一个会话。
-                    candidates = [plugin.session_service.normalize_session_id(session)]
-                else:
-                    # 裸 ID 可能命中同 target 在多个平台上的会话，全部展开。
-                    candidates = self._resolve_bare_sessions(session, message_type)
-                for normalized in candidates:
-                    if normalized and normalized not in result:
-                        result.append(normalized)
+            if plugin.session_service.parse_session_id(session):
+                # 完整 UMO 归一后只对应一个会话。
+                candidates = [plugin.session_service.normalize_session_id(session)]
+            else:
+                # 裸 ID 类型未知：两种消息类型都试一遍，由已知会话反查决定。
+                candidates = self._resolve_bare_sessions(
+                    session, self._FRIEND_MESSAGE_TYPE
+                ) or self._resolve_bare_sessions(session, self._GROUP_MESSAGE_TYPE)
+            for normalized in candidates:
+                if normalized and normalized not in result:
+                    result.append(normalized)
         return result
 
     def base_config_of(self, session_id: str) -> dict | None:
@@ -379,7 +384,7 @@ class CommandSupportService:
     @staticmethod
     def format_quiet_hours(schedule_settings: dict) -> str:
         """描述免打扰配置的当前状态。"""
-        if not schedule_settings.get("enable_quiet_hours", True):
+        if not schedule_settings.get("quiet_hours_enabled", True):
             return "未启用"
         text = str(schedule_settings.get("quiet_hours", "") or "").strip()
         return text if text else "已启用但未设置时段"
