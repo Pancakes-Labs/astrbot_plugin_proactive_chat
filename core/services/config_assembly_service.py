@@ -161,9 +161,13 @@ class ConfigAssemblyService:
         if not isinstance(config, dict):
             return
 
+        # 结构合并涉及跨分组取并集与冲突裁决，迁移前先备份原始配置，
+        # 万一日志与判断有出入，用户仍能从快照里找回原始值。
+        self._backup_config_before_migration(config)
+
         # 顺序至关重要：迁移必须先于默认值补齐。
-        # 若先补齐，prompt_templates 会被填成空列表，迁移器据此判定"已迁移"，
-        # 导致旧 proactive_prompt 永远得不到留档（会话覆写不走补齐，形态会不一致）。
+        # 若先补齐，模板列表会被填成空列表，迁移器据此判定"已迁移"，
+        # 导致旧提示词永远得不到留档（会话覆写不走补齐，形态会不一致）。
         changed = config_migrator.migrate_config(config)
 
         defaults = self._feature_defaults
@@ -171,9 +175,18 @@ class ConfigAssemblyService:
         if defaults:
             added = self._apply_defaults(config, defaults)
 
-        migrated_sessions = await config_migrator.migrate_override_store(
-            getattr(plugin, "session_override_manager", None)
+        store = getattr(plugin, "session_override_manager", None)
+        migrated_sessions = await config_migrator.migrate_override_store(store)
+        # 迁移期保留了“原本属于被关闭一侧”的会话清单，
+        # 需在覆写存储可用后立刻实体化为关闭型覆写，保持旧行为等价。
+        disabled_overrides = await config_migrator.apply_pending_disabled_overrides(
+            store, config
         )
+        if disabled_overrides:
+            logger.info(
+                f"[主动消息] 已为 {disabled_overrides} 个会话写入单独关闭的覆写喵。"
+            )
+            changed = True
 
         # 仅在确有变更时落盘，避免无谓地重写配置文件。
         if changed or added:
@@ -196,6 +209,123 @@ class ConfigAssemblyService:
 
         if migrated_sessions:
             logger.info(f"[主动消息] 已迁移 {migrated_sessions} 个会话的覆写配置喵。")
+
+    # 备份文件名沿用 v1.2 之前版本的约定，便于老用户凭直觉找到。
+    CONFIG_SNAPSHOT_FILE = "user_config_snapshot.json"
+    PROMPTS_COLLECTION_FILE = "prompts_collection.md"
+
+    def _backup_config_before_migration(self, config: dict[str, Any]) -> None:
+        """结构迁移前备份原始配置与提示词，仅在确有旧结构时执行一次。
+
+        写两份文件：
+        - user_config_snapshot.json：完整配置快照，用于精确回滚；
+        - prompts_collection.md：提示词汇总，用于人眼快速核对。
+
+        已存在即跳过，避免把用户排障依据刷成迁移后的内容。
+        """
+        from ..domain.config_keys import (
+            LEGACY_FRIEND_SETTINGS_KEY,
+            LEGACY_GROUP_SETTINGS_KEY,
+        )
+
+        has_legacy = any(
+            isinstance(config.get(key), dict) and config.get(key)
+            for key in (LEGACY_FRIEND_SETTINGS_KEY, LEGACY_GROUP_SETTINGS_KEY)
+        )
+        if not has_legacy:
+            return
+
+        data_dir = getattr(self.plugin, "data_dir", None)
+        if data_dir is None:
+            return
+
+        try:
+            import json
+            from pathlib import Path
+
+            root = Path(data_dir)
+            root.mkdir(parents=True, exist_ok=True)
+
+            snapshot_path = root / self.CONFIG_SNAPSHOT_FILE
+            if not snapshot_path.exists():
+                snapshot_path.write_text(
+                    json.dumps(dict(config), ensure_ascii=False, indent=4),
+                    encoding="utf-8",
+                )
+
+            prompts_path = root / self.PROMPTS_COLLECTION_FILE
+            if not prompts_path.exists():
+                prompts_path.write_text(
+                    self._build_prompts_collection(config),
+                    encoding="utf-8",
+                )
+
+            logger.info(f"[主动消息] 已在迁移前备份配置快照与提示词汇总到 {root} 喵。")
+        except Exception as e:
+            logger.warning(f"[主动消息] 备份旧配置失败喵: {e}")
+
+    @staticmethod
+    def _build_prompts_collection(config: dict[str, Any]) -> str:
+        """把旧配置里的提示词汇总成一份 Markdown，便于人工核对待迁移内容。"""
+        from ..domain.config_keys import (
+            LEGACY_FRIEND_SETTINGS_KEY,
+            LEGACY_GROUP_SETTINGS_KEY,
+        )
+
+        label_map = {
+            LEGACY_FRIEND_SETTINGS_KEY: "私聊",
+            LEGACY_GROUP_SETTINGS_KEY: "群聊",
+        }
+
+        lines: list[str] = ["# 主动消息 Prompt 汇总备份", ""]
+
+        for key, label in label_map.items():
+            section = config.get(key)
+            if not isinstance(section, dict):
+                continue
+
+            legacy_prompt = section.get("proactive_prompt")
+            if isinstance(legacy_prompt, str) and legacy_prompt.strip():
+                lines.extend(
+                    [
+                        f"## {label}主动消息提示词",
+                        "",
+                        "```text",
+                        legacy_prompt,
+                        "```",
+                        "",
+                    ]
+                )
+
+            templates = section.get("prompt_templates")
+            if isinstance(templates, list):
+                for index, template in enumerate(templates, start=1):
+                    if not isinstance(template, dict):
+                        continue
+                    text = template.get("text")
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    name = template.get("name") or f"模板 {index}"
+                    lines.extend(
+                        [f"## {label}模板：{name}", "", "```text", text, "```", ""]
+                    )
+
+            context_settings = section.get("context_settings")
+            if isinstance(context_settings, dict):
+                history_prompt = context_settings.get("platform_history_prompt")
+                if isinstance(history_prompt, str) and history_prompt.strip():
+                    lines.extend(
+                        [
+                            f"## {label}平台流水提示词",
+                            "",
+                            "```text",
+                            history_prompt,
+                            "```",
+                            "",
+                        ]
+                    )
+
+        return "\n".join(lines)
 
     def _apply_defaults(
         self, config: dict[str, Any], defaults: dict[str, Any]
