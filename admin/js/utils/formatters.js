@@ -167,6 +167,9 @@ function formatDuration(totalSeconds, options = {}) {
 function resolveSourceModeLabel(sourceMode) {
     const normalized = String(sourceMode || '').trim().toLowerCase();
     switch (normalized) {
+        case 'auto':
+            // 后端在会话路由时已按类型解析为具体来源，这里仅防御旧数据。
+            return '自动（按会话类型）';
         case 'platform_message_history':
             return '平台完整聊天流水';
         case 'hybrid':

@@ -111,7 +111,7 @@
     // 计时窗口的来源配置：字段名严格对齐配置页，数值直接复用窗口秒数。
     function resolveTriggerSpec(isGroupSilence, windowSeconds) {
         return {
-            configLabel: isGroupSilence ? '群聊沉默触发时间' : '自动触发等待时间',
+            configLabel: isGroupSilence ? '群聊沉默判定时长' : '启动后静默检测窗口',
             configValue: windowSeconds > 0
                 ? window.formatDuration(windowSeconds, { compact: true, maxUnits: 3 })
                 : '未配置',
@@ -168,13 +168,13 @@
         const isGroupSilence = timer.timer_kind === 'group_silence';
         const categoryLabel = isGroupSession ? '群会话' : '私聊会话';
         const sectionKey = isGroupSilence ? 'group_silence' : 'auto_trigger';
-        const sectionTitle = isGroupSilence ? '群沉默倒计时' : '自动触发检测';
+        const sectionTitle = isGroupSilence ? '群聊沉默判定' : '启动后静默检测';
         const accentClass = isGroupSilence
             ? 'accent-group-silence'
             : (isGroupSession ? 'accent-auto-group' : 'accent-auto-friend');
         const kindBadgeLabel = isGroupSilence
             ? '沉默重置型'
-            : (isGroupSession ? '群聊自动触发' : '私聊自动触发');
+            : '启动后检测';
 
         const session = window.SessionDomain.resolveSessionDisplay({
             session: timer.session_id,
@@ -253,7 +253,7 @@
             ? Math.max(0, windowSeconds - remainingSeconds)
             : 0;
 
-        // 调度间隔取配置项口径，与配置页「最小/最大间隔」文案对齐。
+        // 发送延迟取配置项口径，与配置页「最短/最长发送延迟」文案对齐。
         const minMinutes = Number(job.schedule_min_interval_minutes) || 0;
         const maxMinutes = Number(job.schedule_max_interval_minutes) || 0;
         const intervalText = (minMinutes > 0 && maxMinutes > 0)
