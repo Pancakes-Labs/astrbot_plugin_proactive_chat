@@ -20,6 +20,14 @@ from astrbot.api import logger
 from astrbot.api.star import StarTools
 
 from ...utils.version_utils import get_astrbot_version_info
+from ..domain.config_keys import (
+    LEGACY_FRIEND_SETTINGS_KEY,
+    LEGACY_GROUP_SETTINGS_KEY,
+    LEGACY_TYPE_FALLBACK_KEY,
+    SESSION_DEFAULTS_KEY,
+    SESSION_LIST_KEY,
+)
+from ..domain.prompt_templates import PROMPT_SETTINGS_KEY, TEMPLATES_KEY
 
 
 class TelemetryManager:
@@ -459,38 +467,28 @@ class TelemetryManager:
             # 深拷贝后再修改，避免遥测过滤逻辑意外污染插件运行中的真实配置对象。
             config_copy = copy.deepcopy(config)
 
-            friend_settings = config_copy.get("friend_settings")
-            if isinstance(friend_settings, dict):
-                # 私聊会话列表不上传原文，只保留数量用于统计默认值设计是否合理。
-                session_list = friend_settings.pop("session_list", [])
-                friend_settings["session_list_count"] = (
+            defaults = config_copy.get(SESSION_DEFAULTS_KEY)
+            if isinstance(defaults, dict):
+                # 会话列表不上传原文，只保留数量用于统计默认值设计是否合理。
+                session_list = defaults.pop(SESSION_LIST_KEY, [])
+                defaults["session_list_count"] = (
                     len(session_list) if isinstance(session_list, list) else 0
                 )
-                # 私聊主动提示词正文属于高敏感内容，必须完全移除。
-                if "proactive_prompt" in friend_settings:
-                    del friend_settings["proactive_prompt"]
-                # 多提示词模板同样整段过滤，只保留条数用于统计。
-                templates = friend_settings.pop("prompt_templates", None)
-                if templates is not None:
-                    friend_settings["prompt_templates_count"] = (
-                        len(templates) if isinstance(templates, list) else 0
-                    )
+                # 提示词正文属于高敏感内容，整段移除，只保留条数。
+                prompt_settings = defaults.get(PROMPT_SETTINGS_KEY)
+                if isinstance(prompt_settings, dict):
+                    templates = prompt_settings.pop(TEMPLATES_KEY, None)
+                    if templates is not None:
+                        prompt_settings["templates_count"] = (
+                            len(templates) if isinstance(templates, list) else 0
+                        )
+                defaults.pop("proactive_prompt", None)
 
-            group_settings = config_copy.get("group_settings")
-            if isinstance(group_settings, dict):
-                # 群聊会话列表同样只统计数量，不上传任何具体 UMO。
-                session_list = group_settings.pop("session_list", [])
-                group_settings["session_list_count"] = (
-                    len(session_list) if isinstance(session_list, list) else 0
-                )
-                # 群聊提示词也做整段过滤，避免活跃策略被直接暴露。
-                if "proactive_prompt" in group_settings:
-                    del group_settings["proactive_prompt"]
-                templates = group_settings.pop("prompt_templates", None)
-                if templates is not None:
-                    group_settings["prompt_templates_count"] = (
-                        len(templates) if isinstance(templates, list) else 0
-                    )
+            # 旧分组在迁移完成后应为 null，这里一并剔除避免误上报。
+            for legacy_key in (LEGACY_FRIEND_SETTINGS_KEY, LEGACY_GROUP_SETTINGS_KEY):
+                if legacy_key in config_copy:
+                    config_copy.pop(legacy_key, None)
+            config_copy.pop(LEGACY_TYPE_FALLBACK_KEY, None)
 
             web_admin = config_copy.get("web_admin")
             if isinstance(web_admin, dict) and "password" in web_admin:
