@@ -69,12 +69,35 @@ function normalizeItem(item) {
     };
 }
 
-// 条目标识：优先用持久 id，缺失时退化为“序号+内容”派生的稳定键。
-// 部分旧配置没有 id，若直接拿空串当键，多条无 id 条目会互相串位。
-function itemIdentity(item, index) {
+// 无 id 条目的身份缓存：以对象引用为键，保证同一条目在一轮编辑里始终拿到同一个标识。
+const fallbackIds = new WeakMap();
+let fallbackSeq = 0;
+
+function itemIdentity(item) {
+    if (!item || typeof item !== 'object') return `raw:${String(item)}`;
     const data = normalizeItem(item);
+    // 有持久 id 时优先用它：这是唯一能跨保存稳定下来的标识。
     if (data.id) return `id:${data.id}`;
-    return `idx:${index}:${data.text.slice(0, 32)}`;
+    let cached = fallbackIds.get(item);
+    if (!cached) {
+        fallbackSeq += 1;
+        cached = `tmp:${Date.now().toString(36)}_${fallbackSeq}`;
+        fallbackIds.set(item, cached);
+    }
+    return cached;
+}
+
+// 回写前把临时标识落成真正的 id，避免同一批无 id 条目在下次渲染时
+// 被当成不同条目（WeakMap 只认当前对象引用）。
+function materializeIds(items) {
+    return items.map((item) => {
+        if (!item || typeof item !== 'object') return item;
+        const data = normalizeItem(item);
+        if (data.id) return data;
+        const tempKey = itemIdentity(item);
+        const id = `tpl_${tempKey.replace('tmp:', '')}`;
+        return { ...data, id };
+    });
 }
 
 function TemplateCard({ index, item, onPatch, onRemove, sessionType = '' }) {
@@ -253,37 +276,50 @@ function TemplateListField({ schema, value, onChange, depth = 1, sessionType = '
     const hiddenCount = allItems.length - items.length;
     const applyItems = (nextVisible) => {
         if (!sessionType || hiddenCount <= 0) {
-            onChange(nextVisible);
+            // 无隐藏项时仍需把临时标识落成 id：否则下一次渲染拿不到稳定 key。
+            onChange(materializeIds(nextVisible));
             return;
         }
-        const visibleKeys = new Set(items.map((item, i) => itemIdentity(item, i)));
+        // 关键：可见项与全量项必须用同一套标识比较。
+        // 这里先为 allItems 每个条目各取一次标识并缓存，后续匹配全部复用。
+        const keyed = allItems.map((item) => ({ item, key: itemIdentity(item) }));
+        const visibleKeys = new Set(keyed.map(({ key }) => key));
+        // 本次仍存在的条目：用编辑后的新版覆盖。
+        const pool = nextVisible.map((item) => ({ item, key: itemIdentity(item) }));
+        const keptKeys = new Set(pool.map(({ key }) => key));
+
         // 合并时保持原有顺序：按 allItems 顺序穿插，避免保存后模板顺序被打乱。
         const payload = [];
-        const pool = [...nextVisible];
-        allItems.forEach((item, i) => {
-            const key = itemIdentity(item, i);
+        keyed.forEach(({ item, key }) => {
             if (!visibleKeys.has(key)) {
                 // 非本会话范围的模板：原样保留。
                 payload.push(item);
                 return;
             }
-            const idx = pool.findIndex((cand, j) => itemIdentity(cand, j) === key);
+            const idx = pool.findIndex((cand) => cand.key === key);
             if (idx >= 0) {
-                // 仍存在：用编辑后的新版覆盖。
-                payload.push(pool.splice(idx, 1)[0]);
+                payload.push(pool[idx].item);
+                // 标记已消费，避免重复追加。
+                pool[idx].consumed = true;
             }
             // 找不到说明用户删掉了它，直接跳过，不能回退成原条目。
         });
         // 剩余的是本页新增项，追加到末尾。
-        payload.push(...pool);
-        onChange(payload);
+        pool.forEach((entry) => {
+            if (!entry.consumed) payload.push(entry.item);
+        });
+        onChange(materializeIds(payload));
     };
 
     const patchAt = (index, patch) => {
-        // 保留原条目的扩展字段。
-        const next = items.map((item, i) => (
-            i === index ? { ...item, ...normalizeItem(item), ...patch } : item
-        ));
+        // 保留原条目的扩展字段与对象身份：后者是稳定 key 的来源，
+        // 一旦换成新对象，输入时就会重新分配标识并触发重挂载。
+        const next = items.map((item, i) => {
+            if (i !== index) return item;
+            const merged = { ...item, ...normalizeItem(item), ...patch };
+            fallbackIds.set(merged, itemIdentity(item));
+            return merged;
+        });
         applyItems(next);
     };
 
@@ -340,9 +376,9 @@ function TemplateListField({ schema, value, onChange, depth = 1, sessionType = '
 
             {items.map((item, index) => (
                 <TemplateCard
-                    // 用稳定身份而非下标：删除首条后，下标复用会让后续卡片
-                    // 继承前一位置的组件状态与输入焦点，导致改错模板。
-                    key={itemIdentity(item, index)}
+                    // 用对象身份派生的稳定标识：删除或编辑正文都不会改变它，
+                    // 组件不会被重挂载，输入框也不会失焦。
+                    key={itemIdentity(item)}
                     sessionType={sessionType}
                     index={index}
                     item={item}
