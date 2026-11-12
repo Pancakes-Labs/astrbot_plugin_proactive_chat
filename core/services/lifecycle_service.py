@@ -191,16 +191,18 @@ class LifecycleService:
         plugin = self.plugin
         before = self._pending_snapshot()
         try:
-            written = (
-                await plugin.config_assembly_service.retry_pending_disabled_overrides()
-            )
+            (
+                written,
+                changed,
+            ) = await plugin.config_assembly_service.retry_pending_disabled_overrides()
         except Exception as e:
             logger.warning(f"[主动消息] {stage}补写关闭型覆写失败喵: {e}")
             return
 
         if written:
             logger.info(f"[主动消息] {stage}补写了 {written} 个关闭型覆写喵。")
-        if self._pending_snapshot() != before:
+        # 清单变化（含清空但写入数为 0）都必须落盘，避免磁盘残留旧条目。
+        if changed or self._pending_snapshot() != before:
             await self._persist_config()
 
     def _pending_snapshot(self) -> list:

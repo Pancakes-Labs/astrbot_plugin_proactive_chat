@@ -185,11 +185,16 @@ class ConfigAssemblyService:
         migrated_sessions = await config_migrator.migrate_override_store(store)
         # 迁移期保留了“原本属于被关闭一侧”的会话清单，
         # 需在覆写存储可用后立刻实体化为关闭型覆写，保持旧行为等价。
-        disabled_overrides = await self.retry_pending_disabled_overrides()
+        (
+            disabled_overrides,
+            pending_changed,
+        ) = await self.retry_pending_disabled_overrides()
         if disabled_overrides:
             logger.info(
                 f"[主动消息] 已为 {disabled_overrides} 个会话写入单独关闭的覆写喵。"
             )
+        # 清单被清空但写入数为 0 时同样要落盘，否则磁盘残留旧清单会重复关闭会话。
+        if disabled_overrides or pending_changed:
             changed = True
 
         # 仅在确有变更时落盘，避免无谓地重写配置文件。
@@ -214,18 +219,19 @@ class ConfigAssemblyService:
         if migrated_sessions:
             logger.info(f"[主动消息] 已迁移 {migrated_sessions} 个会话的覆写配置喵。")
 
-    async def retry_pending_disabled_overrides(self) -> int:
-        """消费「等待单独关闭」清单，返回本次成功写入的数量。
+    async def retry_pending_disabled_overrides(self) -> tuple[int, bool]:
+        """消费「等待单独关闭」清单。
 
-        清单里都是完整 UMO，配置装配后即可一次写完；
-        写入失败的条目会留在清单中，在后续启动流程里再次重试。
+        Returns:
+            (本次新写入的覆写数, 清单是否发生变化)。
+            清单变化必须回报给调用方用于决定是否落盘。
         """
         plugin = self.plugin
         config = plugin.config
         if not isinstance(config, dict):
-            return 0
+            return 0, False
         if not config.get("_pending_disabled_overrides"):
-            return 0
+            return 0, False
         try:
             return await config_migrator.apply_pending_disabled_overrides(
                 getattr(plugin, "session_override_manager", None),
@@ -233,7 +239,7 @@ class ConfigAssemblyService:
             )
         except Exception as e:
             logger.warning(f"[主动消息] 写入关闭型覆写失败喵: {e}")
-            return 0
+            return 0, False
 
     # 备份文件名沿用 v1.2 之前版本的约定，便于老用户凭直觉找到。
     CONFIG_SNAPSHOT_FILE = "user_config_snapshot.json"

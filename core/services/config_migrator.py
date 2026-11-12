@@ -886,20 +886,26 @@ async def migrate_override_store(store: Any) -> int:
     return changed_sessions
 
 
-async def apply_pending_disabled_overrides(store: Any, config: Any) -> int:
+async def apply_pending_disabled_overrides(store: Any, config: Any) -> tuple[int, bool]:
     """消费迁移器留下的“原本被关闭”会话清单，写入关闭型覆写。
 
     清单里的条目都是完整 UMO，直接写关闭覆写即可。
     只有全部写入成功才移除清单：某个会话落盘失败时保留待处理项，
     否则下次启动既没有旧分组、也没有重试清单，被关闭的会话会重新启用。
+
+    Returns:
+        (本次新写入的覆写数, 清单是否发生变化)。
+        第二个值必须回报给调用方：清单被清空但写入数为 0 时，
+        配置仍需落盘，否则磁盘残留旧清单会在下次启动重复关闭会话。
     """
     if store is None or not isinstance(config, dict):
-        return 0
+        return 0, False
 
     pending = config.get("_pending_disabled_overrides")
     if not isinstance(pending, list) or not pending:
+        had_key = "_pending_disabled_overrides" in config
         config.pop("_pending_disabled_overrides", None)
-        return 0
+        return 0, had_key
 
     applied = 0
     remaining: list[str] = []
@@ -921,11 +927,12 @@ async def apply_pending_disabled_overrides(store: Any, config: Any) -> int:
             logger.warning(f"[主动消息] 写入 {target} 的关闭覆写失败喵: {e}")
             remaining.append(target)
 
+    changed = remaining != pending
     if remaining:
         config["_pending_disabled_overrides"] = remaining
     else:
         config.pop("_pending_disabled_overrides", None)
-    return applied
+    return applied, changed
 
 
 __all__ = [
