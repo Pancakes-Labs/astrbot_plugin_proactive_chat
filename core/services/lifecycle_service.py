@@ -60,17 +60,7 @@ class LifecycleService:
 
         # 配置装配早于会话数据加载，迁移期的裸 ID 当时可能解析不出目标。
         # 这里数据已就绪，立刻重试一次关闭型覆写，尽量在本轮启动内关闭干净。
-        try:
-            retried = (
-                await plugin.config_assembly_service.retry_pending_disabled_overrides()
-            )
-            if retried:
-                logger.info(
-                    f"[主动消息] 加载会话数据后补写了 {retried} 个关闭型覆写喵。"
-                )
-                await self._persist_config()
-        except Exception as e:
-            logger.warning(f"[主动消息] 加载数据后补写关闭型覆写失败喵: {e}")
+        await self._retry_pending_disabled_overrides("加载会话数据后")
 
         # 解析时区；无效配置回退为服务器系统时区（None）。
         try:
@@ -174,14 +164,7 @@ class LifecycleService:
 
             # 平台就绪后再重试一次：此前离线的目标现在可能已可解析，
             # 必须尽快把它们的关闭覆写补上，避免恢复后被排期。
-            try:
-                retried = await plugin.config_assembly_service.retry_pending_disabled_overrides()
-                if retried:
-                    logger.info(
-                        f"[主动消息] 平台就绪后补写了 {retried} 个关闭型覆写喵。"
-                    )
-            except Exception as e:
-                logger.warning(f"[主动消息] 平台就绪后补写关闭型覆写失败喵: {e}")
+            await self._retry_pending_disabled_overrides("平台就绪后")
 
             # 先规范化历史会话键，再恢复消息时间与调度任务。
             async with plugin.data_lock:
@@ -204,6 +187,36 @@ class LifecycleService:
 
             if not allow_retry:
                 plugin._startup_finalized = True
+
+    async def _retry_pending_disabled_overrides(self, stage: str) -> None:
+        """重试关闭型覆写，并在待处理清单发生变化后持久化配置。
+
+        必须按「清单是否变化」判断，而不是「本次写入了几个」：
+        目标此前已在内存里被标记为关闭时消费者返回 0，但仍可能移除了
+        清单条目，此时若不落盘，磁盘会残留旧条目，重启后重复执行关闭。
+        """
+        plugin = self.plugin
+        before = self._pending_snapshot()
+        try:
+            written = (
+                await plugin.config_assembly_service.retry_pending_disabled_overrides()
+            )
+        except Exception as e:
+            logger.warning(f"[主动消息] {stage}补写关闭型覆写失败喵: {e}")
+            return
+
+        if written:
+            logger.info(f"[主动消息] {stage}补写了 {written} 个关闭型覆写喵。")
+        if self._pending_snapshot() != before:
+            await self._persist_config()
+
+    def _pending_snapshot(self) -> list:
+        """取待处理清单的稳定快照，用于判断是否发生变化。"""
+        config = self.plugin.config
+        if not isinstance(config, dict):
+            return []
+        pending = config.get("_pending_disabled_overrides")
+        return list(pending) if isinstance(pending, list) else []
 
     async def _persist_config(self) -> None:
         """保存插件配置；兼容同步与异步两种保存接口。"""
