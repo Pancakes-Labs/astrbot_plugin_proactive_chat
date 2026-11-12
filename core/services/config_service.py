@@ -45,6 +45,22 @@ class ConfigService:
                     logger.warning(
                         "[主动消息] 主动消息已启用但未配置任何会话喵（session_list 为空）。"
                     )
+                else:
+                    # 裸 ID 自 v1.2 起不再支持，启动阶段一次性提示，
+                    # 避免用户在毫不知情的情况下发现某个会话"凭空消失"。
+                    bare_ids = [
+                        item
+                        for item in session_list
+                        if isinstance(item, str)
+                        and item
+                        and self.plugin.session_service.parse_session_id(item) is None
+                    ]
+                    if bare_ids:
+                        logger.warning(
+                            "[主动消息] 会话列表中存在裸会话 ID，已不再支持并会被跳过喵: "
+                            f"{', '.join(bare_ids)}。"
+                            "请改用完整会话 UMO（例如 default:FriendMessage:123456789）。"
+                        )
 
                 schedule = defaults.get(ck.SCHEDULE_SETTINGS_KEY, {})
                 if isinstance(schedule, dict):
@@ -113,11 +129,8 @@ class ConfigService:
         if not isinstance(session_list, list):
             session_list = []
 
-        # session_list 只存完整 UMO，因此归一化后直接比对即可。
-        normalized_session_id = self.plugin.session_service.normalize_session_id(
-            session_id
-        )
-        if session_id not in session_list and normalized_session_id not in session_list:
+        # 会话 UMO 已由核心与配置统一为标准形式，直接精确比对即可。
+        if session_id not in session_list:
             return None
 
         config_copy = copy.deepcopy(defaults)
