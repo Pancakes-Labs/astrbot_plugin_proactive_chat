@@ -61,7 +61,9 @@ class LifecycleService:
         # 配置装配早于会话数据加载，迁移期的裸 ID 当时可能解析不出目标。
         # 这里数据已就绪，立刻重试一次关闭型覆写，尽量在本轮启动内关闭干净。
         try:
-            retried = await plugin.config_assembly_service.retry_pending_disabled_overrides()
+            retried = (
+                await plugin.config_assembly_service.retry_pending_disabled_overrides()
+            )
             if retried:
                 logger.info(
                     f"[主动消息] 加载会话数据后补写了 {retried} 个关闭型覆写喵。"

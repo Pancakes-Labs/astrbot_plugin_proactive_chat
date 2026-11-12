@@ -153,9 +153,7 @@ class ConfigService:
 
         return config_copy
 
-    def _is_pending_disabled(
-        self, candidates: set[str], session_type: str
-    ) -> bool:
+    def _is_pending_disabled(self, candidates: set[str], session_type: str) -> bool:
         """判断该会话是否仍在迁移期的「等待单独关闭」清单里。
 
         迁移只登记裸 ID，解析成功并写入关闭覆写后才会从清单移除。
