@@ -1014,11 +1014,12 @@ async def apply_pending_disabled_overrides(
                 current = store.get_override(target)
                 if not isinstance(current, dict):
                     current = {}
-                if current.get(ck.ENABLED_KEY) is False:
-                    continue
+                already_disabled = current.get(ck.ENABLED_KEY) is False
                 current[ck.ENABLED_KEY] = False
+                # 内存里已是关闭状态也必须再写一次。
                 if await store.set_override(target, current):
-                    applied += 1
+                    if not already_disabled:
+                        applied += 1
                 else:
                     failed = True
             except Exception as e:
