@@ -27,7 +27,11 @@ from ..domain.config_keys import (
     SESSION_DEFAULTS_KEY,
     SESSION_LIST_KEY,
 )
-from ..domain.prompt_templates import PROMPT_SETTINGS_KEY, TEMPLATES_KEY
+from ..domain.prompt_templates import (
+    OUTPUT_FORMAT_CUSTOM_KEY,
+    PROMPT_SETTINGS_KEY,
+    TEMPLATES_KEY,
+)
 
 
 class TelemetryManager:
@@ -481,6 +485,13 @@ class TelemetryManager:
                     if templates is not None:
                         prompt_settings["templates_count"] = (
                             len(templates) if isinstance(templates, list) else 0
+                        )
+                    # 自定义输出格式同样是用户手写的提示词正文，
+                    # 属于与模板同等敏感的内容，必须一并剔除。
+                    custom_format = prompt_settings.pop(OUTPUT_FORMAT_CUSTOM_KEY, None)
+                    if custom_format is not None:
+                        prompt_settings["output_format_custom_configured"] = bool(
+                            str(custom_format).strip()
                         )
                 defaults.pop("proactive_prompt", None)
 
