@@ -45,9 +45,9 @@ class TelemetryManager:
     # 插件名用于定位插件私有数据目录，并持久化实例级匿名 ID。
     _PLUGIN_NAME = "astrbot_plugin_proactive_chat"
     # 匹配统一消息来源 UMO，避免错误日志或异常文本把真实会话标识直接上传到遥测平台。
-    _UMO_PATTERN = re.compile(
-        r"(?P<umo>[A-Za-z0-9_.-]+:(?:FriendMessage|GroupMessage|OtherMessage):[^\s,'\"]+)"
-    )
+    # 脱敏不枚举具体消息类型：任何 *Message 形态的 UMO 都应打码，
+    # 否则新增类型或历史遗留文本会把真实目标 ID 带到远端。
+    _UMO_PATTERN = re.compile(r"(?P<umo>[A-Za-z0-9_.-]+:[A-Za-z]+Message:[^\s,'\"]+)")
     # 匹配 password/token/key/secret 这类典型敏感键值，做统一掩码替换。
     _KEY_VALUE_PATTERN = re.compile(
         r"(?i)(password|token|secret|api[_-]?key|app[_-]?key)(\s*[=:]\s*)([^,\s]+)"
