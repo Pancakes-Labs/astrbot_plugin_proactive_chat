@@ -31,12 +31,14 @@ from ...domain.prompt_contract import (
 from ...domain.prompt_placeholders import (
     PLACEHOLDER_CONVERSATION_TYPE,
     PLACEHOLDER_CURRENT_TIME,
+    PLACEHOLDER_PLATFORM_HISTORY_LAST_TIME,
     PLACEHOLDER_UNANSWERED_COUNT,
     build_capabilities,
     conversation_type_label,
     resolve_placeholders,
 )
 from ...domain.prompt_templates import (
+    OUTPUT_FORMAT_CUSTOM,
     get_output_format,
     resolve_active_template,
     session_type_of,
@@ -61,11 +63,12 @@ class PromptStage(BaseStage):
         session_type = session_type_of(session_config)
         context_settings = session_config.get("context_settings") or {}
         source_mode = str(context_settings.get("source_mode") or "")
+        platform_history_count = self._platform_history_count(ctx)
 
         capabilities = build_capabilities(
             session_type=session_type,
             source_mode=source_mode,
-            platform_history_count=self._platform_history_count(ctx),
+            platform_history_count=platform_history_count,
             conversation_history_count=len(getattr(ctx, "history", []) or []),
         )
         values = {
@@ -73,12 +76,22 @@ class PromptStage(BaseStage):
             PLACEHOLDER_UNANSWERED_COUNT: str(ctx.unanswered_count),
             PLACEHOLDER_CONVERSATION_TYPE: conversation_type_label(session_type),
         }
+        # 流水正文由 CONTEXT 阶段单独注入，这里必须给出流水时间占位符的取值：
+        # 能力判定为「可用但无值」时解析器会保留字面量，模型会直接读到标记。
+        if platform_history_count > 0:
+            values[PLACEHOLDER_PLATFORM_HISTORY_LAST_TIME] = (
+                self._platform_history_last_time(ctx) or "未知"
+            )
 
         # ---- 用户层：主动消息正文 + 输出格式预设 ----
         main_template = (
             resolve_active_template(session_config, session_type=session_type) or {}
         )
-        _, custom_style = get_output_format(session_config)
+        # 只有模式为「自定义」时才采用用户正文，否则切回插件默认后
+        # 残留的自定义内容会继续生效，违反该字段的配置契约。
+        format_mode, custom_style = get_output_format(session_config)
+        if format_mode != OUTPUT_FORMAT_CUSTOM:
+            custom_style = ""
 
         ctx.prompts.remove_by_source(self.name)
         ctx.prompts.remove_extras_by_source(self.name)
@@ -103,7 +116,9 @@ class PromptStage(BaseStage):
         self._append_layers(ctx, style_layers)
 
         # ---- 用户模板（[最终指令]）----
-        self._append_template(ctx, main_template, values, capabilities)
+        raw_template_text = self._append_template(
+            ctx, main_template, values, capabilities
+        )
 
         # ---- 安全约束（永远最后）----
         safety_layers = [
@@ -111,12 +126,11 @@ class PromptStage(BaseStage):
         ]
         self._append_layers(ctx, safety_layers)
 
-        # 运行时附加块依据「最终合并文本」判断占位符是否已被消费，
-        # 否则用户模板里被消解掉的占位符会让动态块误判为“无需注入”。
-        merged_text = ctx.prompts.merge_text()
+        # 动态块去重必须依据「未渲染的原始模板」：渲染后的文本里占位符
+        # 已被替换成实际值，再拿去检查会永远判定为“未包含”，造成重复注入。
         extra_parts = plugin.llm_service.build_extra_content_parts(
             platform_context=ctx.platform_context,
-            prompt_template=merged_text,
+            prompt_template=raw_template_text,
             unanswered_count=ctx.unanswered_count,
             session_config=session_config,
         )
@@ -131,16 +145,16 @@ class PromptStage(BaseStage):
         template: dict[str, Any],
         values: dict[str, str],
         capabilities: dict[str, bool],
-    ) -> None:
-        """渲染并追加一条用户模板；空模板直接跳过。"""
+    ) -> str:
+        """渲染并追加一条用户模板；返回原始模板正文（供动态块去重）。"""
         raw_text = str(template.get("text") or "")
         if not raw_text.strip():
-            return
+            return ""
         rendered = resolve_placeholders(
             raw_text, values=values, capabilities=capabilities
         )
         if not rendered:
-            return
+            return raw_text
         # 统一套上 [最终指令] 标题，避免裸文本被读成上一段场景说明的延续。
         rendered = build_instruction_text(rendered)
         ctx.prompts.add(
@@ -154,10 +168,13 @@ class PromptStage(BaseStage):
                     "template_name": template.get("name", ""),
                     # 原始模板留档：运行时附加块仍需按未替换文本判断占位符。
                     "raw_text": raw_text,
+                    # 记录这条模板实际消费了哪些占位符，供动态块去重。
+                    "consumed_placeholders": [key for key in values if key in raw_text],
                     "layer": "user",
                 },
             )
         )
+        return raw_text
 
     def _append_layers(self, ctx, layers: list[dict[str, Any]]) -> None:
         """追加契约/场景层；内容为内置常量，不做占位符渲染。"""
@@ -182,6 +199,18 @@ class PromptStage(BaseStage):
             return value
         # 兼容：部分链路只提供拼好的文本，此时按是否非空粗略判定。
         return 1 if str(getattr(ctx, "platform_context", "") or "").strip() else 0
+
+    @staticmethod
+    def _platform_history_last_time(ctx) -> str:
+        """读平台流水最后一条的时间标签；CONTEXT 阶段未提供时返回空串。"""
+        for attr in (
+            "platform_history_last_time",
+            "platform_history_last_time_label",
+        ):
+            value = getattr(ctx, attr, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
 
 
 class PromptFeature:

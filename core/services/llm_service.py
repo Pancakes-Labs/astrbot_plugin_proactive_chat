@@ -24,6 +24,7 @@ from ..domain.prompt_placeholders import (
     resolve_placeholders,
 )
 from ..domain.prompt_templates import (
+    OUTPUT_FORMAT_CUSTOM,
     get_output_format,
     resolve_active_prompt,
     session_type_of,
@@ -215,9 +216,10 @@ class LlmService:
                     conversation_history_count=len(history_messages or []),
                 ),
             )
-            # 兜底路径同样需要补齐语义/场景/约束三层，否则绕过 PROMPT 阶段
-            # 直接调用的链路会失去定位与输出约束。
-            _, custom_style = get_output_format(session_config)
+            # 兜底路径同样需要补齐语义/场景/约束三层，只有自定义模式才采用用户正文，与 PROMPT 阶段保持一致。
+            format_mode, custom_style = get_output_format(session_config)
+            if format_mode != OUTPUT_FORMAT_CUSTOM:
+                custom_style = ""
             head_layers, tail_layers = prompt_contract.build_prompt_layers(
                 session_type,
                 str(context_settings.get("source_mode") or ""),
