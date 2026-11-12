@@ -58,6 +58,18 @@ class LifecycleService:
             await plugin.storage_service.load_data()
         logger.info("[主动消息] 已成功从文件加载会话数据喵。")
 
+        # 配置装配早于会话数据加载，迁移期的裸 ID 当时可能解析不出目标。
+        # 这里数据已就绪，立刻重试一次关闭型覆写，尽量在本轮启动内关闭干净。
+        try:
+            retried = await plugin.config_assembly_service.retry_pending_disabled_overrides()
+            if retried:
+                logger.info(
+                    f"[主动消息] 加载会话数据后补写了 {retried} 个关闭型覆写喵。"
+                )
+                await self._persist_config()
+        except Exception as e:
+            logger.warning(f"[主动消息] 加载数据后补写关闭型覆写失败喵: {e}")
+
         # 解析时区；无效配置回退为服务器系统时区（None）。
         try:
             plugin.timezone = zoneinfo.ZoneInfo(
@@ -158,6 +170,17 @@ class LifecycleService:
             if plugin._startup_finalized or getattr(plugin, "_terminating", False):
                 return
 
+            # 平台就绪后再重试一次：此前离线的目标现在可能已可解析，
+            # 必须尽快把它们的关闭覆写补上，避免恢复后被排期。
+            try:
+                retried = await plugin.config_assembly_service.retry_pending_disabled_overrides()
+                if retried:
+                    logger.info(
+                        f"[主动消息] 平台就绪后补写了 {retried} 个关闭型覆写喵。"
+                    )
+            except Exception as e:
+                logger.warning(f"[主动消息] 平台就绪后补写关闭型覆写失败喵: {e}")
+
             # 先规范化历史会话键，再恢复消息时间与调度任务。
             async with plugin.data_lock:
                 if plugin.storage_service.normalize_session_data():
@@ -179,6 +202,20 @@ class LifecycleService:
 
             if not allow_retry:
                 plugin._startup_finalized = True
+
+    async def _persist_config(self) -> None:
+        """保存插件配置；兼容同步与异步两种保存接口。"""
+        config = self.plugin.config
+        try:
+            save_async = getattr(config, "save_config_async", None)
+            if callable(save_async):
+                await save_async()
+                return
+            save_sync = getattr(config, "save_config", None)
+            if callable(save_sync):
+                save_sync()
+        except Exception as e:
+            logger.warning(f"[主动消息] 保存配置失败喵: {e}")
 
     def restore_last_message_times(self) -> None:
         """从持久化数据恢复插件启动后的会话消息时间（用于自动触发判定）。"""
