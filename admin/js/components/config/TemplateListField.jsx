@@ -43,9 +43,21 @@ function createEmptyTemplate() {
 
 // 归一化：把非对象项与缺失字段补齐，保证受控输入始终拿到完整结构。
 // 旧配置可能残留 role 字段，这里不读出也不写回，保存后自然被清除。
+// 其余未知扩展字段必须原样保留：后端 normalize_template 会保留它们，
+// 这里若丢掉，用户仅改个名称再保存就会永久抹掉这些字段。
 function normalizeItem(item) {
     if (!item || typeof item !== 'object') return createEmptyTemplate();
+    const extra = {};
+    Object.keys(item).forEach((key) => {
+        if (key === 'role' || key === 'id' || key === 'name' || key === 'text'
+            || key === 'enabled' || key === 'weight' || key === 'scope'
+            || key === TEMPLATE_KEY_FIELD) {
+            return;
+        }
+        extra[key] = item[key];
+    });
     return {
+        ...extra,
         // 保留模板选择键：编辑后写回配置时若丢掉它，AstrBot 面板会认不出该条目。
         [TEMPLATE_KEY_FIELD]: item[TEMPLATE_KEY_FIELD] || DEFAULT_TEMPLATE_KEY,
         id: item.id || '',
@@ -55,6 +67,14 @@ function normalizeItem(item) {
         weight: Number.isFinite(Number(item.weight)) ? Number(item.weight) : 100,
         scope: item.scope || '',
     };
+}
+
+// 条目标识：优先用持久 id，缺失时退化为“序号+内容”派生的稳定键。
+// 部分旧配置没有 id，若直接拿空串当键，多条无 id 条目会互相串位。
+function itemIdentity(item, index) {
+    const data = normalizeItem(item);
+    if (data.id) return `id:${data.id}`;
+    return `idx:${index}:${data.text.slice(0, 32)}`;
 }
 
 function TemplateCard({ index, item, onPatch, onRemove, sessionType = '' }) {
@@ -236,18 +256,18 @@ function TemplateListField({ schema, value, onChange, depth = 1, sessionType = '
             onChange(nextVisible);
             return;
         }
-        const visibleIds = new Set(items.map((item) => normalizeItem(item).id));
+        const visibleKeys = new Set(items.map((item, i) => itemIdentity(item, i)));
         // 合并时保持原有顺序：按 allItems 顺序穿插，避免保存后模板顺序被打乱。
         const payload = [];
         const pool = [...nextVisible];
-        allItems.forEach((item) => {
-            const id = normalizeItem(item).id;
-            if (!visibleIds.has(id)) {
+        allItems.forEach((item, i) => {
+            const key = itemIdentity(item, i);
+            if (!visibleKeys.has(key)) {
                 // 非本会话范围的模板：原样保留。
                 payload.push(item);
                 return;
             }
-            const idx = pool.findIndex((cand) => normalizeItem(cand).id === id);
+            const idx = pool.findIndex((cand, j) => itemIdentity(cand, j) === key);
             if (idx >= 0) {
                 // 仍存在：用编辑后的新版覆盖。
                 payload.push(pool.splice(idx, 1)[0]);
@@ -260,7 +280,10 @@ function TemplateListField({ schema, value, onChange, depth = 1, sessionType = '
     };
 
     const patchAt = (index, patch) => {
-        const next = items.map((item, i) => (i === index ? { ...normalizeItem(item), ...patch } : item));
+        // 保留原条目的扩展字段。
+        const next = items.map((item, i) => (
+            i === index ? { ...item, ...normalizeItem(item), ...patch } : item
+        ));
         applyItems(next);
     };
 
@@ -317,7 +340,9 @@ function TemplateListField({ schema, value, onChange, depth = 1, sessionType = '
 
             {items.map((item, index) => (
                 <TemplateCard
-                    key={index}
+                    // 用稳定身份而非下标：删除首条后，下标复用会让后续卡片
+                    // 继承前一位置的组件状态与输入焦点，导致改错模板。
+                    key={itemIdentity(item, index)}
                     sessionType={sessionType}
                     index={index}
                     item={item}
