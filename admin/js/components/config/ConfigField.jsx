@@ -626,7 +626,7 @@ function QuietHoursField({ schema, fieldKey, value, onChange, depth = 1 }) {
     );
 }
 
-function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', expandedKeys = [], onToggleExpand = () => {} }) {
+function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', expandedKeys = [], onToggleExpand = () => {}, sessionType = '' }) {
     // 隐藏字段完全不渲染：hidden 为本项目写法，invisible 与 AstrBot 面板保持一致，
     // 两者都用于后端保留字段或不希望用户直接编辑的项。
     if (schema.hidden || schema.invisible) return null;
@@ -674,6 +674,25 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                 depth={depth}
             />
         );
+    }
+
+    // 提示词模板列表使用专用结构化编辑器：需要类型/适用范围/占位符快捷插入。
+    // 放在通用 list 之前，避免被“每行一项”的文本框吞掉结构化字段。
+    if (schema.type === 'template_list') {
+        const TemplateListField = window.TemplateListField;
+        if (TemplateListField) {
+            return (
+                <TemplateListField
+                    schema={schema}
+                    fieldKey={fieldKey}
+                    value={localValue !== undefined ? localValue : (schema.default || [])}
+                    onChange={handleChange}
+                    depth={depth}
+                    // 会话差异页只展示对本会话类型有效的模板，全局页传空串不过滤。
+                    sessionType={sessionType}
+                />
+            );
+        }
     }
 
     // object + items 表示一个可折叠的配置分组，内部再递归渲染子字段。
@@ -780,6 +799,9 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                                     path={currentPath}
                                     expandedKeys={expandedKeys}
                                     onToggleExpand={onToggleExpand}
+                                    // 必须向下透传：模板列表嵌在 prompt_settings 这一层内部，
+                                    // 漏传会让会话差异页拿不到会话类型，过滤逻辑整体失效。
+                                    sessionType={sessionType}
                                 />
                             ))}
                         </Box>

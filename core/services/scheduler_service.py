@@ -13,6 +13,13 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..domain.config_keys import (
+    ENABLED_KEY,
+    GROUP_SILENCE_SETTINGS_KEY,
+    SESSION_DEFAULTS_KEY,
+    SESSION_LIST_KEY,
+    STARTUP_CHECK_SETTINGS_KEY,
+)
 from ..domain.session_key import is_friend_type
 
 
@@ -56,6 +63,18 @@ class SchedulerService:
     def _current_timer_generation(self, key: str) -> int:
         return self._timer_generations.get(key, 0)
 
+    @staticmethod
+    def _section_dict(section: Any, key: str) -> dict[str, Any]:
+        """读取配置分组并保证返回 dict。
+
+        管理端接口允许把分组保存成 null，直接链式 .get() 会抛
+        AttributeError 并中断整轮排期，因此统一在这里做空值归一。
+        """
+        if not isinstance(section, dict):
+            return {}
+        value = section.get(key)
+        return value if isinstance(value, dict) else {}
+
     async def setup_auto_trigger(self, session_id: str, silent: bool = False) -> None:
         """为指定会话设置自动主动消息触发器。"""
         plugin = self.plugin
@@ -64,16 +83,16 @@ class SchedulerService:
         if not session_config:
             return
 
-        auto_trigger_settings = session_config.get("auto_trigger_settings", {})
-        if not auto_trigger_settings.get("enable_auto_trigger", False):
+        auto_trigger_settings = self._section_dict(
+            session_config, STARTUP_CHECK_SETTINGS_KEY
+        )
+        if not auto_trigger_settings.get("enabled", False):
             logger.debug(
-                f"[主动消息] {plugin.session_service.get_session_log_str(session_id, session_config)} 未启用自动主动消息功能喵。"
+                f"[主动消息] {plugin.session_service.get_session_log_str(session_id, session_config)} 未启用启动后检测喵。"
             )
             return
 
-        auto_trigger_minutes = auto_trigger_settings.get(
-            "auto_trigger_after_minutes", 5
-        )
+        auto_trigger_minutes = auto_trigger_settings.get("after_silence_minutes", 5)
         if auto_trigger_minutes <= 0:
             logger.debug(
                 f"[主动消息] {plugin.session_service.get_session_log_str(session_id, session_config)} 的自动触发时间设置为0，禁用自动触发喵。"
@@ -182,7 +201,7 @@ class SchedulerService:
             return False
 
         session_config = self.plugin.config_service.get_session_config(session_id)
-        if not session_config or not session_config.get("enable", False):
+        if not session_config or not session_config.get(ENABLED_KEY, False):
             return False
 
         next_trigger = session_info.get("next_trigger_time")
@@ -247,10 +266,10 @@ class SchedulerService:
              random_interval, next_trigger_time)
         """
         plugin = self.plugin
-        min_interval = int(schedule_conf.get("min_interval_minutes", 30)) * 60
+        min_interval = int(schedule_conf.get("min_delay_minutes", 30)) * 60
         max_interval = max(
             min_interval,
-            int(schedule_conf.get("max_interval_minutes", 900)) * 60,
+            int(schedule_conf.get("max_delay_minutes", 600)) * 60,
         )
         random_interval = random.randint(min_interval, max_interval)
         scheduled_at = time.time()
@@ -360,12 +379,12 @@ class SchedulerService:
         skipped_disabled = 0
         skipped_max_unanswered = 0
 
-        # 私聊会话：仅在 friend_settings 启用时处理。
-        friend_settings = plugin.config.get("friend_settings", {})
-        if friend_settings.get("enable", False):
-            for session_id in friend_settings.get("session_list", []):
+        # 合并后只有一个会话分组，私聊与群聊统一遍历。
+        defaults = plugin.config.get(SESSION_DEFAULTS_KEY, {})
+        if defaults.get(ENABLED_KEY, False):
+            for session_id in defaults.get(SESSION_LIST_KEY, []) or []:
                 result = await self.setup_auto_trigger_for_session_config(
-                    friend_settings, session_id
+                    defaults, session_id
                 )
                 if result == "created":
                     auto_trigger_count += 1
@@ -378,33 +397,10 @@ class SchedulerService:
                 elif result == "max_unanswered":
                     skipped_max_unanswered += 1
 
-        # 群聊会话：仅在 group_settings 启用时处理。
-        group_settings = plugin.config.get("group_settings", {})
-        if group_settings.get("enable", False):
-            for session_id in group_settings.get("session_list", []):
-                result = await self.setup_auto_trigger_for_session_config(
-                    group_settings, session_id
-                )
-                if result == "created":
-                    auto_trigger_count += 1
-                elif result == "existing":
-                    skipped_existing += 1
-                elif result == "invalid":
-                    skipped_invalid += 1
-                elif result == "disabled":
-                    skipped_disabled += 1
-                elif result == "max_unanswered":
-                    skipped_max_unanswered += 1
-
-        has_auto_trigger_config = False
-        if friend_settings.get("auto_trigger_settings", {}).get(
-            "enable_auto_trigger", False
-        ):
-            has_auto_trigger_config = True
-        if group_settings.get("auto_trigger_settings", {}).get(
-            "enable_auto_trigger", False
-        ):
-            has_auto_trigger_config = True
+        # POST /api/config 允许把分组写成 null；直接链式 .get() 会抛异常，
+        # 让全局开关命令后续的排期整体中断，这里统一归一化为空字典。
+        startup_check = self._section_dict(defaults, STARTUP_CHECK_SETTINGS_KEY)
+        has_auto_trigger_config = bool(startup_check.get("enabled", False))
 
         if auto_trigger_count == 0:
             if has_auto_trigger_config:
@@ -442,17 +438,19 @@ class SchedulerService:
         """
         plugin = self.plugin
         session_config = plugin.config_service.get_session_config(session_id)
-        if not session_config or not session_config.get("enable", False):
+        if not session_config or not session_config.get(ENABLED_KEY, False):
             return "invalid"
 
         resolved_session_id = self.resolve_session_id_for_config(
             session_id, session_config
         )
 
-        auto_trigger_settings = session_config.get("auto_trigger_settings", {})
-        if not auto_trigger_settings.get("enable_auto_trigger", False):
+        auto_trigger_settings = self._section_dict(
+            session_config, STARTUP_CHECK_SETTINGS_KEY
+        )
+        if not auto_trigger_settings.get("enabled", False):
             logger.debug(
-                f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id)} 未启用自动主动消息功能喵。"
+                f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id)} 未启用启动后检测喵。"
             )
             return "disabled"
 
@@ -478,12 +476,10 @@ class SchedulerService:
         logger.debug(
             f"[主动消息] 正在为 {plugin.session_service.get_session_log_str(resolved_session_id)} 设置自动触发器喵。"
         )
-        auto_trigger_minutes = auto_trigger_settings.get(
-            "auto_trigger_after_minutes", 5
-        )
+        auto_trigger_minutes = auto_trigger_settings.get("after_silence_minutes", 5)
         logger.info(
-            f"[主动消息] 已为 {plugin.session_service.get_session_log_str(resolved_session_id)} 设置自动触发器喵，"
-            f"将在 {auto_trigger_minutes} 分钟后检查是否需要自动触发喵。"
+            f"[主动消息] 已为 {plugin.session_service.get_session_log_str(resolved_session_id)} 设置启动检测计时器喵，"
+            f"将在 {auto_trigger_minutes} 分钟静默后安排一次主动消息喵。"
         )
         await self.setup_auto_trigger(resolved_session_id, silent=True)
         return "created"
@@ -515,7 +511,7 @@ class SchedulerService:
         for session_id, session_info in list(plugin.session_data.items()):
             session_config = plugin.config_service.get_session_config(session_id)
             # 配置缺失或已禁用：清理残留调度状态后跳过。
-            if not session_config or not session_config.get("enable", False):
+            if not session_config or not session_config.get(ENABLED_KEY, False):
                 if self.clear_session_schedule_state(session_id):
                     cleaned_runtime_state += 1
                     logger.info(
@@ -664,7 +660,7 @@ class SchedulerService:
         plugin = self.plugin
         normalized_session_id = plugin.session_service.normalize_session_id(session_id)
         session_config = plugin.config_service.get_session_config(normalized_session_id)
-        if not session_config or not session_config.get("enable", False):
+        if not session_config or not session_config.get(ENABLED_KEY, False):
             return
 
         for timer_key in [session_id, normalized_session_id]:
@@ -685,7 +681,9 @@ class SchedulerService:
             # 真实的用户发言：起点随消息时间走，清掉人为起点以免继续生效。
             plugin.silence_baselines.pop(normalized_session_id, None)
 
-        idle_minutes = session_config.get("group_idle_trigger_minutes", 10)
+        idle_minutes = (session_config.get(GROUP_SILENCE_SETTINGS_KEY, {}) or {}).get(
+            "idle_minutes", 10
+        )
         generation = self._next_timer_generation(f"silence:{normalized_session_id}")
 
         def _schedule_callback(
@@ -760,7 +758,7 @@ class SchedulerService:
                 normalized_session_id
             )
             can_reschedule = bool(
-                session_config and session_config.get("enable", False)
+                session_config and session_config.get(ENABLED_KEY, False)
             )
 
             # 先登记替代任务再摘除计时器：排期失败时原计时器仍可继续工作，
@@ -814,7 +812,7 @@ class SchedulerService:
         plugin = self.plugin
         normalized_session_id = plugin.session_service.normalize_session_id(session_id)
         session_config = plugin.config_service.get_session_config(normalized_session_id)
-        if not session_config or not session_config.get("enable", False):
+        if not session_config or not session_config.get(ENABLED_KEY, False):
             return {"ok": False, "reason": "disabled"}
 
         kinds = (
@@ -834,7 +832,10 @@ class SchedulerService:
                     or session_id in plugin.group_timers
                 )
                 idle_minutes = int(
-                    session_config.get("group_idle_trigger_minutes", 0) or 0
+                    (session_config.get(GROUP_SILENCE_SETTINGS_KEY, {}) or {}).get(
+                        "idle_minutes", 0
+                    )
+                    or 0
                 )
                 # 未指定类型（用户点“重新计时”）时要求确有计时器；
                 # 显式指定 group_silence 时允许按配置重建。
@@ -852,15 +853,17 @@ class SchedulerService:
                     reset_done = True
 
             if "auto_trigger" in kinds:
-                auto_settings = session_config.get("auto_trigger_settings", {})
+                auto_settings = self._section_dict(
+                    session_config, STARTUP_CHECK_SETTINGS_KEY
+                )
                 had_auto_timer = bool(
                     self.iter_related_auto_trigger_keys(normalized_session_id)
                 )
-                if had_auto_timer or auto_settings.get("enable_auto_trigger", False):
+                if had_auto_timer or auto_settings.get("enabled", False):
                     # 先确认能否重建，再取消旧计时器：与 finish_timer 同序。
                     # 否则 existing / max_unanswered 时旧计时器已丢、卡片也消失，
                     # 接口却只返回一个 400。
-                    if not auto_settings.get("enable_auto_trigger", False):
+                    if not auto_settings.get("enabled", False):
                         auto_result = "disabled"
                     elif self.has_related_persisted_task(normalized_session_id):
                         auto_result = "existing"
@@ -929,7 +932,7 @@ class SchedulerService:
                     return
 
                 current_config = plugin.config_service.get_session_config(session_id)
-                if not current_config or not current_config.get("enable", False):
+                if not current_config or not current_config.get(ENABLED_KEY, False):
                     logger.info(
                         f"[主动消息] {plugin.session_service.get_session_log_str(session_id, current_config)} 的配置已禁用，取消自动触发喵。"
                     )
@@ -1023,7 +1026,7 @@ class SchedulerService:
                     plugin.session_data[session_id] = {"unanswered_count": 0}
 
                 current_config = plugin.config_service.get_session_config(session_id)
-                if not current_config or not current_config.get("enable", False):
+                if not current_config or not current_config.get(ENABLED_KEY, False):
                     logger.info(
                         f"[主动消息] {plugin.session_service.get_session_log_str(session_id, current_config)} 的配置已禁用或不存在，跳过主动消息创建喵。"
                     )

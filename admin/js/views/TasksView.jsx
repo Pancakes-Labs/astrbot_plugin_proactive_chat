@@ -190,7 +190,7 @@ function TasksView({ onRefresh }) {
                                             personaState: task.personaState,
                                         },
                                         { label: '上下文来源', value: task.sourceModeLabel },
-                                        { label: '调度间隔', value: task.intervalText },
+                                        { label: '发送延迟', value: task.intervalText },
                                         { label: '免打扰时段', value: task.quietText },
                                         {
                                             label: '未回复次数',

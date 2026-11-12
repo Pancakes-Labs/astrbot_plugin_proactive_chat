@@ -12,6 +12,7 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
+from ..domain.config_keys import ENABLED_KEY
 from ..domain.session_key import contains_group_marker
 
 
@@ -135,7 +136,7 @@ class EventHandlers:
         if (
             auto_trigger_cancelled
             and session_config
-            and session_config.get("enable", False)
+            and session_config.get(ENABLED_KEY, False)
             and normalized_session_id not in self.plugin.first_message_logged
         ):
             self.plugin.first_message_logged.add(normalized_session_id)
@@ -146,7 +147,7 @@ class EventHandlers:
         session_config = self.plugin.config_service.get_session_config(
             normalized_session_id
         )
-        if not session_config or not session_config.get("enable", False):
+        if not session_config or not session_config.get(ENABLED_KEY, False):
             logger.debug(
                 f"[主动消息] {self.plugin.session_service.get_session_log_str(session_id, session_config)} 未启用或配置无效，跳过处理喵。"
             )
@@ -282,7 +283,7 @@ class EventHandlers:
         if (
             auto_trigger_cancelled
             and session_config
-            and session_config.get("enable", False)
+            and session_config.get(ENABLED_KEY, False)
             and normalized_session_id not in self.plugin.first_message_logged
         ):
             self.plugin.first_message_logged.add(normalized_session_id)
@@ -290,7 +291,7 @@ class EventHandlers:
                 f"[主动消息] 已记录 {self.plugin.session_service.get_session_log_str(normalized_session_id, session_config)} 的消息时间并取消自动触发喵。"
             )
 
-        if not session_config or not session_config.get("enable", False):
+        if not session_config or not session_config.get(ENABLED_KEY, False):
             logger.debug(
                 f"[主动消息] {self.plugin.session_service.get_session_log_str(session_id, session_config)} 未启用或配置无效，跳过处理喵。"
             )

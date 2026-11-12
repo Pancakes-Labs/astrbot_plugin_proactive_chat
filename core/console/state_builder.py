@@ -13,6 +13,15 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..domain.config_keys import (
+    CONTEXT_SETTINGS_KEY,
+    GROUP_SILENCE_SETTINGS_KEY,
+    SCHEDULE_SETTINGS_KEY,
+    SESSION_DEFAULTS_KEY,
+    SESSION_LIST_KEY,
+    STARTUP_CHECK_SETTINGS_KEY,
+)
+
 
 class StateBuilder:
     """构建运行状态、任务卡片、会话摘要与文档列表载荷。"""
@@ -112,11 +121,11 @@ class StateBuilder:
 
             session_config = plugin.config_service.get_session_config(session_id) or {}
             session_data = plugin.session_data.get(session_id, {})
-            auto_settings = session_config.get("auto_trigger_settings", {})
-            schedule_settings = session_config.get("schedule_settings", {})
-            context_settings = session_config.get("context_settings", {})
+            auto_settings = session_config.get(STARTUP_CHECK_SETTINGS_KEY, {})
+            schedule_settings = session_config.get(SCHEDULE_SETTINGS_KEY, {})
+            context_settings = session_config.get(CONTEXT_SETTINGS_KEY, {})
             trigger_delay_minutes = int(
-                auto_settings.get("auto_trigger_after_minutes", 0) or 0
+                auto_settings.get("after_silence_minutes", 0) or 0
             )
             trigger_delay_seconds = max(0, trigger_delay_minutes * 60)
             timer_meta = self.safe_timer_meta(timer, now)
@@ -151,10 +160,10 @@ class StateBuilder:
                     ),
                     "quiet_hours": schedule_settings.get("quiet_hours", ""),
                     "quiet_hours_enabled": bool(
-                        schedule_settings.get("enable_quiet_hours", True)
+                        schedule_settings.get("quiet_hours_enabled", True)
                     ),
                     "timer_kind": "auto_trigger",
-                    "title": "自动触发检测",
+                    "title": "启动后静默检测",
                     "status": "running" if remaining_seconds is not None else "unknown",
                     "remaining_seconds": remaining_seconds,
                     "target_time": target_time,
@@ -175,9 +184,14 @@ class StateBuilder:
                 plugin.config_service.get_session_config(normalized_session_id) or {}
             )
             session_data = plugin.session_data.get(normalized_session_id, {})
-            schedule_settings = session_config.get("schedule_settings", {})
-            context_settings = session_config.get("context_settings", {})
-            idle_minutes = int(session_config.get("group_idle_trigger_minutes", 0) or 0)
+            schedule_settings = session_config.get(SCHEDULE_SETTINGS_KEY, {})
+            context_settings = session_config.get(CONTEXT_SETTINGS_KEY, {})
+            idle_minutes = int(
+                (session_config.get(GROUP_SILENCE_SETTINGS_KEY, {}) or {}).get(
+                    "idle_minutes", 0
+                )
+                or 0
+            )
             idle_seconds = max(0, idle_minutes * 60)
             timer_meta = self.safe_timer_meta(timer, now)
             remaining_seconds = timer_meta["remaining_seconds"]
@@ -223,10 +237,10 @@ class StateBuilder:
                     ),
                     "quiet_hours": schedule_settings.get("quiet_hours", ""),
                     "quiet_hours_enabled": bool(
-                        schedule_settings.get("enable_quiet_hours", True)
+                        schedule_settings.get("quiet_hours_enabled", True)
                     ),
                     "timer_kind": "group_silence",
-                    "title": "群沉默检测",
+                    "title": "群聊沉默判定",
                     "status": "running" if remaining_seconds is not None else "unknown",
                     "remaining_seconds": remaining_seconds,
                     "target_time": target_time,
@@ -432,8 +446,8 @@ class StateBuilder:
             session_data = plugin.session_data.get(session_id, {})
             session_config = plugin.config_service.get_session_config(session_id) or {}
             schedule_settings = session_config.get("schedule_settings", {})
-            context_settings = session_config.get("context_settings", {})
-            auto_trigger_settings = session_config.get("auto_trigger_settings", {})
+            context_settings = session_config.get(CONTEXT_SETTINGS_KEY, {})
+            auto_trigger_settings = session_config.get(STARTUP_CHECK_SETTINGS_KEY, {})
             jobs.append(
                 {
                     "id": session_id,
@@ -469,14 +483,14 @@ class StateBuilder:
                         "last_schedule_random_interval_seconds"
                     ),
                     "schedule_min_interval_minutes": schedule_settings.get(
-                        "min_interval_minutes"
+                        "min_delay_minutes"
                     ),
                     "schedule_max_interval_minutes": schedule_settings.get(
-                        "max_interval_minutes"
+                        "max_delay_minutes"
                     ),
                     "quiet_hours": schedule_settings.get("quiet_hours", ""),
                     "quiet_hours_enabled": bool(
-                        schedule_settings.get("enable_quiet_hours", True)
+                        schedule_settings.get("quiet_hours_enabled", True)
                     ),
                 }
             )
@@ -487,11 +501,10 @@ class StateBuilder:
         plugin = self.plugin
         sessions: set[str] = set()
 
-        for scope_key in ("friend_settings", "group_settings"):
-            cfg = plugin.config.get(scope_key, {})
-            for session in cfg.get("session_list", []):
-                if isinstance(session, str) and session:
-                    sessions.add(plugin.session_service.normalize_session_id(session))
+        defaults = plugin.config.get(SESSION_DEFAULTS_KEY, {})
+        for session in defaults.get(SESSION_LIST_KEY, []) or []:
+            if isinstance(session, str) and session:
+                sessions.add(plugin.session_service.normalize_session_id(session))
 
         sessions.update(plugin.session_data.keys())
         sessions.update(plugin.session_override_manager.list_sessions())

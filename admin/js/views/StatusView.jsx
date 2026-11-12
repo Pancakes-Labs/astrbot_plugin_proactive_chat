@@ -36,7 +36,7 @@ function StatusTimerCard({ timer, displayTimezone, nowMs, snapshotAtMs, snapshot
             <UI.TimerCardHint
                 show={resetHint}
                 token={resetHintToken}
-                text="群聊刚刚有新消息，沉默计时器已重新开始计时"
+                text="群聊刚刚有新消息，沉默判定已重新开始计时"
             />
 
             <UI.TimerCardIdentity
@@ -162,16 +162,16 @@ function StatusView({ onRefresh }) {
         () => [
             {
                 key: 'group_silence',
-                title: '群沉默计时器',
-                description: '群内一旦有新消息就会重新计时，适合观察沉默窗口是否被活跃消息重置。',
-                emptyText: '当前没有正在运行的群沉默计时器。',
+                title: '群聊沉默判定',
+                description: '群内一旦有新消息就会重新计时，适合观察沉默判断是否被活跃消息重置。注意实际发送时间还要叠加发送节奏里的随机延迟。',
+                emptyText: '当前没有正在进行的群聊沉默判定。',
                 cards: timerCards.filter((timer) => timer.timer_kind === 'group_silence'),
             },
             {
                 key: 'auto_trigger',
-                title: '自动触发计时器',
-                description: '用于观察会话的自动触发状况，并按群聊 / 私聊显示不同标签。通常情况下，插件运行一段时间后，这里将不会出现新的卡片。',
-                emptyText: '当前没有正在运行的自动触发计时器。',
+                title: '启动后静默检测',
+                description: '插件启动后会检测会话是否持续没有新消息，并自动安排待执行的主动消息任务。通常情况下，插件运行一段时间后，这里将不会出现新的卡片。',
+                emptyText: '当前没有正在进行的启动后静默检测。',
                 cards: timerCards.filter((timer) => timer.timer_kind === 'auto_trigger'),
             },
         ],
@@ -450,8 +450,8 @@ function StatusView({ onRefresh }) {
                             <div className="status-divider"></div>
                             <StatusMetricRow label="当前任务总数" value={`${jobsCount} 个`} emphasize />
                             <StatusMetricRow label="会话数据量" value={`${sessionsCount} 个`} />
-                            <StatusMetricRow label="自动触发计时器" value={`${autoTriggerTimers} 个`} />
-                            <StatusMetricRow label="群沉默计时器" value={`${groupTimers} 个`} />
+                            <StatusMetricRow label="启动检测计时器" value={`${autoTriggerTimers} 个`} />
+                            <StatusMetricRow label="群聊沉默计时器" value={`${groupTimers} 个`} />
                         </div>
                     </div>
                 </div>
@@ -531,7 +531,7 @@ function StatusView({ onRefresh }) {
                                     {`会话计时器可视化 (当前共 ${timerCards.length} 个计时器)`}
                                 </Typography>
                                 <Typography variant="body2" className="tasks-header-subtitle">
-                                    实时展示自动触发检测与群沉默检测的倒计时、进度和会话状态。此处卡片的倒计时结束后会进入任务管理页面
+                                    实时展示「启动后静默检测」与「群聊沉默判定」的倒计时、进度和会话状态。此处卡片的倒计时结束后会进入任务管理页面
                                 </Typography>
                             </div>
                             <div className="status-timers-summary-pills" aria-hidden="true">
@@ -549,7 +549,7 @@ function StatusView({ onRefresh }) {
                                 <div className="tasks-empty-icon">🫧</div>
                                 <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>暂无运行中的会话计时器</Typography>
                                 <Typography variant="body1" color="text.secondary">
-                                    当前没有正在计时的自动触发或群沉默会话。等插件进入下一轮会话调度后，这里会自动出现对应卡片。
+                                    当前没有正在计时的会话。等插件进入下一轮调度后，这里会自动出现对应卡片。
                                 </Typography>
                             </div>
                         ) : (

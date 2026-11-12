@@ -13,14 +13,22 @@ from astrbot.api import logger
 from ...utils.time_utils import format_current_time
 from ..adapters.astrbot_event import dispatch_event_hook
 from ..adapters.astrbot_provider import build_provider_request, invoke_provider
+from ..domain import prompt_contract
 from ..domain.prompt_placeholders import (
+    PLACEHOLDER_CONVERSATION_TYPE,
     PLACEHOLDER_CURRENT_TIME,
     PLACEHOLDER_UNANSWERED_COUNT,
+    build_capabilities,
     contains_placeholder,
-    render_placeholders,
-    strip_placeholders,
+    conversation_type_label,
+    resolve_placeholders,
 )
-from ..domain.prompt_templates import resolve_active_prompt
+from ..domain.prompt_templates import (
+    OUTPUT_FORMAT_CUSTOM,
+    get_output_format,
+    resolve_active_prompt,
+    session_type_of,
+)
 from ..domain.tool_markup_cleaner import clean_llm_text
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
@@ -176,29 +184,84 @@ class LlmService:
         两者为 None 时退回本服务自行拼装，保持旧的调用契约可用。
         """
         plugin = self.plugin
+        session_type = session_type_of(session_config)
+        # 历史清洗必须在任何使用点之前完成：兜底渲染需要历史条数推导能力集。
+        history_messages = plugin.context_service.sanitize_history_content(
+            history_messages or []
+        )
         # 仅在缺少预渲染结果时才读取模板，避免重复解析配置。
         motivation_template = ""
         if prepared_prompt is None or extra_parts is None:
-            motivation_template = resolve_active_prompt(session_config) or ""
+            motivation_template = (
+                resolve_active_prompt(session_config, session_type=session_type) or ""
+            )
 
         if prepared_prompt is None:
-            # 兜底渲染与 PROMPT 阶段保持一致：流水占位符不在本链路提供，
-            # 必须清掉字面残留，不能让模型直接读到标记。
-            final_user_simulation_prompt = strip_placeholders(
-                render_placeholders(
-                    motivation_template,
-                    current_time=format_current_time(plugin.timezone),
-                    unanswered_count=unanswered_count,
+            # 兜底渲染与 PROMPT 阶段保持一致：统一走能力感知消解，
+            # 不可用占位符按规格降级，不让模型读到任何字面标记。
+            context_settings = session_config.get("context_settings") or {}
+            rendered = resolve_placeholders(
+                motivation_template,
+                values={
+                    PLACEHOLDER_CURRENT_TIME: format_current_time(plugin.timezone),
+                    PLACEHOLDER_UNANSWERED_COUNT: str(unanswered_count),
+                    PLACEHOLDER_CONVERSATION_TYPE: conversation_type_label(
+                        session_type
+                    ),
+                },
+                capabilities=build_capabilities(
+                    session_type=session_type,
+                    source_mode=str(context_settings.get("source_mode") or ""),
+                    platform_history_count=0,
+                    conversation_history_count=len(history_messages or []),
+                ),
+            )
+            # 兜底路径同样需要补齐语义/场景/约束三层，只有自定义模式才采用用户正文，与 PROMPT 阶段保持一致。
+            format_mode, custom_style = get_output_format(session_config)
+            if format_mode != OUTPUT_FORMAT_CUSTOM:
+                custom_style = ""
+            head_layers, tail_layers = prompt_contract.build_prompt_layers(
+                session_type,
+                str(context_settings.get("source_mode") or ""),
+                custom_style=custom_style,
+            )
+            head_text = "\n\n".join(
+                str(item.get("text") or "") for item in head_layers if item.get("text")
+            )
+            # 顺序必须与 PROMPT 阶段一致：场景 -> 风格 -> 用户模板 -> 安全。
+            # 用 source 后缀分流，避免两处各写一份顺序导致漂移。
+            scene_text = "\n\n".join(
+                str(item.get("text") or "")
+                for item in tail_layers
+                if item.get("source", "").endswith(":scene") and item.get("text")
+            )
+            style_text = "\n\n".join(
+                str(item.get("text") or "")
+                for item in tail_layers
+                if item.get("source", "").endswith(":style") and item.get("text")
+            )
+            safety_text = "\n\n".join(
+                str(item.get("text") or "")
+                for item in tail_layers
+                if item.get("source", "").endswith(":safety") and item.get("text")
+            )
+            instruction_text = prompt_contract.build_instruction_text(rendered)
+            final_user_simulation_prompt = "\n\n".join(
+                part
+                for part in (
+                    head_text,
+                    scene_text,
+                    style_text,
+                    instruction_text,
+                    safety_text,
                 )
+                if part
             )
         else:
             final_user_simulation_prompt = prepared_prompt
 
         logger.debug("[主动消息] 已生成包含动机和时间的 Prompt 喵。")
 
-        history_messages = plugin.context_service.sanitize_history_content(
-            history_messages or []
-        )
         if extra_parts is None:
             extra_parts = self.build_extra_content_parts(
                 platform_context=platform_context,

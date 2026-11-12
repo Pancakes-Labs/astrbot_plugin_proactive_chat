@@ -23,6 +23,14 @@ from ...utils.astrbot_restart import (
     restart_astrbot_in_background,
 )
 from ...utils.time_utils import is_quiet_time
+from ..domain.config_keys import (
+    ENABLED_KEY,
+    GROUP_SILENCE_SETTINGS_KEY,
+    SCHEDULE_SETTINGS_KEY,
+    SESSION_DEFAULTS_KEY,
+    SESSION_LIST_KEY,
+    STARTUP_CHECK_SETTINGS_KEY,
+)
 from ..domain.domain_enums import TriggerSource
 from .command_support_service import (
     SCOPE_CURRENT,
@@ -83,17 +91,12 @@ class PluginCommandService:
         """为“该会话不会主动发送”给出具体原因。"""
         base = self.support.base_config_of(session_id)
         if base is None:
-            scope_key = (
-                "group_settings"
-                if self.support.is_group_session(session_id)
-                else "friend_settings"
-            )
             return (
-                f"该会话未命中 {scope_key} 会话列表，插件不会对其主动发送。\n"
-                f"请先在插件配置或 WebUI 中把该会话加入对应列表。"
+                "该会话未出现在插件配置的会话列表中，插件不会对其主动发送。\n"
+                "请先在插件配置或 WebUI 中把该会话加入会话列表。"
             )
-        if not base.get("enable", False):
-            return "该会话所属的全局开关已关闭，请在配置中开启后再试。"
+        if not base.get(ENABLED_KEY, False):
+            return "主动消息总开关已关闭，请在配置中开启后再试。"
         return ""
 
     # ------------------------------------------------------------------
@@ -134,7 +137,7 @@ class PluginCommandService:
                 "🔘 开关推送\n"
                 "• /主动消息开关 [当前会话|全局|<会话UMO>] [on|off]\n"
                 "   不带 on/off 时切换当前状态\n"
-                "   全局作用域等价于 friend_settings / group_settings 两个总开关\n"
+                "   全局作用域即主动消息总开关\n"
                 "   例：/主动消息开关 off\n"
                 "        /主动消息开关 全局 on"
             ),
@@ -158,11 +161,11 @@ class PluginCommandService:
     # ------------------------------------------------------------------
     # 2. 状态查询
     # ------------------------------------------------------------------
-    # 触发来源对应的文案：群聊沉默计时到点只是“计划”，不等于真的发送，
+    # 触发来源对应的文案：沉默计时到期只是“开始安排”，不等于真的发送，
     # 只有已登记任务（schedule）才使用“预计发送时间”。
     _TRIGGER_LABELS = {
-        "group_silence": "沉默计时结束",
-        "auto_trigger": "自动触发检查",
+        "group_silence": "群聊沉默判定剩余",
+        "auto_trigger": "启动后静默检测剩余",
         "schedule": "预计发送时间",
     }
 
@@ -193,19 +196,18 @@ class PluginCommandService:
             lines.append(f"原因：{self._session_disabled_reason(session_id)}")
             return "\n".join(lines)
 
-        enabled = bool(session_config.get("enable", False))
-        scope_name = "群聊" if self.support.is_group_session(session_id) else "私聊"
+        enabled = bool(session_config.get(ENABLED_KEY, False))
         if enabled:
-            source = f"继承全局 {scope_name}设置"
+            source = "继承全局默认配置"
             if session_config.get("_has_override"):
                 source += "（含会话覆写）"
             lines.append(f"启用状态：✅ 已启用 · {source}")
         else:
             lines.append("启用状态：⛔ 已关闭")
-            if base_config is not None and base_config.get("enable", False):
+            if base_config is not None and base_config.get(ENABLED_KEY, False):
                 lines.append("原因：该会话被单独关闭了")
             else:
-                lines.append("原因：所属全局开关已关闭")
+                lines.append("原因：主动消息总开关已关闭")
 
         # 触发时间：标签随来源变化，群聊只承诺“沉默计时结束”。
         trigger = self.support.describe_next_trigger(session_id, session_config)
@@ -220,27 +222,29 @@ class PluginCommandService:
         else:
             lines.append(f"使用的人格：{persona_id}")
 
-        # 自动触发：到点只是“创建待执行任务”，并非直接发送。
-        auto_settings = session_config.get("auto_trigger_settings", {})
-        if auto_settings.get("enable_auto_trigger", False):
+        # 启动后检测：到点只是“创建待执行任务”，并非直接发送。
+        auto_settings = session_config.get(STARTUP_CHECK_SETTINGS_KEY, {})
+        if auto_settings.get("enabled", False):
             lines.append(
-                "自动触发设置：启动后 "
-                f"{auto_settings.get('auto_trigger_after_minutes', 5)} 分钟无消息时创建待执行任务"
+                "启动后检测（自动主动消息）：启动后 "
+                f"{auto_settings.get('after_silence_minutes', 5)} 分钟无消息时开始安排一次主动消息"
             )
         else:
-            lines.append("自动触发设置：未启用")
+            lines.append("启动后检测（自动主动消息）：未启用")
 
-        # 沉默计时时长：仅群聊有意义。
+        # 沉默判定时长：仅群聊有意义。
         if self.support.is_group_session(session_id):
-            idle = session_config.get("group_idle_trigger_minutes", 0)
-            lines.append(f"沉默计时时长：{idle} 分钟")
+            idle = (session_config.get(GROUP_SILENCE_SETTINGS_KEY, {}) or {}).get(
+                "idle_minutes", 0
+            )
+            lines.append(f"群聊沉默判定时长：{idle} 分钟")
 
-        # 调度区间。
-        schedule_settings = session_config.get("schedule_settings", {})
-        min_interval = schedule_settings.get("min_interval_minutes")
-        max_interval = schedule_settings.get("max_interval_minutes")
+        # 发送区间。
+        schedule_settings = session_config.get(SCHEDULE_SETTINGS_KEY, {})
+        min_interval = schedule_settings.get("min_delay_minutes")
+        max_interval = schedule_settings.get("max_delay_minutes")
         if min_interval is not None and max_interval is not None:
-            lines.append(f"调度区间：{min_interval} - {max_interval} 分钟")
+            lines.append(f"实际发送延迟：{min_interval} - {max_interval} 分钟")
 
         # 未回复与上限。
         unanswered = session_data.get("unanswered_count", 0)
@@ -252,7 +256,7 @@ class PluginCommandService:
 
         # 免打扰。
         quiet_text = self.support.format_quiet_hours(schedule_settings)
-        if schedule_settings.get("enable_quiet_hours", True) and is_quiet_time(
+        if schedule_settings.get("quiet_hours_enabled", True) and is_quiet_time(
             str(schedule_settings.get("quiet_hours", "") or ""), plugin.timezone
         ):
             lines.append(f"免打扰时段：{quiet_text} · 当前正在生效")
@@ -264,12 +268,18 @@ class PluginCommandService:
     def _build_global_status(self) -> tuple[str, list[str]]:
         """构建全局状态头部与逐会话明细块。"""
         plugin = self.plugin
-        friend_settings = plugin.config.get("friend_settings", {}) or {}
-        group_settings = plugin.config.get("group_settings", {}) or {}
+        defaults = plugin.config.get(SESSION_DEFAULTS_KEY, {}) or {}
 
         sessions = self.support.list_enabled_sessions()
         now = time.time()
         uptime = max(0, int(now - plugin.plugin_start_time))
+
+        enabled_flag = defaults.get(ENABLED_KEY, False)
+        session_list = defaults.get(SESSION_LIST_KEY, []) or []
+        friend_count = sum(
+            1 for item in session_list if not self.support.is_group_session(str(item))
+        )
+        group_count = len(session_list) - friend_count
 
         header = "\n".join(
             [
@@ -277,12 +287,10 @@ class PluginCommandService:
                 "──────────────",
                 f"插件版本：{getattr(plugin, 'version', '未知')}",
                 f"运行时长：{self.support.format_duration(uptime)}",
-                f"私聊开关：{'✅ 已启用' if friend_settings.get('enable', False) else '⛔ 已关闭'}"
-                f"（{len(friend_settings.get('session_list', []) or [])} 个会话）",
-                f"群聊开关：{'✅ 已启用' if group_settings.get('enable', False) else '⛔ 已关闭'}"
-                f"（{len(group_settings.get('session_list', []) or [])} 个会话）",
-                f"运行中计时器：群沉默 {len(plugin.group_timers)} 个 / "
-                f"自动触发 {len(plugin.auto_trigger_timers)} 个",
+                f"主动消息总开关：{'✅ 已启用' if enabled_flag else '⛔ 已关闭'}",
+                f"会话数量：私聊 {friend_count} 个 / 群聊 {group_count} 个",
+                f"运行中计时器：群聊沉默 {len(plugin.group_timers)} 个 / "
+                f"启动检测计时器 {len(plugin.auto_trigger_timers)} 个",
                 f"已注册任务：{len(plugin.scheduler.get_jobs()) if plugin.scheduler else 0} 个",
                 f"会话数据量：{len(plugin.session_data)} 个",
             ]
@@ -300,7 +308,7 @@ class PluginCommandService:
 
             trigger_text = self._format_trigger_line(trigger)
 
-            schedule_settings = session_config.get("schedule_settings", {})
+            schedule_settings = session_config.get(SCHEDULE_SETTINGS_KEY, {})
             max_unanswered = int(schedule_settings.get("max_unanswered_times", 0) or 0)
             unanswered = session_data.get("unanswered_count", 0)
             unanswered_text = (
@@ -311,7 +319,8 @@ class PluginCommandService:
 
             blocks.append(
                 f"{index}. {label}\n"
-                f"状态：{'✅ 启用' if session_config.get('enable', False) else '⛔ 关闭'}\n"
+                f"状态："
+                f"{'✅ 启用' if session_config.get(ENABLED_KEY, False) else '⛔ 关闭'}\n"
                 f"{trigger_text}\n"
                 f"未回复：{unanswered_text}"
             )
@@ -359,11 +368,11 @@ class PluginCommandService:
             return False, disabled_reason
 
         session_config = plugin.config_service.get_session_config(session_id) or {}
-        if not session_config.get("enable", False):
+        if not session_config.get(ENABLED_KEY, False):
             return False, "该会话已被单独关闭，请先执行 /主动消息开关 on。"
 
-        schedule_settings = session_config.get("schedule_settings", {})
-        if schedule_settings.get("enable_quiet_hours", True) and is_quiet_time(
+        schedule_settings = session_config.get(SCHEDULE_SETTINGS_KEY, {})
+        if schedule_settings.get("quiet_hours_enabled", True) and is_quiet_time(
             str(schedule_settings.get("quiet_hours", "") or ""), plugin.timezone
         ):
             return (
@@ -439,7 +448,7 @@ class PluginCommandService:
     # 4. 开关
     # ------------------------------------------------------------------
     async def _set_session_enable(self, session_id: str, enabled: bool) -> str:
-        """写会话级 enable 覆写，并按新状态重排期或清理任务。"""
+        """写会话级 enabled 覆写，并按新状态重排期或清理任务。"""
         plugin = self.plugin
 
         base_config = self.support.base_config_of(session_id)
@@ -447,7 +456,8 @@ class PluginCommandService:
             return self._session_disabled_reason(session_id)
 
         override = plugin.session_override_manager.get_override(session_id)
-        override["enable"] = enabled
+        # 必须写新键名：读取侧统一读 ENABLED_KEY，写旧键会导致开关静默失效。
+        override[ENABLED_KEY] = enabled
         saved = await plugin.session_override_manager.set_override(session_id, override)
         if not saved:
             # 内存已改但落盘失败，重启后会回退，必须让用户知道。
@@ -500,7 +510,7 @@ class PluginCommandService:
             await plugin.storage_service.save_data()
 
     async def _set_global_enable(self, enabled: bool) -> tuple[list[str], bool]:
-        """切换 friend_settings / group_settings 两个总开关。
+        """切换主动消息总开关。
 
         全局切换会连带改动大量会话的计时器与任务，多步操作必须串行，
         否则两位管理员的相反操作可能交错，最终状态与活动任务不一致。
@@ -521,17 +531,14 @@ class PluginCommandService:
             if session_id not in known_sessions:
                 known_sessions.append(session_id)
 
-        for scope_key in ("friend_settings", "group_settings"):
-            settings = plugin.config.get(scope_key)
-            if not isinstance(settings, dict):
-                continue
-            if bool(settings.get("enable", False)) == enabled:
-                continue
-            settings["enable"] = enabled
-            changed.append(scope_key)
-
-        if not changed:
+        settings = plugin.config.get(SESSION_DEFAULTS_KEY)
+        if not isinstance(settings, dict):
             return changed, True
+        if bool(settings.get(ENABLED_KEY, False)) == enabled:
+            return changed, True
+
+        settings[ENABLED_KEY] = enabled
+        changed.append(SESSION_DEFAULTS_KEY)
 
         saved = True
         try:
@@ -543,10 +550,7 @@ class PluginCommandService:
         # 落盘失败时不再重排期：避免磁盘与内存分叉后产生不可解释的任务。
         # 内存回滚到切换前状态，让返回值与真实持久化状态保持一致。
         if not saved:
-            for scope_key in changed:
-                settings = plugin.config.get(scope_key)
-                if isinstance(settings, dict):
-                    settings["enable"] = not enabled
+            settings[ENABLED_KEY] = not enabled
             return [], False
 
         if enabled:
@@ -555,9 +559,9 @@ class PluginCommandService:
             await plugin.scheduler_service.setup_auto_triggers_for_enabled_sessions()
             for session_id in self.support.list_enabled_sessions():
                 session_config = plugin.config_service.get_session_config(session_id)
-                # 全局开启不代表所有列出的会话都该排期：会话级 enable 覆写
+                # 全局开启不代表所有列出的会话都该排期：会话级 enabled 覆写
                 # 可能已把它单独关闭，为它排期只会产生发不出去的任务。
-                if not session_config or not session_config.get("enable", False):
+                if not session_config or not session_config.get(ENABLED_KEY, False):
                     continue
                 if self.support.is_group_session(session_id):
                     await plugin.scheduler_service.reset_group_silence_timer(session_id)
@@ -616,7 +620,7 @@ class PluginCommandService:
 
         if scope != SCOPE_GLOBAL:
             session_config = self.plugin.config_service.get_session_config(target)
-            current = bool(session_config and session_config.get("enable", False))
+            current = bool(session_config and session_config.get(ENABLED_KEY, False))
             enabled = (not current) if requested is None else requested
 
             reason = await self._set_session_enable(target, enabled)
@@ -633,18 +637,10 @@ class PluginCommandService:
             )
             return
 
-        # 全局作用域。
-        friend_enabled = bool(
-            (self.plugin.config.get("friend_settings", {}) or {}).get("enable", False)
-        )
-        group_enabled = bool(
-            (self.plugin.config.get("group_settings", {}) or {}).get("enable", False)
-        )
-        if requested is None:
-            # 未指定 on/off 时取反：任一分组开启就整体关闭。
-            enabled = not (friend_enabled or group_enabled)
-        else:
-            enabled = requested
+        # 全局作用域（合并后只有一个总开关）。
+        defaults = self.plugin.config.get(SESSION_DEFAULTS_KEY, {}) or {}
+        current_enabled = bool(defaults.get(ENABLED_KEY, False))
+        enabled = (not current_enabled) if requested is None else requested
 
         changed, saved = await self._set_global_enable(enabled)
         if not saved:
@@ -663,11 +659,8 @@ class PluginCommandService:
             )
             return
 
-        scope_text = "、".join(
-            "私聊" if key == "friend_settings" else "群聊" for key in changed
-        )
         yield event.plain_result(
-            f"✅ 已{state_text}全局主动消息（{scope_text}）。"
+            f"✅ 已{state_text}全局主动消息。"
             + ("" if enabled else "\n已同步取消全部会话的调度任务与计时器。")
         )
 
