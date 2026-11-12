@@ -334,11 +334,15 @@ def _collect_templates(
         if not is_default:
             templates.append(
                 {
-                    "id": MIGRATED_TEMPLATE_ID,
+                    # 私聊/群聊可能各有自定义提示词，共用固定 id 会让两条模板
+                    # 在会话差异页互相覆盖，这里生成唯一 id。
+                    "id": f"{MIGRATED_TEMPLATE_ID}_{uuid4().hex[:8]}",
+                    # 缺少该键时 AstrBot 管理面板会显示「未指定模板」并拒绝保存。
+                    TEMPLATE_KEY_FIELD: DEFAULT_TEMPLATE_KEY,
                     "name": "旧版提示词",
                     "text": legacy,
                     "enabled": True,
-                    "weight": 100,
+                    "weight": DEFAULT_TEMPLATE_WEIGHT,
                 }
             )
 
@@ -410,8 +414,13 @@ def _merge_section_settings(
 ) -> None:
     """把两个旧分组的一般字段合并进 session_defaults。
 
-    合并顺序：群聊值作为基础（群聊默认更保守），私聊值覆盖。
-    真正有差异的字段另外记录到 legacy_type_fallback，由运行时按类型合入。
+    合并策略：以私聊侧为基准，群聊侧只补齐私聊缺失的字段。
+    两侧都有且不同的字段，把群聊值整体记入 legacy_type_fallback，
+    由运行时按会话类型合入。这样两侧各自的自定义值都不会被对方覆盖。
+
+    总开关 enabled 必须排除在外：它由 _migrate_enable_flags 用 OR 语义
+    单独计算，若参与普通字段合并，群聊侧的 False 会覆盖 OR 结果，
+    导致「私聊开、群聊关」这种常见配置把整个插件关掉。
     """
     normalised_friend = _rename_keys(copy.deepcopy(friend))
     normalised_group = _rename_keys(copy.deepcopy(group))
@@ -437,74 +446,78 @@ def _merge_section_settings(
     group_flat = _flatten(normalised_group)
     friend_flat = _flatten(normalised_friend)
 
+    # enabled 不参与合并：交给 _migrate_enable_flags 处理。
+    skipped = {ck.SESSION_LIST_KEY, ck.ENABLED_KEY}
+
     merged_flat: dict[str, Any] = {}
-    for path, value in group_flat.items():
-        if path == ck.SESSION_LIST_KEY:
+    for path, value in friend_flat.items():
+        if path in skipped:
             continue
         merged_flat[path] = value
-    for path, value in friend_flat.items():
-        if path == ck.SESSION_LIST_KEY:
+    for path, value in group_flat.items():
+        if path in skipped:
             continue
+        # 私聊侧缺失的字段用群聊侧补齐；两侧都有时以私聊侧为准，
+        # 群聊的差异稍后统一进类型回退层。
         if path not in merged_flat:
             merged_flat[path] = value
-            continue
-        # 默认值取自群聊侧，但若私聊侧改了而群聊侧仍是旧默认，
-        # 说明只有私聊被调整过，此时应采用私聊值。
-        if merged_flat[path] != value:
-            if _prefer_friend_value(path, merged_flat[path], value):
-                merged_flat[path] = value
 
     merged = _unflatten(merged_flat)
+    merged[ck.SESSION_LIST_KEY] = merged_list
 
-    if merged_list:
-        merged[ck.SESSION_LIST_KEY] = merged_list
-    else:
-        merged[ck.SESSION_LIST_KEY] = []
-
-    # source_mode 的 auto：旧版私聊默认对话历史、群聊默认平台流水，
-    # 合并后无法用一个具体值表达，统一交给 auto 在运行时按类型分流。
+    # source_mode 需要按类型分别保留消费者意图，不能只挑一侧当默认值。
+    # 两侧取值一致时才能用单值表达；不一致时默认层写 auto（等价旧版
+    # 私聊对话历史 / 群聊平台流水的分流），并把两侧各自的显式值分别写进
+    # 回退层，否则私聊或群聊其中一侧的显式配置会被 auto 静默改掉。
     context_settings = merged.get(ck.CONTEXT_SETTINGS_KEY)
-    if isinstance(context_settings, dict) and "source_mode" in context_settings:
-        context_settings["source_mode"] = "auto"
-
-    threshold = merged.get(ck.SEGMENTED_REPLY_SETTINGS_KEY)
-    if isinstance(threshold, dict) and "words_count_threshold" in threshold:
-        pass
+    friend_mode = str(
+        _get(_get(normalised_friend, ck.CONTEXT_SETTINGS_KEY), "source_mode") or ""
+    )
+    group_mode = str(
+        _get(_get(normalised_group, ck.CONTEXT_SETTINGS_KEY), "source_mode") or ""
+    )
+    source_mode_overrides: dict[str, dict[str, Any]] = {}
+    if isinstance(context_settings, dict):
+        context_settings.pop("source_mode", None)
+        if friend_mode and friend_mode == group_mode:
+            # 两侧一致：原值保留，供私聊/群聊共同使用。
+            context_settings["source_mode"] = friend_mode
+        elif friend_mode or group_mode:
+            # 两侧不一致或仅一侧显式设置：默认层交给 auto，各自的值进回退层。
+            context_settings["source_mode"] = "auto"
+            if friend_mode:
+                source_mode_overrides.setdefault("friend", {})[
+                    ck.CONTEXT_SETTINGS_KEY
+                ] = {"source_mode": friend_mode}
+            if group_mode:
+                source_mode_overrides.setdefault("group", {})[
+                    ck.CONTEXT_SETTINGS_KEY
+                ] = {"source_mode": group_mode}
 
     targets.update(merged)
 
-    # 类型差异层：只在确实存在差异时写入，避免新安装用户产生无用字段。
+    # 类型差异层：群聊侧与私聊侧不同的字段全部记录。
+    # 只在确实存在差异时写入，避免新安装用户产生无用字段。
     type_diff = _deep_diff(normalised_friend, normalised_group)
     type_diff.pop(ck.SESSION_LIST_KEY, None)
-    if type_diff:
-        targets[ck.LEGACY_TYPE_FALLBACK_KEY] = {"group": type_diff}
+    type_diff.pop(ck.ENABLED_KEY, None)
+    # source_mode 已单独处理，避免与上面的显式覆盖重复或互相覆盖。
+    diff_context = type_diff.get(ck.CONTEXT_SETTINGS_KEY)
+    if isinstance(diff_context, dict):
+        diff_context.pop("source_mode", None)
+        if not diff_context:
+            type_diff.pop(ck.CONTEXT_SETTINGS_KEY, None)
 
+    fallback: dict[str, Any] = {"group": type_diff} if type_diff else {}
+    for session_type, patch in source_mode_overrides.items():
+        section = fallback.setdefault(session_type, {})
+        for key, value in patch.items():
+            section.setdefault(key, {})
+            if isinstance(section[key], dict):
+                section[key].update(value)
 
-def _prefer_friend_value(path: str, group_value: Any, friend_value: Any) -> bool:
-    """两侧都改过且不同时，判断是否应采用私聊值。
-
-    区分“只有私聊改过”与“两侧是不同的自定义值”：
-    前者应采用私聊值，后者保留群聊侧（私聊侧进类型差异层，见 _deep_diff）。
-    这里通过对比旧默认值来判断，无法判断时保留群聊侧。
-    """
-    default = _LEGACY_FIELD_DEFAULTS.get(path)
-    if default is None:
-        return False
-    # 群聊侧仍是旧默认、私聊侧不是 -> 只有私聊改过，采用私聊值。
-    return group_value == default and friend_value != default
-
-
-# 旧版字段默认值：用于判断“哪一侧被真正修改过”。
-# 只覆盖需要区分来源的字段，其余字段直接取群聊侧。
-_LEGACY_FIELD_DEFAULTS: dict[str, Any] = {
-    f"{ck.SCHEDULE_SETTINGS_KEY}.min_delay_minutes": 90,
-    f"{ck.SCHEDULE_SETTINGS_KEY}.max_delay_minutes": 360,
-    f"{ck.SCHEDULE_SETTINGS_KEY}.quiet_hours": "2-6",
-    f"{ck.SCHEDULE_SETTINGS_KEY}.max_unanswered_times": 2,
-    f"{ck.GROUP_SILENCE_SETTINGS_KEY}.idle_minutes": 30,
-    f"{ck.TTS_SETTINGS_KEY}.enabled": False,
-    f"{ck.CONTEXT_SETTINGS_KEY}.platform_history_count": 20,
-}
+    if fallback:
+        targets[ck.LEGACY_TYPE_FALLBACK_KEY] = fallback
 
 
 def _migrate_enable_flags(
@@ -768,17 +781,20 @@ def _migrate_override(override: Any, session_id: str) -> dict[str, Any] | None:
         _absorb(existing_templates)
     legacy_prompt = patched.get("proactive_prompt")
     if isinstance(legacy_prompt, str) and legacy_prompt.strip():
-        templates.append(
-            {
-                "id": MIGRATED_TEMPLATE_ID,
-                TEMPLATE_KEY_FIELD: DEFAULT_TEMPLATE_KEY,
-                "name": "旧版提示词",
-                "text": legacy_prompt,
-                "enabled": True,
-                "weight": 100,
-                "scope": SCOPE_ANY,
-            }
-        )
+        # 只有用户真正改过的提示词才留档：若这段就是旧版出厂默认值，
+        # 写成本会话模板会覆盖全局模板，让该会话继续用废弃的旧文案。
+        if not _is_legacy_default_text(legacy_prompt):
+            templates.append(
+                {
+                    "id": f"{MIGRATED_TEMPLATE_ID}_{uuid4().hex[:8]}",
+                    TEMPLATE_KEY_FIELD: DEFAULT_TEMPLATE_KEY,
+                    "name": "旧版提示词",
+                    "text": legacy_prompt,
+                    "enabled": True,
+                    "weight": DEFAULT_TEMPLATE_WEIGHT,
+                    "scope": SCOPE_ANY,
+                }
+            )
     patched.pop("prompt_templates", None)
     patched.pop("proactive_prompt", None)
 
@@ -853,28 +869,83 @@ async def migrate_override_store(store: Any) -> int:
     return changed_sessions
 
 
-async def apply_pending_disabled_overrides(store: Any, config: Any) -> int:
-    """消费迁移器留下的“原本被关闭”会话清单，写入关闭型覆写。"""
+def _resolve_override_target(session_service: Any, session_id: str) -> str | None:
+    """把裸 ID 解析为可查询的完整 UMO，无法解析时返回 None。
+
+    运行时用 normalize_session_id(session_id) 查覆写，若这里直接拿裸 ID 当键，
+    写进去的关闭覆写永远查不到，被关闭的会话会重新启用。
+    """
+    if not session_id:
+        return None
+    if session_service is None:
+        return None
+    try:
+        if session_service.parse_session_id(session_id):
+            return session_service.normalize_session_id(session_id)
+
+        # 裸 ID：先按已知会话来反查，私聊/群聊都试一遍。
+        for is_group in (False, True):
+            finder = getattr(session_service, "find_known_umos_by_target", None)
+            if not callable(finder):
+                continue
+            known, _ = finder(session_id, group=is_group)
+            if known:
+                return session_service.normalize_session_id(known[0])
+    except Exception as e:
+        logger.debug(f"[主动消息] 解析会话 {session_id} 的覆写键失败喵: {e}")
+    return None
+
+
+async def apply_pending_disabled_overrides(
+    store: Any,
+    config: Any,
+    session_service: Any = None,
+) -> int:
+    """消费迁移器留下的“原本被关闭”会话清单，写入关闭型覆写。
+
+    只有全部写入成功才移除清单：某个会话落盘失败时保留待处理项，
+    否则下次启动既没有旧分组、也没有重试清单，被关闭的会话会重新启用。
+    """
     if store is None or not isinstance(config, dict):
         return 0
 
-    pending = config.pop("_pending_disabled_overrides", None)
+    pending = config.get("_pending_disabled_overrides")
     if not isinstance(pending, list) or not pending:
+        config.pop("_pending_disabled_overrides", None)
         return 0
 
     applied = 0
-    for session_id in pending:
+    remaining: list[str] = []
+    for raw_session_id in pending:
+        session_id = str(raw_session_id)
+        target = _resolve_override_target(session_service, session_id)
+        if target is None:
+            # 解析不出来的裸 ID 不能直接丢弃，留到下次启动再试。
+            logger.warning(
+                f"[主动消息] 无法确定会话「{session_id}」的完整 UMO，"
+                "关闭覆写将留待下次启动重试。"
+            )
+            remaining.append(session_id)
+            continue
         try:
-            current = store.get_override(str(session_id))
+            current = store.get_override(target)
             if not isinstance(current, dict):
                 current = {}
             if current.get(ck.ENABLED_KEY) is False:
                 continue
             current[ck.ENABLED_KEY] = False
-            if await store.set_override(str(session_id), current):
+            if await store.set_override(target, current):
                 applied += 1
+            else:
+                remaining.append(session_id)
         except Exception as e:
-            logger.warning(f"[主动消息] 写入 {session_id} 的关闭覆写失败喵: {e}")
+            logger.warning(f"[主动消息] 写入 {target} 的关闭覆写失败喵: {e}")
+            remaining.append(session_id)
+
+    if remaining:
+        config["_pending_disabled_overrides"] = remaining
+    else:
+        config.pop("_pending_disabled_overrides", None)
     return applied
 
 
