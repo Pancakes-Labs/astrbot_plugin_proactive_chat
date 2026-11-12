@@ -228,10 +228,17 @@ class CommandSupportService:
                 # 完整 UMO 归一后只对应一个会话。
                 candidates = [plugin.session_service.normalize_session_id(session)]
             else:
-                # 裸 ID 类型未知：两种消息类型都试一遍，由已知会话反查决定。
+                # 裸 ID 类型未知：两种消息类型都要查，不能因私聊解析非空就
+                # 跳过群聊，否则同一 ID 同时是好友和群时群会被漏掉。
                 candidates = self._resolve_bare_sessions(
                     session, self._FRIEND_MESSAGE_TYPE
-                ) or self._resolve_bare_sessions(session, self._GROUP_MESSAGE_TYPE)
+                )
+                group_candidates = self._resolve_bare_sessions(
+                    session, self._GROUP_MESSAGE_TYPE
+                )
+                for normalized in group_candidates:
+                    if normalized not in candidates:
+                        candidates.append(normalized)
             for normalized in candidates:
                 if normalized and normalized not in result:
                     result.append(normalized)
