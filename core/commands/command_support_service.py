@@ -149,44 +149,50 @@ class CommandSupportService:
     _FRIEND_MESSAGE_TYPE = "FriendMessage"
     _GROUP_MESSAGE_TYPE = "GroupMessage"
 
-    def _lookup_known_sessions(self, raw: str, message_type: str) -> list[str]:
+    def _lookup_known_sessions(
+        self, raw: str, message_type: str
+    ) -> tuple[list[str], bool]:
         """只查已知会话，不做任何平台猜测补全。
 
-        已知会话所在平台全部离线时返回空列表（不猜测其它平台，
-        否则会把消息发到别的平台上的同 ID 目标）。
+        Returns:
+            (可用 UMO 列表, 是否存在已离线但已知的目标会话)。
+            第二个返回值必须向上传递：只要该目标在某个平台上有已知会话，
+            就不能退化成「按唯一运行平台猜一个 UMO」，否则会把消息
+            发到别的平台上的同 ID 目标。
         """
         if not raw or not raw.strip():
-            return []
+            return [], False
 
         session_service = self.plugin.session_service
         known, has_unavailable = session_service.find_known_umos_by_target(
             raw, group=is_group_type(message_type)
         )
-        if known:
-            resolved: list[str] = []
-            for umo in known:
-                normalized = session_service.normalize_session_id(umo)
-                if normalized not in resolved:
-                    resolved.append(normalized)
-            return resolved
+        resolved: list[str] = []
+        for umo in known or []:
+            normalized = session_service.normalize_session_id(umo)
+            if normalized not in resolved:
+                resolved.append(normalized)
 
-        if has_unavailable:
+        if not resolved and has_unavailable:
             logger.warning(
                 f"[主动消息] 配置中的裸会话 ID「{raw}」对应的已知会话"
                 "所在平台当前不可用，已跳过（不会改发到其它平台）。"
                 "请确认平台已启动或改用完整会话 UMO。"
             )
-        return []
+        return resolved, has_unavailable
 
     def _resolve_bare_sessions(self, raw: str, message_type: str) -> list[str]:
-        """把配置里的裸 ID 补全为完整 UMO 列表；无法确定时返回空列表。
+        """按指定类型补全裸 ID；无法确定时返回空列表。
 
-        优先复用已知会话的原始 UMO，从而保留 PrivateMessage / GuildMessage
-        等具体类型。完全没有已知会话时，只有在唯一运行平台下才补全。
+        已知会话优先（保留 PrivateMessage / GuildMessage 等真实类型）。
+        只有「完全没有已知会话、也没有离线目标」时才按唯一运行平台补全。
         """
-        known = self._lookup_known_sessions(raw, message_type)
+        known, has_unavailable = self._lookup_known_sessions(raw, message_type)
         if known:
             return known
+        if has_unavailable:
+            # 该目标存在已知会话但平台离线：绝不猜测到其它平台。
+            return []
 
         running = self._running_platform_ids()
         if len(running) != 1:
@@ -198,16 +204,31 @@ class CommandSupportService:
             return []
         return [f"{running[0]}:{message_type}:{raw}"]
 
-    def _resolve_bare_session_both_types(self, raw: str) -> list[str]:
+    def _resolve_bare_session_both_types(
+        self, raw: str, session_type: str = ""
+    ) -> list[str]:
         """按裸 ID 解析会话，且绝不为某一类型凭空猜测 UMO。
+
+        Args:
+            raw: 配置里的裸目标 ID。
+            session_type: 该条目在迁移时记录的原会话类型（friend / group）；
+                为空表示类型未知。
 
         与分别调用两次 _resolve_bare_sessions 的关键区别：
         后者在「裸 ID 只有群聊」时会先用私聊类型构造一个猜测的
         FriendMessage UMO，导致结果里混入一个并不存在的私聊会话。
-        这里先查两种类型的已知会话；只要有任一类型命中，就只用已知结果。
+
+        另外两点同样重要：
+        - 任一类型存在离线目标时都不做平台猜测补全，否则会发到错的平台；
+        - 类型未知且无已知会话时不默认按私聊补全，因为会话列表已合并，
+          该条目可能原本来自群聊列表，猜成私聊会发错目标。
         """
-        friend_known = self._lookup_known_sessions(raw, self._FRIEND_MESSAGE_TYPE)
-        group_known = self._lookup_known_sessions(raw, self._GROUP_MESSAGE_TYPE)
+        friend_known, friend_unavailable = self._lookup_known_sessions(
+            raw, self._FRIEND_MESSAGE_TYPE
+        )
+        group_known, group_unavailable = self._lookup_known_sessions(
+            raw, self._GROUP_MESSAGE_TYPE
+        )
 
         resolved: list[str] = []
         for normalized in list(friend_known) + list(group_known):
@@ -216,7 +237,25 @@ class CommandSupportService:
         if resolved:
             return resolved
 
-        # 两种类型都没有已知会话：才允许按唯一运行平台补全。
+        if friend_unavailable or group_unavailable:
+            # 存在离线目标：不补全，等平台恢复。
+            return []
+
+        if not session_type:
+            # 类型未知且无任何已知会话：猜错类型的风险高于漏发，
+            # 这里要求用户改用完整 UMO，不再默认当私聊。
+            logger.warning(
+                f"[主动消息] 配置中的裸会话 ID {raw} 无法确定会话类型，已跳过。"
+                "请改用完整会话 UMO（例如 default:FriendMessage:123456789）。"
+            )
+            return []
+
+        # 类型明确时才按唯一运行平台补全。
+        message_type = (
+            self._GROUP_MESSAGE_TYPE
+            if session_type == "group"
+            else self._FRIEND_MESSAGE_TYPE
+        )
         running = self._running_platform_ids()
         if len(running) != 1:
             logger.warning(
@@ -225,8 +264,7 @@ class CommandSupportService:
                 "请改用完整会话 UMO。"
             )
             return []
-        # 类型完全未知时按私聊处理：这是旧版对 friend_settings 的默认行为。
-        return [f"{running[0]}:{self._FRIEND_MESSAGE_TYPE}:{raw}"]
+        return [f"{running[0]}:{message_type}:{raw}"]
 
     def _running_platform_ids(self) -> list[str]:
         """列出当前处于运行状态的平台实例 ID。"""
@@ -266,8 +304,8 @@ class CommandSupportService:
                 candidates = [plugin.session_service.normalize_session_id(session)]
             else:
                 # 裸 ID 类型未知：先查两种类型的已知会话并合并。
-                # 不能分别调用两次补全，否则只有群聊的裸 ID 会先被猜成
-                # 一个并不存在的私聊 UMO，导致误发。
+                # 会话列表合并后已不记录来源类型，因此不传 session_type：
+                # 类型无法确定时宁可跳过并提示，也不猜成私聊发错目标。
                 candidates = self._resolve_bare_session_both_types(session)
             for normalized in candidates:
                 if normalized and normalized not in result:
