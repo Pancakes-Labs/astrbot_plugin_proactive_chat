@@ -46,7 +46,7 @@ class TelemetryManager:
     _PLUGIN_NAME = "astrbot_plugin_proactive_chat"
     # 匹配统一消息来源 UMO，避免错误日志或异常文本把真实会话标识直接上传到遥测平台。
     _UMO_PATTERN = re.compile(
-        r"(?P<umo>[A-Za-z0-9_.-]+:(?:FriendMessage|PrivateMessage|GroupMessage|GuildMessage):[^\s,'\"]+)"
+        r"(?P<umo>[A-Za-z0-9_.-]+:(?:FriendMessage|GroupMessage|OtherMessage):[^\s,'\"]+)"
     )
     # 匹配 password/token/key/secret 这类典型敏感键值，做统一掩码替换。
     _KEY_VALUE_PATTERN = re.compile(
