@@ -63,6 +63,18 @@ class SchedulerService:
     def _current_timer_generation(self, key: str) -> int:
         return self._timer_generations.get(key, 0)
 
+    @staticmethod
+    def _section_dict(section: Any, key: str) -> dict[str, Any]:
+        """读取配置分组并保证返回 dict。
+
+        管理端接口允许把分组保存成 null，直接链式 .get() 会抛
+        AttributeError 并中断整轮排期，因此统一在这里做空值归一。
+        """
+        if not isinstance(section, dict):
+            return {}
+        value = section.get(key)
+        return value if isinstance(value, dict) else {}
+
     async def setup_auto_trigger(self, session_id: str, silent: bool = False) -> None:
         """为指定会话设置自动主动消息触发器。"""
         plugin = self.plugin
@@ -71,7 +83,9 @@ class SchedulerService:
         if not session_config:
             return
 
-        auto_trigger_settings = session_config.get(STARTUP_CHECK_SETTINGS_KEY, {})
+        auto_trigger_settings = self._section_dict(
+            session_config, STARTUP_CHECK_SETTINGS_KEY
+        )
         if not auto_trigger_settings.get("enabled", False):
             logger.debug(
                 f"[主动消息] {plugin.session_service.get_session_log_str(session_id, session_config)} 未启用启动后检测喵。"
@@ -383,9 +397,10 @@ class SchedulerService:
                 elif result == "max_unanswered":
                     skipped_max_unanswered += 1
 
-        has_auto_trigger_config = bool(
-            defaults.get(STARTUP_CHECK_SETTINGS_KEY, {}).get("enabled", False)
-        )
+        # POST /api/config 允许把分组写成 null；直接链式 .get() 会抛异常，
+        # 让全局开关命令后续的排期整体中断，这里统一归一化为空字典。
+        startup_check = self._section_dict(defaults, STARTUP_CHECK_SETTINGS_KEY)
+        has_auto_trigger_config = bool(startup_check.get("enabled", False))
 
         if auto_trigger_count == 0:
             if has_auto_trigger_config:
@@ -430,7 +445,9 @@ class SchedulerService:
             session_id, session_config
         )
 
-        auto_trigger_settings = session_config.get(STARTUP_CHECK_SETTINGS_KEY, {})
+        auto_trigger_settings = self._section_dict(
+            session_config, STARTUP_CHECK_SETTINGS_KEY
+        )
         if not auto_trigger_settings.get("enabled", False):
             logger.debug(
                 f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id)} 未启用启动后检测喵。"
@@ -836,7 +853,9 @@ class SchedulerService:
                     reset_done = True
 
             if "auto_trigger" in kinds:
-                auto_settings = session_config.get(STARTUP_CHECK_SETTINGS_KEY, {})
+                auto_settings = self._section_dict(
+                    session_config, STARTUP_CHECK_SETTINGS_KEY
+                )
                 had_auto_timer = bool(
                     self.iter_related_auto_trigger_keys(normalized_session_id)
                 )
