@@ -73,7 +73,7 @@ class SenderService:
         split_mode = settings.get("split_mode", "regex")
 
         # 可选内容清理：先编译规则，非法正则按“不清理”处理。
-        enable_content_cleanup = settings.get("enable_content_cleanup", False)
+        enable_content_cleanup = settings.get("content_cleanup_enabled", False)
         content_cleanup_rule = (
             settings.get("content_cleanup_rule", "") if enable_content_cleanup else ""
         )
@@ -542,7 +542,7 @@ class SenderService:
 
         # 可选语音发送：合成成功即作为一条消息链直接送出。
         is_tts_sent = False
-        if tts_conf.get("enable_tts", True) and text.strip():
+        if tts_conf.get("enabled", False) and text.strip():
             try:
                 logger.info("[主动消息] 尝试进行手动TTS喵。")
                 tts_provider = plugin.context.get_using_tts_provider(umo=session_id)
@@ -642,9 +642,7 @@ class SenderService:
                                     "session_type": session_config.get(
                                         "_session_type", "unknown"
                                     ),
-                                    "tts_enabled": bool(
-                                        tts_conf.get("enable_tts", True)
-                                    ),
+                                    "tts_enabled": bool(tts_conf.get("enabled", False)),
                                     "tts_sent": is_tts_sent,
                                     "segmented_enabled": segmented,
                                     "segment_count": len(send_chain),
