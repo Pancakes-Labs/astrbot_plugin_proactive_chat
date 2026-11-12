@@ -122,6 +122,10 @@ class ConfigService:
         if not any(candidate in session_list for candidate in candidates):
             return None
 
+        # 迁移期的「原本被关闭」清单必须参与准入拦截，不能只依赖关闭覆写。
+        if self._is_pending_disabled(candidates, session_type):
+            return None
+
         config_copy = copy.deepcopy(defaults)
 
         # 类型回退层：只在存在迁移差异时合入，优先级低于会话覆写。
@@ -148,6 +152,37 @@ class ConfigService:
         config_copy["_from_session_list"] = True
 
         return config_copy
+
+    def _is_pending_disabled(
+        self, candidates: set[str], session_type: str
+    ) -> bool:
+        """判断该会话是否仍在迁移期的「等待单独关闭」清单里。
+
+        迁移只登记裸 ID，解析成功并写入关闭覆写后才会从清单移除。
+        """
+        config = self.plugin.config
+        if not isinstance(config, dict):
+            return False
+        pending = config.get("_pending_disabled_overrides")
+        if not isinstance(pending, list) or not pending:
+            return False
+
+        for raw_entry in pending:
+            if isinstance(raw_entry, str):
+                entry_session, entry_type = raw_entry, ""
+            elif isinstance(raw_entry, dict):
+                entry_session = str(raw_entry.get("session") or "")
+                entry_type = str(raw_entry.get("session_type") or "")
+            else:
+                continue
+            if not entry_session:
+                continue
+            # 已记录类型时必须类型一致，避免群聊条目误伤同 ID 的私聊会话。
+            if entry_type and session_type and entry_type != session_type:
+                continue
+            if entry_session in candidates:
+                return True
+        return False
 
     def _apply_type_fallback(
         self,
