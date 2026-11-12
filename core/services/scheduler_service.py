@@ -351,15 +351,17 @@ class SchedulerService:
     def resolve_session_id_for_config(
         self, session_id: str, session_config: dict
     ) -> str:
-        """将配置中的会话标识解析为完整 UMO。"""
-        plugin = self.plugin
-        parsed = plugin.session_service.parse_session_id(session_id)
-        if parsed:
-            return session_id
+        """将配置中的会话标识解析为完整 UMO。
 
-        session_type = session_config.get("_session_type", "friend")
-        msg_type = "FriendMessage" if session_type == "friend" else "GroupMessage"
-        return plugin.session_service.resolve_full_umo(str(session_id), msg_type)
+        配置只接受完整 UMO；解析失败时返回空串，由调用方按无效配置跳过。
+        """
+        if self.plugin.session_service.parse_session_id(session_id):
+            return session_id
+        logger.warning(
+            f"[主动消息] 会话 {session_id} 不是完整 UMO，已跳过。"
+            "请改用完整会话 UMO（例如 default:FriendMessage:123456789）。"
+        )
+        return ""
 
     # ------------------------------------------------------------------
     # 启动初始化
@@ -444,6 +446,8 @@ class SchedulerService:
         resolved_session_id = self.resolve_session_id_for_config(
             session_id, session_config
         )
+        if not resolved_session_id:
+            return "invalid"
 
         auto_trigger_settings = self._section_dict(
             session_config, STARTUP_CHECK_SETTINGS_KEY

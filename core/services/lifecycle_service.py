@@ -58,8 +58,7 @@ class LifecycleService:
             await plugin.storage_service.load_data()
         logger.info("[主动消息] 已成功从文件加载会话数据喵。")
 
-        # 配置装配早于会话数据加载，迁移期的裸 ID 当时可能解析不出目标。
-        # 这里数据已就绪，立刻重试一次关闭型覆写，尽量在本轮启动内关闭干净。
+        # 配置装配阶段若有个别关闭型覆写落盘失败，这里再补一次。
         await self._retry_pending_disabled_overrides("加载会话数据后")
 
         # 解析时区；无效配置回退为服务器系统时区（None）。
@@ -162,14 +161,8 @@ class LifecycleService:
             if plugin._startup_finalized or getattr(plugin, "_terminating", False):
                 return
 
-            # 平台就绪后再重试一次：此前离线的目标现在可能已可解析，
-            # 必须尽快把它们的关闭覆写补上，避免恢复后被排期。
+            # 平台就绪后再重试一次，把此前落盘失败的关闭型覆写补上。
             await self._retry_pending_disabled_overrides("平台就绪后")
-
-            # 先规范化历史会话键，再恢复消息时间与调度任务。
-            async with plugin.data_lock:
-                if plugin.storage_service.normalize_session_data():
-                    await plugin.storage_service.save_data()
 
             if getattr(plugin, "_terminating", False):
                 return
