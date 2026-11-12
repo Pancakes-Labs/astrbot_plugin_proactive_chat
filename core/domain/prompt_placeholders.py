@@ -126,6 +126,15 @@ def _spec_available(spec: PlaceholderSpec, capabilities: dict[str, bool]) -> boo
     return all(bool(capabilities.get(cap, False)) for cap in spec.requires)
 
 
+# 整行只是一个“标签：占位符”的独立条目，删除后才不会损失信息。
+# 标签部分必须不含任何句子分隔符：否则「请询问近况；最后发言：{{x}}」
+# 会被误判成独立标签行，整行删掉会连带丢弃前面的有效指令。
+_STANDALONE_LABEL_RE = re.compile(
+    r"^[^：:＝=；。，、！？,.;!?（）()【】\[\]]{1,16}[：:＝=]\s*"
+    r"(\{\{[^{}]*\}\})\s*$"
+)
+
+
 def _render_line(
     line: str,
     capabilities: dict[str, bool],
@@ -142,28 +151,39 @@ def _render_line(
         if not _spec_available(spec, capabilities) and spec.line_removable
     ]
 
-    rendered = line
+    # 一次扫描完成替换：替换值里若恰好含有占位符字面量（例如聊天记录正文），
+    # re.sub 不会对已替换内容再次匹配，避免二次改写。
+    mapping: dict[str, str] = {}
     for spec in present:
         if spec.key in values:
-            replacement = values[spec.key]
+            mapping[spec.key] = values[spec.key]
         elif _spec_available(spec, capabilities):
             # 能力满足但调用方没给值：说明本链路不负责填充，保持原样留给下个环节。
             continue
         else:
-            replacement = spec.fallback
-        rendered = rendered.replace(spec.key, replacement)
+            mapping[spec.key] = spec.fallback
+
+    if mapping:
+        pattern = "|".join(re.escape(key) for key in mapping)
+        rendered = re.sub(pattern, lambda m: mapping[m.group(0)], line)
+    else:
+        rendered = line
 
     if not unavailable_removable:
         return rendered
 
-    # 判定“删掉整行”是否安全，三种情形都视为该行已无有效信息：
-    # 1. 只剩空白；
-    # 2. 只剩标点；
-    # 3. 退化成“标签：。”这种悬空句式。
+    # 只有“独立标签行”才允许整行删除。
+    # 「请询问近况；最后发言：{{x}}」这类混合行删除会连带丢掉有效指令，
+    # 必须保留其余内容。
+    stripped_raw = _LIST_PREFIX_RE.sub("", line).strip()
+    standalone = _STANDALONE_LABEL_RE.match(stripped_raw)
+    removable_keys = {spec.key for spec in unavailable_removable}
+    if standalone and standalone.group(1) in removable_keys:
+        return None
+
+    # 标签行的值被降级成空后，若整行只剩标点也视为无有效信息。
     stripped = _LIST_PREFIX_RE.sub("", rendered).strip()
     if not stripped or _PUNCT_ONLY_RE.match(stripped):
-        return None
-    if _DANGLING_LABEL_RE.search(stripped):
         return None
     return rendered
 
