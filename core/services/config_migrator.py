@@ -899,28 +899,38 @@ def _resolve_override_targets(
     session_service: Any,
     session_id: str,
     session_type: str = "",
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """把待关闭会话解析为运行时可查询的完整 UMO 列表。
+
+    Returns:
+        (可写入的 UMO 列表, 是否仍有已离线目标未覆盖)。
+        第二个返回值为 True 时调用方必须保留待处理项：还有会话没被关闭，
+        等平台恢复后要再写一次。
 
     运行时用 normalize_session_id(session_id) 查覆写，若直接拿裸 ID 当键，
     写进去的关闭覆写永远查不到，被关闭的会话会重新启用。
 
-    两点必须注意：
+    三点必须注意：
     1. 裸 ID 可能同时存在于私聊与群聊，必须限定在 session_type 对应的
        类型族内查找，否则会关错会话；
     2. 同一裸 ID 可能对应多个平台上的 UMO，必须全部返回并逐个关闭，
-       只处理第一个会让其余会话继续收到主动消息。
+       只处理第一个会让其余会话继续收到主动消息；
+    3. 已知会话所在平台离线时不能改写平台前缀：normalize_session_id 会把
+       离线的 A 改写成在线的 B，等于给错误的会话写覆写，且原目标仍未被关闭。
     """
     if not session_id or session_service is None:
-        return []
+        return [], False
 
     try:
-        if session_service.parse_session_id(session_id):
-            return [session_service.normalize_session_id(session_id)]
+        parsed = session_service.parse_session_id(session_id)
+        if parsed:
+            # 已是完整 UMO：原样使用，不做平台改写。
+            # 离线平台恢复后同一个 UMO 仍然有效，改写反而会关错会话。
+            return [str(session_id)], False
 
         finder = getattr(session_service, "find_known_umos_by_target", None)
         if not callable(finder):
-            return []
+            return [], False
 
         # 有类型信息时只在对应类型族内查找；旧数据没有类型时才两种都试。
         if session_type == "group":
@@ -931,19 +941,23 @@ def _resolve_override_targets(
             group_flags = (False, True)
 
         resolved: list[str] = []
+        has_unavailable = False
         for is_group in group_flags:
-            known, _ = finder(session_id, group=is_group)
+            known, unavailable = finder(session_id, group=is_group)
+            if unavailable:
+                # 该类型族还有离线会话没被覆盖，必须留待重试。
+                has_unavailable = True
             for umo in known or []:
-                normalized = session_service.normalize_session_id(umo)
-                if normalized and normalized not in resolved:
-                    resolved.append(normalized)
+                # 已知会话本身就是在线平台上的完整 UMO，直接使用不做改写。
+                if umo and umo not in resolved:
+                    resolved.append(umo)
             if resolved:
                 # 已在本类型族内找到，不再跨类型补找，避免关错会话。
                 break
-        return resolved
+        return resolved, has_unavailable
     except Exception as e:
         logger.debug(f"[主动消息] 解析会话 {session_id} 的覆写键失败喵: {e}")
-        return []
+        return [], False
 
 
 async def apply_pending_disabled_overrides(
@@ -981,7 +995,7 @@ async def apply_pending_disabled_overrides(
         if not session_id:
             continue
 
-        targets = _resolve_override_targets(
+        targets, has_unavailable = _resolve_override_targets(
             session_service, session_id, entry["session_type"]
         )
         if not targets:
@@ -1010,8 +1024,16 @@ async def apply_pending_disabled_overrides(
             except Exception as e:
                 logger.warning(f"[主动消息] 写入 {target} 的关闭覆写失败喵: {e}")
                 failed = True
-        if failed:
-            # 任一个 UMO 写入失败都保留该项，下次启动重试剩余目标。
+
+        # 仍有目标所在平台离线时也必须保留：那部分会话没被关闭，
+        # 一旦平台恢复就会重新命中合并后的会话列表并继续收到主动消息。
+        if has_unavailable:
+            logger.info(
+                f"[主动消息] 会话 {session_id} 和目标所在平台离线，"
+                "关闭覆写将在下次启动时继续补齐喵。"
+            )
+        if failed or has_unavailable:
+            # 任一个 UMO 未覆盖都保留该项，下次启动重试剩余目标。
             remaining.append(entry)
 
     if remaining:
