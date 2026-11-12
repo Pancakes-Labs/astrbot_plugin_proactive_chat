@@ -163,7 +163,13 @@ class ConfigAssemblyService:
 
         # 结构合并涉及跨分组取并集与冲突裁决，迁移前先备份原始配置，
         # 万一日志与判断有出入，用户仍能从快照里找回原始值。
-        self._backup_config_before_migration(config)
+        # 备份失败时不继续迁移：旧分组会被置空，失败等于永久丢数据。
+        if not self._backup_config_before_migration(config):
+            logger.error(
+                "[主动消息] 迁移前备份旧配置失败，已中止本次结构迁移以避免数据丢失喵。"
+                "请检查数据目录写入权限后重载插件喵。"
+            )
+            return
 
         # 顺序至关重要：迁移必须先于默认值补齐。
         # 若先补齐，模板列表会被填成空列表，迁移器据此判定"已迁移"，
@@ -179,8 +185,9 @@ class ConfigAssemblyService:
         migrated_sessions = await config_migrator.migrate_override_store(store)
         # 迁移期保留了“原本属于被关闭一侧”的会话清单，
         # 需在覆写存储可用后立刻实体化为关闭型覆写，保持旧行为等价。
+        # 传入会话服务才能把裸 ID 解析成运行时真正查询的完整 UMO。
         disabled_overrides = await config_migrator.apply_pending_disabled_overrides(
-            store, config
+            store, config, getattr(plugin, "session_service", None)
         )
         if disabled_overrides:
             logger.info(
@@ -214,14 +221,20 @@ class ConfigAssemblyService:
     CONFIG_SNAPSHOT_FILE = "user_config_snapshot.json"
     PROMPTS_COLLECTION_FILE = "prompts_collection.md"
 
-    def _backup_config_before_migration(self, config: dict[str, Any]) -> None:
-        """结构迁移前备份原始配置与提示词，仅在确有旧结构时执行一次。
+    def _backup_config_before_migration(self, config: dict[str, Any]) -> bool:
+        """结构迁移前备份原始配置与提示词。
+
+        Returns:
+            True 表示「可以继续迁移」：包括无需迁移（无旧结构）的情况。
+            只有在确实需要迁移、但备份写入失败时才返回 False。
 
         写两份文件：
         - user_config_snapshot.json：完整配置快照，用于精确回滚；
         - prompts_collection.md：提示词汇总，用于人眼快速核对。
 
-        已存在即跳过，避免把用户排障依据刷成迁移后的内容。
+        固定名文件若已存在则保留不动（不覆盖历史备份），但仍会为本次
+        源配置另存一份带时间戳的快照：文件存在不能证明当前配置已备份，
+        否则用户在上次迁移后新增的提示词不会进入任何备份。
         """
         from ..domain.config_keys import (
             LEGACY_FRIEND_SETTINGS_KEY,
@@ -233,36 +246,45 @@ class ConfigAssemblyService:
             for key in (LEGACY_FRIEND_SETTINGS_KEY, LEGACY_GROUP_SETTINGS_KEY)
         )
         if not has_legacy:
-            return
+            return True
 
         data_dir = getattr(self.plugin, "data_dir", None)
         if data_dir is None:
-            return
+            return True
 
         try:
             import json
+            from datetime import datetime
             from pathlib import Path
 
             root = Path(data_dir)
             root.mkdir(parents=True, exist_ok=True)
+            config_text = json.dumps(dict(config), ensure_ascii=False, indent=4)
+            prompts_text = self._build_prompts_collection(config)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
+            # 固定名保留首份备份，便于老用户按旧约定查找。
             snapshot_path = root / self.CONFIG_SNAPSHOT_FILE
             if not snapshot_path.exists():
-                snapshot_path.write_text(
-                    json.dumps(dict(config), ensure_ascii=False, indent=4),
-                    encoding="utf-8",
-                )
+                snapshot_path.write_text(config_text, encoding="utf-8")
 
             prompts_path = root / self.PROMPTS_COLLECTION_FILE
             if not prompts_path.exists():
-                prompts_path.write_text(
-                    self._build_prompts_collection(config),
-                    encoding="utf-8",
-                )
+                prompts_path.write_text(prompts_text, encoding="utf-8")
+
+            # 本次源配置的独立快照：每次都写，确保当前内容必有备份。
+            (root / f"user_config_snapshot.{stamp}.json").write_text(
+                config_text, encoding="utf-8"
+            )
+            (root / f"prompts_collection.{stamp}.md").write_text(
+                prompts_text, encoding="utf-8"
+            )
 
             logger.info(f"[主动消息] 已在迁移前备份配置快照与提示词汇总到 {root} 喵。")
+            return True
         except Exception as e:
             logger.warning(f"[主动消息] 备份旧配置失败喵: {e}")
+            return False
 
     @staticmethod
     def _build_prompts_collection(config: dict[str, Any]) -> str:
