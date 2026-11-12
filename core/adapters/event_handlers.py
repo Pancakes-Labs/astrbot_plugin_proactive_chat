@@ -13,7 +13,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from ..domain.config_keys import ENABLED_KEY
-from ..domain.session_key import contains_group_marker
+from ..domain.session_key import is_group_umo
 
 
 class EventHandlers:
@@ -334,7 +334,7 @@ class EventHandlers:
                         f"[主动消息] {self.plugin.session_service.get_session_log_str(normalized_session_id, session_config)} 的用户已回复， 未回复计数器已重置喵。"
                     )
 
-                if contains_group_marker(normalized_session_id):
+                if is_group_umo(normalized_session_id):
                     changed = (
                         self.plugin.scheduler_service.clear_session_schedule_state(
                             normalized_session_id
@@ -361,7 +361,7 @@ class EventHandlers:
             session_id
         )
 
-        if not contains_group_marker(normalized_session_id):
+        if not is_group_umo(normalized_session_id):
             return
 
         try:

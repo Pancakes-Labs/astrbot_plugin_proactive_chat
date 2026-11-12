@@ -66,7 +66,6 @@ from .request_context import ProactiveContext
 from .session_config import SessionConfig
 from .session_key import (
     SessionKey,
-    contains_group_marker,
     is_friend_type,
     is_group_type,
     is_group_umo,
@@ -132,7 +131,6 @@ __all__ = [
     "build_prompt_layers",
     "clean_chain_components",
     "clean_llm_text",
-    "contains_group_marker",
     "contains_placeholder",
     "contains_tool_markup",
     "extract_payload_text",
