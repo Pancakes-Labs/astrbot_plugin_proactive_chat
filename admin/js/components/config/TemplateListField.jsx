@@ -283,10 +283,10 @@ function TemplateListField({ schema, value, onChange, depth = 1, sessionType = '
         // 关键：可见项与全量项必须用同一套标识比较。
         // 这里先为 allItems 每个条目各取一次标识并缓存，后续匹配全部复用。
         const keyed = allItems.map((item) => ({ item, key: itemIdentity(item) }));
-        const visibleKeys = new Set(keyed.map(({ key }) => key));
+        // visibleKeys 只能包含本页可见的条目。
+        const visibleKeys = new Set(items.map((item) => itemIdentity(item)));
         // 本次仍存在的条目：用编辑后的新版覆盖。
         const pool = nextVisible.map((item) => ({ item, key: itemIdentity(item) }));
-        const keptKeys = new Set(pool.map(({ key }) => key));
 
         // 合并时保持原有顺序：按 allItems 顺序穿插，避免保存后模板顺序被打乱。
         const payload = [];
