@@ -31,7 +31,7 @@ from ..adapters.astrbot_event import (
 from ..adapters.astrbot_ltm import read_group_history_settings, supports_max_messages
 from ..adapters.astrbot_platform import find_platform_by_id
 from ..domain.delivery_report import DeliveryReport
-from ..domain.session_key import is_group_umo, normalize_storage_umo
+from ..domain.session_key import is_group_umo
 from ..domain.tool_markup_cleaner import clean_chain_components, clean_llm_text
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
@@ -306,9 +306,8 @@ class SenderService:
 
         platform_id, _message_type, target_id = parsed
         # 与 AstrBot 核心保持一致：核心以完整 UMO（str(session)）作为平台流水的 user_id。
-        # 消息类型段同时规范化为核心的存储形式，避免别名 UMO 写到另一个键空间。
         storage_user_id = (
-            normalize_storage_umo(session_id)
+            session_id
             if isinstance(session_id, str) and session_id.strip()
             else target_id
         )
@@ -318,8 +317,7 @@ class SenderService:
         if not history_mgr or message_chain_to_storage_message_parts is None:
             return
 
-        # 群聊判定基于规范化后的 UMO：配置里允许写 “platform:group:id” 这类别名，
-        # 直接拿原始类型段做大小写敏感匹配会漏判，从而绕过下面的开关与去重检查。
+        # 群聊判定基于完整 UMO 的类型段，避免漏判后绕过下面的开关与去重检查。
         is_group_session = is_group_umo(storage_user_id)
 
         # 群聊补写必须跟随核心开关：关闭时核心从不写入真实群友消息，

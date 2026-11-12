@@ -7,12 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..domain.session_key import (
-    SessionKey,
-    is_friend_type,
-    is_group_type,
-    normalize_storage_umo,
-)
+from ..domain.session_key import SessionKey, is_friend_type, is_group_type
 
 
 class SessionService:
@@ -119,9 +114,9 @@ class SessionService:
         return log_str
 
     def normalize_session_id(self, session_id: str) -> str:
-        """规范化 UMO 的消息类型段，不改写平台前缀。
+        """会话标识原样返回。
 
-        会话标识只来自完整 UMO，平台就是用户配置或事件上报的那个，
-        不做任何平台猜测替换，避免把会话改挂到别的平台实例上。
+        会话 UMO 由 AstrBot 核心或用户配置直接提供，格式已是标准形式，
+        这里不再做平台猜测或消息类型改写，避免会话被改挂到别的键上。
         """
-        return normalize_storage_umo(session_id)
+        return session_id if isinstance(session_id, str) else str(session_id)

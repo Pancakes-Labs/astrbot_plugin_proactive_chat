@@ -37,7 +37,7 @@ from ..domain.prompt_placeholders import (
     build_capabilities,
     resolve_placeholders,
 )
-from ..domain.session_key import is_group_umo, normalize_storage_umo
+from ..domain.session_key import is_group_umo
 
 # AstrBot 的共享偏好存储用于读取会话级特殊规则（自定义规则）。
 try:  # pragma: no cover - 取决于 AstrBot 版本
@@ -760,20 +760,15 @@ class ContextService:
         if limit <= 0:
             return [], 0
 
-        # 消息类型段先规范化为核心的存储形式，避免别名 UMO 查到独立键空间。
-        storage_session_id = normalize_storage_umo(session_id)
-
-        parsed = self.parse_umo_for_platform_history(storage_session_id)
+        parsed = self.parse_umo_for_platform_history(session_id)
         if not parsed:
             return [], 0
 
         platform_id, raw_user_key = parsed
 
         # 核心开关关闭时读不到任何群友消息，提前告警并放弃本次读取。
-        if is_group_umo(storage_session_id) and platform_id != "webchat":
-            enabled, _ = read_group_history_settings(
-                self.plugin.context, storage_session_id
-            )
+        if is_group_umo(session_id) and platform_id != "webchat":
+            enabled, _ = read_group_history_settings(self.plugin.context, session_id)
             if not enabled:
                 logger.warning(
                     "[主动消息] 平台流水中没有真实群友消息：AstrBot 核心的"
@@ -782,7 +777,7 @@ class ContextService:
                 return [], 0
 
         user_candidates = self.build_platform_history_user_candidates(
-            raw_user_key, raw_session_id=storage_session_id
+            raw_user_key, raw_session_id=session_id
         )
         if not user_candidates:
             return [], 0
