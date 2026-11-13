@@ -663,6 +663,38 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
         );
     }
 
+    // 服务提供商选择：对外仍是字符串，可视化编辑器只存在于 UI 层。
+    if (schema._special === 'select_provider') {
+        const ProviderSelectField = window.ProviderSelectField;
+        if (ProviderSelectField) {
+            return (
+                <ProviderSelectField
+                    schema={schema}
+                    fieldKey={fieldKey}
+                    value={localValue !== undefined ? localValue : (schema.default || '')}
+                    onChange={handleChange}
+                    depth={depth}
+                />
+            );
+        }
+    }
+
+    // 回退链：对外是 string[]，UI 提供上下移动与 provider 联动。
+    if (schema._special === 'select_providers') {
+        const ProviderChainField = window.ProviderChainField;
+        if (ProviderChainField) {
+            return (
+                <ProviderChainField
+                    schema={schema}
+                    fieldKey={fieldKey}
+                    value={localValue !== undefined ? localValue : (schema.default || [])}
+                    onChange={handleChange}
+                    depth={depth}
+                />
+            );
+        }
+    }
+
     // 免打扰时段改为可视化控件，内部仍输出后端可直接解析的 "开始-结束" 字符串。
     if (QUIET_HOURS_FIELDS.has(fieldKey) && (!schema.type || schema.type === 'string')) {
         return (
