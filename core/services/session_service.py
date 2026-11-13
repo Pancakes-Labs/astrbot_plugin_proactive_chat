@@ -7,10 +7,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from astrbot.api import logger
-from astrbot.core.platform.platform import PlatformStatus
-
-from ..adapters.astrbot_platform import iter_active_platform_instances
 from ..domain.session_key import SessionKey, is_friend_type, is_group_type
 
 
@@ -117,123 +113,10 @@ class SessionService:
             log_str += f" ({session_name})"
         return log_str
 
-    def active_platform_ids(self) -> set[str]:
-        """返回当前可用（运行中或待上线）的平台实例 ID 集合。"""
-        try:
-            instances = iter_active_platform_instances(
-                self.plugin.context.platform_manager
-            )
-        except Exception as e:
-            logger.debug(f"[主动消息] 读取平台实例失败喵: {e}")
-            return set()
-
-        usable = {PlatformStatus.RUNNING}
-        pending = getattr(PlatformStatus, "PENDING", None)
-        if pending is not None:
-            usable.add(pending)
-        return {
-            str(platform.meta().id)
-            for platform in instances
-            if platform.status in usable
-        }
-
-    def find_known_umos_by_target(
-        self, target_id: str, *, group: bool
-    ) -> tuple[list[str], bool]:
-        """按目标 ID 与类型族查找已知会话中的完整 UMO。
-
-        必须保留原有消息类型：配置侧按裸 ID 匹配，但状态、覆写与调度
-        都挂在原始 UMO 上，造一个同族新键会拿不到这些数据。
-
-        Returns:
-            (可用 UMO 列表, 是否存在平台不可用的匹配项)。
-            第二个返回值让调用方区分「没有已知会话」和「已知会话所在平台离线」，
-            后者绝不能再补全到其它平台，否则会发给别的平台上的同 ID 目标。
-        """
-        plugin = self.plugin
-        candidates: list[str] = []
-        candidates.extend(str(key) for key in plugin.session_data.keys())
-        manager = getattr(plugin, "session_override_manager", None)
-        list_sessions = getattr(manager, "list_sessions", None)
-        if callable(list_sessions):
-            try:
-                candidates.extend(str(key) for key in list_sessions())
-            except Exception as e:
-                logger.debug(f"[主动消息] 读取会话覆写列表失败喵: {e}")
-
-        # 空集合表示当前没有任何可用平台，此时不应放行任何历史会话。
-        active_ids = self.active_platform_ids()
-        matched: list[str] = []
-        has_unavailable = False
-        for candidate in candidates:
-            parsed = self.parse_session_id(candidate)
-            if not parsed:
-                continue
-            platform, msg_type, candidate_target = parsed
-            if str(candidate_target) != str(target_id):
-                continue
-            if is_group_type(msg_type) != group:
-                continue
-            if platform not in active_ids:
-                has_unavailable = True
-                continue
-            if candidate not in matched:
-                matched.append(candidate)
-
-        return matched, has_unavailable
-
-    def resolve_full_umo(
-        self, target_id: str, msg_type: str, preferred_platform: str | None = None
-    ) -> str:
-        """动态解析并验证存活的 UMO。"""
-        plugin = self.plugin
-        type_keyword = "Friend" if is_friend_type(msg_type) else "Group"
-
-        active_insts = {
-            p.meta().id: p
-            for p in iter_active_platform_instances(plugin.context.platform_manager)
-        }
-
-        if (
-            preferred_platform
-            and preferred_platform in active_insts
-            and active_insts[preferred_platform].status == PlatformStatus.RUNNING
-        ):
-            return f"{preferred_platform}:{msg_type}:{target_id}"
-
-        if (
-            preferred_platform
-            and preferred_platform in active_insts
-            and active_insts[preferred_platform].status == PlatformStatus.PENDING
-        ):
-            return f"{preferred_platform}:{msg_type}:{target_id}"
-
-        for existing_id in plugin.session_data.keys():
-            if type_keyword in existing_id and existing_id.endswith(f":{target_id}"):
-                p_id = existing_id.split(":")[0]
-                if (
-                    p_id in active_insts
-                    and active_insts[p_id].status == PlatformStatus.RUNNING
-                ):
-                    return existing_id
-
-        running_platforms = [
-            p for p in active_insts.values() if p.status == PlatformStatus.RUNNING
-        ]
-        if running_platforms:
-            return f"{running_platforms[0].meta().id}:{msg_type}:{target_id}"
-
-        if preferred_platform:
-            return f"{preferred_platform}:{msg_type}:{target_id}"
-
-        fallback_p_id = list(active_insts.keys())[0] if active_insts else "default"
-        return f"{fallback_p_id}:{msg_type}:{target_id}"
-
     def normalize_session_id(self, session_id: str) -> str:
-        """规范化 UMO，确保使用可运行的平台前缀。"""
-        parsed = self.parse_session_id(session_id)
-        if not parsed:
-            return session_id
+        """会话标识原样返回。
 
-        platform, msg_type, target_id = parsed
-        return self.resolve_full_umo(target_id, msg_type, platform)
+        会话 UMO 由 AstrBot 核心或用户配置直接提供，格式已是标准形式，
+        这里不再做平台猜测或消息类型改写，避免会话被改挂到别的键上。
+        """
+        return session_id if isinstance(session_id, str) else str(session_id)

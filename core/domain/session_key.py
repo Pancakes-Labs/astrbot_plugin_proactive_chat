@@ -8,57 +8,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# 标准消息类型锚点。顺序与旧实现保持一致，避免同名平台/目标干扰匹配结果。
+# AstrBot 核心 MessageType 的全部取值，见 astrbot.core.platform.message_type。
+# 除此之外的类型段都不存在，不要凭想象扩表。
 KNOWN_MESSAGE_TYPES: tuple[str, ...] = (
-    "FriendMessage",
     "GroupMessage",
-    "PrivateMessage",
-    "GuildMessage",
-)
-
-# 会话类型段判定集合（用于按“消息类型段”精确判定，避免平台名干扰）。
-_GROUP_TYPE_TOKENS = frozenset({"groupmessage", "guildmessage", "group", "guild"})
-_PRIVATE_TYPE_TOKENS = frozenset(
-    {"friendmessage", "privatemessage", "friend", "private"}
+    "FriendMessage",
+    "OtherMessage",
 )
 
 
 def is_group_umo(umo: str) -> bool:
     """判断 UMO 是否指向群聊会话。
 
-    与旧版 ``proactive_event.is_group_session`` 行为完全一致：
-    优先取“消息类型段”，仅在缺少类型段时退化为整串匹配。
+    只看第二段消息类型，与 AstrBot 的 UMO 格式严格对齐。
     """
-    text = (umo or "").strip()
-    if not text:
+    parts = (umo or "").split(":")
+    if len(parts) < 2:
         return False
-
-    # segments[0] 是平台标识段，跳过后只看后续类型段。
-    for segment in text.split(":")[1:]:
-        lowered = segment.lower()
-        if lowered in _GROUP_TYPE_TOKENS:
-            return True
-        if lowered in _PRIVATE_TYPE_TOKENS:
-            return False
-
-    # 缺少类型段的非标准 UMO：退化为整串匹配以保持向后兼容。
-    lowered = text.lower()
-    return "group" in lowered or "guild" in lowered
+    return parts[1] == "GroupMessage"
 
 
 def is_friend_type(message_type: str) -> bool:
     """判断消息类型段是否属于私聊。"""
-    return "Friend" in message_type or "Private" in message_type
+    return message_type == "FriendMessage"
 
 
 def is_group_type(message_type: str) -> bool:
     """判断消息类型段是否属于群聊。"""
-    return "Group" in message_type or "Guild" in message_type
-
-
-def contains_group_marker(umo: str) -> bool:
-    """粗粒度群聊判定：UMO 整串是否含 group。"""
-    return "group" in (umo or "").lower()
+    return message_type == "GroupMessage"
 
 
 @dataclass(frozen=True)
@@ -76,26 +53,21 @@ class SessionKey:
     def parse(cls, umo: str) -> SessionKey | None:
         """解析 UMO 为 SessionKey，解析失败返回 None。
 
-        与旧版 _parse_session_id 行为完全一致：
-        先按标准类型锚点匹配，再兼容三段式与多段式 UMO。
+        UMO 固定为 platform:message_type:target_id。平台段可能自带冒号，
+        因此按真实类型锚点定位切分点，不靠冒号数量猜测。
         """
         if not isinstance(umo, str):
             return None
 
-        # 先走锚点匹配，避免 platform/target 中包含冒号导致误切分。
         for msg_type in KNOWN_MESSAGE_TYPES:
             marker = f":{msg_type}:"
             idx = umo.find(marker)
             if idx != -1:
                 platform = umo[:idx]
                 after_type = umo[idx + len(marker) :]
-                return cls(platform, msg_type, after_type)
+                if platform and after_type:
+                    return cls(platform, msg_type, after_type)
 
-        parts = umo.split(":")
-        if len(parts) == 3:
-            return cls(parts[0], parts[1], parts[2])
-        if len(parts) > 3:
-            return cls(":".join(parts[:-2]), parts[-2], parts[-1])
         return None
 
     # ------------------------------------------------------------------
@@ -116,32 +88,3 @@ class SessionKey:
     # ------------------------------------------------------------------
     def __str__(self) -> str:
         return f"{self.platform}:{self.message_type}:{self.target_id}"
-
-
-def normalize_storage_umo(umo: str) -> str:
-    """把 UMO 的消息类型段规范化为 AstrBot 核心使用的存储形式。
-
-    核心以 str(MessageSession) 落库，类型段固定为标准枚举值。配置里允许写
-    “platform:group:id”这类别名，直接用来查询只会命中一个独立的键空间，
-    导致读不到核心写入的群聊记录。已是标准形式时逐字符原样返回。
-    """
-    if not isinstance(umo, str):
-        return umo
-
-    text = umo.strip()
-    if not text:
-        return text
-
-    key = SessionKey.parse(text)
-    if key is None or key.message_type in KNOWN_MESSAGE_TYPES:
-        return text
-
-    lowered = key.message_type.lower()
-    if "group" in lowered or "guild" in lowered:
-        message_type = "GroupMessage"
-    elif "friend" in lowered or "private" in lowered:
-        message_type = "FriendMessage"
-    else:
-        return text
-
-    return f"{key.platform}:{message_type}:{key.target_id}"

@@ -45,6 +45,22 @@ class ConfigService:
                     logger.warning(
                         "[主动消息] 主动消息已启用但未配置任何会话喵（session_list 为空）。"
                     )
+                else:
+                    # 裸 ID 自 v1.2 起不再支持，启动阶段一次性提示，
+                    # 避免用户在毫不知情的情况下发现某个会话"凭空消失"。
+                    bare_ids = [
+                        item
+                        for item in session_list
+                        if isinstance(item, str)
+                        and item
+                        and self.plugin.session_service.parse_session_id(item) is None
+                    ]
+                    if bare_ids:
+                        logger.warning(
+                            "[主动消息] 会话列表中存在裸会话 ID，已不再支持并会被跳过喵: "
+                            f"{', '.join(bare_ids)}。"
+                            "请改用完整会话 UMO（例如 default:FriendMessage:123456789）。"
+                        )
 
                 schedule = defaults.get(ck.SCHEDULE_SETTINGS_KEY, {})
                 if isinstance(schedule, dict):
@@ -85,7 +101,7 @@ class ConfigService:
         if not parsed:
             return None
 
-        _, message_type, target_id = parsed
+        _, message_type, _ = parsed
         if is_friend_type(message_type):
             session_type = SESSION_TYPE_FRIEND
         elif is_group_type(message_type):
@@ -93,12 +109,11 @@ class ConfigService:
         else:
             return None
 
-        return self._get_typed_session_config(session_id, target_id, session_type)
+        return self._get_typed_session_config(session_id, session_type)
 
     def _get_typed_session_config(
         self,
         session_id: str,
-        target_id: str,
         session_type: str,
     ) -> dict | None:
         """按会话类型组装基础配置。"""
@@ -114,16 +129,8 @@ class ConfigService:
         if not isinstance(session_list, list):
             session_list = []
 
-        normalized_session_id = self.plugin.session_service.normalize_session_id(
-            session_id
-        )
-        candidates = {session_id, normalized_session_id, target_id}
-
-        if not any(candidate in session_list for candidate in candidates):
-            return None
-
-        # 迁移期的「原本被关闭」清单必须参与准入拦截，不能只依赖关闭覆写。
-        if self._is_pending_disabled(candidates, session_type):
+        # 会话 UMO 已由核心与配置统一为标准形式，直接精确比对即可。
+        if session_id not in session_list:
             return None
 
         config_copy = copy.deepcopy(defaults)
@@ -152,35 +159,6 @@ class ConfigService:
         config_copy["_from_session_list"] = True
 
         return config_copy
-
-    def _is_pending_disabled(self, candidates: set[str], session_type: str) -> bool:
-        """判断该会话是否仍在迁移期的「等待单独关闭」清单里。
-
-        迁移只登记裸 ID，解析成功并写入关闭覆写后才会从清单移除。
-        """
-        config = self.plugin.config
-        if not isinstance(config, dict):
-            return False
-        pending = config.get("_pending_disabled_overrides")
-        if not isinstance(pending, list) or not pending:
-            return False
-
-        for raw_entry in pending:
-            if isinstance(raw_entry, str):
-                entry_session, entry_type = raw_entry, ""
-            elif isinstance(raw_entry, dict):
-                entry_session = str(raw_entry.get("session") or "")
-                entry_type = str(raw_entry.get("session_type") or "")
-            else:
-                continue
-            if not entry_session:
-                continue
-            # 已记录类型时必须类型一致，避免群聊条目误伤同 ID 的私聊会话。
-            if entry_type and session_type and entry_type != session_type:
-                continue
-            if entry_session in candidates:
-                return True
-        return False
 
     def _apply_type_fallback(
         self,
@@ -232,17 +210,6 @@ class ConfigService:
             effective["_has_override"] = bool(override)
 
         return effective
-
-    # ------------------------------------------------------------------
-    # 兼容访问器
-    # ------------------------------------------------------------------
-    def get_friend_session_config(self, session_id: str, target_id: str) -> dict | None:
-        return self._get_typed_session_config(
-            session_id, target_id, SESSION_TYPE_FRIEND
-        )
-
-    def get_group_session_config(self, session_id: str, target_id: str) -> dict | None:
-        return self._get_typed_session_config(session_id, target_id, SESSION_TYPE_GROUP)
 
 
 __all__ = ["ConfigService", "SESSION_TYPE_FRIEND", "SESSION_TYPE_GROUP"]

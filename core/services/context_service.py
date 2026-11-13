@@ -37,7 +37,7 @@ from ..domain.prompt_placeholders import (
     build_capabilities,
     resolve_placeholders,
 )
-from ..domain.session_key import is_group_umo, normalize_storage_umo
+from ..domain.session_key import is_group_umo
 
 # AstrBot 的共享偏好存储用于读取会话级特殊规则（自定义规则）。
 try:  # pragma: no cover - 取决于 AstrBot 版本
@@ -717,8 +717,8 @@ class ContextService:
         """构建平台流水 user_id 候选键（兼容 webchat 等格式）。
 
         AstrBot 核心写入平台流水时使用完整 UMO（str(session)）作为 user_id，
-        因此必须优先用完整 UMO 查询，再回退裸会话 ID；否则只能查到插件自行
-        补写到裸会话 ID 键下的主动消息，看不到真实的群聊记录。
+        而插件历史上按目标 ID 补写过记录，因此需同时尝试两种键，
+        否则只能看到其中一侧，读不到完整的聊天流水。
 
         webchat 场景下 user_key 可能形如 “xxx!yyy”，需同时尝试后半段。
         """
@@ -753,27 +753,22 @@ class ContextService:
     ) -> tuple[list[Any], int]:
         """读取平台聊天流水记录。
 
-        逐个候选键读取并按记录 ID 去重合并，而非命中即返回：升级前补写到
-        裸会话 ID 键下的主动消息仍会被纳入上下文，不会因切换键空间而丢失。
+        逐个候选键读取并按记录 ID 去重合并，而非命中即返回：历史按目标 ID
+        写入主动消息仍会被纳入上下文，不会因键空间差异而丢失。
         全部候选均无记录时返回空列表。
         """
         if limit <= 0:
             return [], 0
 
-        # 消息类型段先规范化为核心的存储形式，避免别名 UMO 查到独立键空间。
-        storage_session_id = normalize_storage_umo(session_id)
-
-        parsed = self.parse_umo_for_platform_history(storage_session_id)
+        parsed = self.parse_umo_for_platform_history(session_id)
         if not parsed:
             return [], 0
 
         platform_id, raw_user_key = parsed
 
         # 核心开关关闭时读不到任何群友消息，提前告警并放弃本次读取。
-        if is_group_umo(storage_session_id) and platform_id != "webchat":
-            enabled, _ = read_group_history_settings(
-                self.plugin.context, storage_session_id
-            )
+        if is_group_umo(session_id) and platform_id != "webchat":
+            enabled, _ = read_group_history_settings(self.plugin.context, session_id)
             if not enabled:
                 logger.warning(
                     "[主动消息] 平台流水中没有真实群友消息：AstrBot 核心的"
@@ -782,7 +777,7 @@ class ContextService:
                 return [], 0
 
         user_candidates = self.build_platform_history_user_candidates(
-            raw_user_key, raw_session_id=storage_session_id
+            raw_user_key, raw_session_id=session_id
         )
         if not user_candidates:
             return [], 0

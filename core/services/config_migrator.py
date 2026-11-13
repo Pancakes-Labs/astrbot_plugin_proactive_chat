@@ -31,6 +31,7 @@ from ..domain.prompt_templates import (
     legacy_role_kind,
     normalize_template,
 )
+from ..domain.session_key import SessionKey
 
 # 旧版默认提示词全文：用于判断存量配置是否只是历史默认值。
 # 只有逐字相同才替换为新默认，用户改过任何一个字都原样保留。
@@ -524,32 +525,24 @@ def _migrate_enable_flags(
     friend: dict[str, Any],
     group: dict[str, Any],
     targets: dict[str, Any],
-) -> list[dict[str, str]]:
-    """合并两个总开关，返回“原本被单独关闭”的会话条目。
+) -> list[str]:
+    """合并两个总开关，返回“原本被单独关闭”的会话 UMO 列表。
 
     旧版允许 私聊开 / 群聊关。合并成单一开关后，为了保持行为等价，
     原本关闭那一类里的会话会以会话覆写形式单独关闭。
-
-    每条记录同时保存会话类型：裸 ID 在私聊与群聊里可能同时存在，
-    丢掉类型会让解析阶段关错会话。格式为 {"session", "session_type"}。
+    清单只保留完整 UMO：裸 ID 自 v1.2 起不再支持，交由调用方过滤。
     """
     friend_enabled = bool(_get(friend, "enable"))
     group_enabled = bool(_get(group, "enable"))
 
     targets[ck.ENABLED_KEY] = friend_enabled or group_enabled
 
-    disabled_sessions: list[dict[str, str]] = []
+    disabled_sessions: list[str] = []
     if friend_enabled and not group_enabled:
-        disabled_sessions.extend(
-            {"session": item, "session_type": "group"}
-            for item in _dedupe_list(_get(group, ck.SESSION_LIST_KEY))
-        )
+        disabled_sessions.extend(_dedupe_list(_get(group, ck.SESSION_LIST_KEY)))
     elif group_enabled and not friend_enabled:
-        disabled_sessions.extend(
-            {"session": item, "session_type": "friend"}
-            for item in _dedupe_list(_get(friend, ck.SESSION_LIST_KEY))
-        )
-    return disabled_sessions
+        disabled_sessions.extend(_dedupe_list(_get(friend, ck.SESSION_LIST_KEY)))
+    return [str(item) for item in disabled_sessions if item]
 
 
 def _is_legacy_present(friend: Any, group: Any) -> bool:
@@ -722,35 +715,33 @@ def migrate_config(config: Any) -> bool:
     return True
 
 
-def _record_disabled_overrides(
-    config: dict[str, Any], entries: list[dict[str, str]]
-) -> None:
+def _record_disabled_overrides(config: dict[str, Any], entries: list[str]) -> None:
     """把“原本关闭那一类”的会话记入待写覆写清单。
 
     迁移器不直接操作 OverrideStore（异步、且可能尚未初始化），
     而是把清单挂在配置的临时键上，由装配服务在迁移后取走并消费。
 
-    每条记录保留原会话类型：裸 ID 在私聊与群聊里可能同时存在，
-    丢掉类型会让解析阶段关错会话或漏关。
+    清单只登记完整 UMO：裸 ID 无法确定对应会话，直接跳过并告警。
     """
     existing = config.get("_pending_disabled_overrides")
     pending = list(existing) if isinstance(existing, list) else []
+    skipped: list[str] = []
     for entry in entries:
-        if isinstance(entry, str):
-            # 兼容上一版本遗留的纯字符串记录。
-            normalized: dict[str, str] = {"session": entry, "session_type": ""}
-        elif isinstance(entry, dict):
-            normalized = {
-                "session": str(entry.get("session") or ""),
-                "session_type": str(entry.get("session_type") or ""),
-            }
-        else:
+        text = str(entry or "").strip()
+        if not text:
             continue
-        if not normalized["session"]:
+        if SessionKey.parse(text) is None:
+            skipped.append(text)
             continue
-        if normalized not in pending:
-            pending.append(normalized)
+        if text not in pending:
+            pending.append(text)
     config["_pending_disabled_overrides"] = pending
+    if skipped:
+        logger.warning(
+            "[主动消息] 以下会话原本属于被关闭的一侧，但不是完整 UMO，"
+            f"已跳过独立关闭登记喵: {', '.join(skipped)}。"
+            "请改用完整会话 UMO 后重新关闭对应会话喵。"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -895,153 +886,53 @@ async def migrate_override_store(store: Any) -> int:
     return changed_sessions
 
 
-def _resolve_override_targets(
-    session_service: Any,
-    session_id: str,
-    session_type: str = "",
-) -> tuple[list[str], bool]:
-    """把待关闭会话解析为运行时可查询的完整 UMO 列表。
-
-    Returns:
-        (可写入的 UMO 列表, 是否仍有已离线目标未覆盖)。
-        第二个返回值为 True 时调用方必须保留待处理项：还有会话没被关闭，
-        等平台恢复后要再写一次。
-
-    运行时用 normalize_session_id(session_id) 查覆写，若直接拿裸 ID 当键，
-    写进去的关闭覆写永远查不到，被关闭的会话会重新启用。
-
-    三点必须注意：
-    1. 裸 ID 可能同时存在于私聊与群聊，必须限定在 session_type 对应的
-       类型族内查找，否则会关错会话；
-    2. 同一裸 ID 可能对应多个平台上的 UMO，必须全部返回并逐个关闭，
-       只处理第一个会让其余会话继续收到主动消息；
-    3. 已知会话所在平台离线时不能改写平台前缀：normalize_session_id 会把
-       离线的 A 改写成在线的 B，等于给错误的会话写覆写，且原目标仍未被关闭。
-    """
-    if not session_id or session_service is None:
-        return [], False
-
-    try:
-        parsed = session_service.parse_session_id(session_id)
-        if parsed:
-            # 已是完整 UMO：原样使用，不做平台改写。
-            # 离线平台恢复后同一个 UMO 仍然有效，改写反而会关错会话。
-            return [str(session_id)], False
-
-        finder = getattr(session_service, "find_known_umos_by_target", None)
-        if not callable(finder):
-            return [], False
-
-        # 有类型信息时只在对应类型族内查找；旧数据没有类型时才两种都试。
-        if session_type == "group":
-            group_flags = (True,)
-        elif session_type == "friend":
-            group_flags = (False,)
-        else:
-            group_flags = (False, True)
-
-        resolved: list[str] = []
-        has_unavailable = False
-        for is_group in group_flags:
-            known, unavailable = finder(session_id, group=is_group)
-            if unavailable:
-                # 该类型族还有离线会话没被覆盖，必须留待重试。
-                has_unavailable = True
-            for umo in known or []:
-                # 已知会话本身就是在线平台上的完整 UMO，直接使用不做改写。
-                if umo and umo not in resolved:
-                    resolved.append(umo)
-            if resolved:
-                # 已在本类型族内找到，不再跨类型补找，避免关错会话。
-                break
-        return resolved, has_unavailable
-    except Exception as e:
-        logger.debug(f"[主动消息] 解析会话 {session_id} 的覆写键失败喵: {e}")
-        return [], False
-
-
-async def apply_pending_disabled_overrides(
-    store: Any,
-    config: Any,
-    session_service: Any = None,
-) -> int:
+async def apply_pending_disabled_overrides(store: Any, config: Any) -> tuple[int, bool]:
     """消费迁移器留下的“原本被关闭”会话清单，写入关闭型覆写。
 
+    清单里的条目都是完整 UMO，直接写关闭覆写即可。
     只有全部写入成功才移除清单：某个会话落盘失败时保留待处理项，
     否则下次启动既没有旧分组、也没有重试清单，被关闭的会话会重新启用。
+
+    Returns:
+        (本次新写入的覆写数, 清单是否发生变化)。
+        第二个值必须回报给调用方：清单被清空但写入数为 0 时，
+        配置仍需落盘，否则磁盘残留旧清单会在下次启动重复关闭会话。
     """
     if store is None or not isinstance(config, dict):
-        return 0
+        return 0, False
 
     pending = config.get("_pending_disabled_overrides")
     if not isinstance(pending, list) or not pending:
+        had_key = "_pending_disabled_overrides" in config
         config.pop("_pending_disabled_overrides", None)
-        return 0
+        return 0, had_key
 
     applied = 0
-    remaining: list[Any] = []
+    remaining: list[str] = []
     for raw_entry in pending:
-        # 兼容上一版本遗留的纯字符串记录。
-        if isinstance(raw_entry, str):
-            entry: dict[str, str] = {"session": raw_entry, "session_type": ""}
-        elif isinstance(raw_entry, dict):
-            entry = {
-                "session": str(raw_entry.get("session") or ""),
-                "session_type": str(raw_entry.get("session_type") or ""),
-            }
-        else:
+        target = str(raw_entry or "").strip()
+        if not target:
             continue
-        session_id = entry["session"]
-        if not session_id:
-            continue
+        try:
+            current = store.get_override(target)
+            if not isinstance(current, dict):
+                current = {}
+            already_disabled = current.get(ck.ENABLED_KEY) is False
+            current[ck.ENABLED_KEY] = False
+            if not await store.set_override(target, current):
+                remaining.append(target)
+            elif not already_disabled:
+                applied += 1
+        except Exception as e:
+            logger.warning(f"[主动消息] 写入 {target} 的关闭覆写失败喵: {e}")
+            remaining.append(target)
 
-        targets, has_unavailable = _resolve_override_targets(
-            session_service, session_id, entry["session_type"]
-        )
-        if not targets:
-            # 解析不出来的裸 ID 不能直接丢弃，留到下次启动再试。
-            logger.warning(
-                f"[主动消息] 无法确定会话「{session_id}」的完整 UMO，"
-                "关闭覆写将留待下次启动重试。"
-            )
-            remaining.append(entry)
-            continue
-
-        # 同一裸 ID 可能对应多个平台上的 UMO，必须逐个写入。
-        failed = False
-        for target in targets:
-            try:
-                current = store.get_override(target)
-                if not isinstance(current, dict):
-                    current = {}
-                already_disabled = current.get(ck.ENABLED_KEY) is False
-                current[ck.ENABLED_KEY] = False
-                # 内存里已是关闭状态也必须再写一次。
-                if await store.set_override(target, current):
-                    if not already_disabled:
-                        applied += 1
-                else:
-                    failed = True
-            except Exception as e:
-                logger.warning(f"[主动消息] 写入 {target} 的关闭覆写失败喵: {e}")
-                failed = True
-
-        # 仍有目标所在平台离线时也必须保留：那部分会话没被关闭，
-        # 一旦平台恢复就会重新命中合并后的会话列表并继续收到主动消息。
-        if has_unavailable:
-            logger.info(
-                f"[主动消息] 会话 {session_id} 和目标所在平台离线，"
-                "关闭覆写将在下次启动时继续补齐喵。"
-            )
-        if failed or has_unavailable:
-            # 任一个 UMO 未覆盖都保留该项，下次启动重试剩余目标。
-            remaining.append(entry)
-
+    changed = remaining != pending
     if remaining:
         config["_pending_disabled_overrides"] = remaining
     else:
         config.pop("_pending_disabled_overrides", None)
-    return applied
+    return applied, changed
 
 
 __all__ = [

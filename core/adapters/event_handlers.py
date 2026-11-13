@@ -13,7 +13,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from ..domain.config_keys import ENABLED_KEY
-from ..domain.session_key import contains_group_marker
+from ..domain.session_key import is_group_umo
 
 
 class EventHandlers:
@@ -42,23 +42,6 @@ class EventHandlers:
             await web._broadcast_update(reason)
         except Exception as e:
             logger.debug(f"[主动消息] 广播 {reason} 状态失败喵: {e}")
-
-    # ------------------------------------------------------------------
-    # 内部辅助：会话键迁移（集中收敛原重复 4 次的逻辑）
-    # ------------------------------------------------------------------
-    def _migrate_raw_key(self, session_id: str, normalized_session_id: str) -> bool:
-        """把 raw 键的载荷并入规范键，返回是否有变更。"""
-        if (
-            normalized_session_id == session_id
-            or session_id not in self.plugin.session_data
-        ):
-            return False
-        existing_payload = self.plugin.session_data.get(session_id, {})
-        self.plugin.session_data.setdefault(normalized_session_id, {}).update(
-            existing_payload
-        )
-        del self.plugin.session_data[session_id]
-        return True
 
     # ------------------------------------------------------------------
     # 内部辅助：用户消息时间记录
@@ -107,9 +90,6 @@ class EventHandlers:
         self._mark_memory_message_time(normalized_session_id, current_time)
 
         async with self.plugin.data_lock:
-            # 先迁移旧键，再写入 self_id，避免历史值覆盖当前值。
-            self._migrate_raw_key(session_id, normalized_session_id)
-
             if event.get_self_id():
                 self.plugin.session_data.setdefault(normalized_session_id, {})[
                     "self_id"
@@ -198,9 +178,6 @@ class EventHandlers:
         normalized_session_id = self.plugin.session_service.normalize_session_id(
             session_id
         )
-
-        async with self.plugin.data_lock:
-            self._migrate_raw_key(session_id, normalized_session_id)
 
         sender_id = None
         try:
@@ -357,7 +334,7 @@ class EventHandlers:
                         f"[主动消息] {self.plugin.session_service.get_session_log_str(normalized_session_id, session_config)} 的用户已回复， 未回复计数器已重置喵。"
                     )
 
-                if contains_group_marker(normalized_session_id):
+                if is_group_umo(normalized_session_id):
                     changed = (
                         self.plugin.scheduler_service.clear_session_schedule_state(
                             normalized_session_id
@@ -384,7 +361,7 @@ class EventHandlers:
             session_id
         )
 
-        if not contains_group_marker(normalized_session_id):
+        if not is_group_umo(normalized_session_id):
             return
 
         try:
@@ -402,16 +379,9 @@ class EventHandlers:
         self.plugin.scheduler_service.purge_related_jobs(normalized_session_id)
 
         async with self.plugin.data_lock:
-            changed = False
-            if self._migrate_raw_key(session_id, normalized_session_id):
-                changed = True
-
             if self.plugin.scheduler_service.clear_session_schedule_state(
                 normalized_session_id
             ):
-                changed = True
-
-            if changed:
                 await self.plugin.storage_service.save_data()
 
         current_time = time.time()
