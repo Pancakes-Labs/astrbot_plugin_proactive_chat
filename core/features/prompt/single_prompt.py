@@ -13,6 +13,7 @@ from astrbot.api import logger
 from ...domain.config_keys import SESSION_DEFAULTS_KEY
 from ...domain.domain_enums import HookPoint, StageResult
 from ...domain.llm_outcome import LlmOutcome
+from ...domain.model_scene import ModelScene
 from ...domain.prompt_block import PromptBlock
 from ...domain.prompt_templates import PROMPT_SETTINGS_KEY, TEMPLATES_KEY
 from ...domain.tool_markup_cleaner import (
@@ -44,6 +45,9 @@ class DeliberateStage(BaseStage):
         prepared_prompt = ctx.prompts.merge_text() if ctx.prompts.blocks else None
         extra_parts = ctx.prompts.extra_parts if prompt_assembled else None
 
+        # trace 由调用链就地回填实际使用的 Provider / 模型 / 回退位置，
+        # 避免像旧实现那样在事后二次查询会话 Provider 导致数据失真。
+        trace: dict = {}
         (
             llm_response,
             final_user_prompt,
@@ -58,6 +62,8 @@ class DeliberateStage(BaseStage):
             platform_context=ctx.platform_context,
             prepared_prompt=prepared_prompt,
             extra_parts=extra_parts,
+            scene=ModelScene.PROACTIVE,
+            trace=trace,
         )
         if not llm_response:
             # LLM 调用失败或无返回：中止并重调度。
@@ -88,7 +94,10 @@ class DeliberateStage(BaseStage):
             response=llm_response,
             chain=result_chain,
             final_user_prompt=final_user_prompt,
-            provider_id=await self._resolve_provider_id(session_id),
+            provider_id=str(trace.get("provider_id") or ""),
+            model=str(trace.get("model") or ""),
+            fallback_index=int(trace.get("fallback_index") or 0),
+            failures=list(trace.get("failures") or []),
         )
         # PROMPT 阶段登记的正文即本轮实际提示词，此处不再重复登记；
         # 仅在该阶段缺失时补记一条，保证 RECORD 仍能存档送出的内容。
@@ -101,15 +110,6 @@ class DeliberateStage(BaseStage):
                 )
             )
         return StageResult.CONTINUE
-
-    async def _resolve_provider_id(self, session_id: str) -> str:
-        """尽力获取本轮 Provider 标识（仅用于遥测与调试）。"""
-        plugin = self.orchestrator.plugin
-        try:
-            provider_id = await plugin.context.get_current_chat_provider_id(session_id)
-        except Exception:
-            return ""
-        return str(provider_id or "")
 
 
 class SinglePromptFeature:
