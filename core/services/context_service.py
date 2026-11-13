@@ -410,20 +410,24 @@ class ContextService:
             return ""
         return self.normalize_persona_id(default_persona["name"])
 
-    async def find_persona_prompt(self, persona_id: str) -> tuple[str, str]:
-        """按人格 ID 查找实际提示词，返回 (人格名, 系统提示词)。
+    async def find_persona_detail(self, persona_id: str) -> dict[str, Any]:
+        """按人格 ID 查找完整人格信息。
 
-        依次尝试 v3 内存缓存、数据库 Persona 记录，最后回落到旧版接口，
+        返回 {name, prompt, begin_dialogs}。begin_dialogs 是人格卡自带的
+        示例对话，AstrBot 原生会把它前置进 contexts 参与语气染色。
+
+        依次尝试 v3 内存缓存、数据库 Persona 记录，最后回落到内置提示词，
         兼容不同 AstrBot 版本的人格存储形态。
         """
+        empty = {"name": "", "prompt": "", "begin_dialogs": []}
         if not persona_id:
-            return "", ""
+            return empty
 
         persona_manager = getattr(
             getattr(self.plugin, "context", None), "persona_manager", None
         )
         if persona_manager is None:
-            return "", ""
+            return empty
 
         # v3 内存缓存优先：plugins 与 Web 面板看到的是同一份数据。
         try:
@@ -431,7 +435,14 @@ class ContextService:
                 if persona.get("name") == persona_id:
                     prompt = persona.get("prompt") or ""
                     if prompt:
-                        return persona_id, prompt
+                        return {
+                            "name": persona_id,
+                            "prompt": prompt,
+                            "begin_dialogs": self._normalize_begin_dialogs(
+                                persona.get("_begin_dialogs_processed")
+                                or persona.get("begin_dialogs")
+                            ),
+                        }
                     break
         except Exception:
             pass
@@ -445,7 +456,14 @@ class ContextService:
             if persona:
                 prompt = persona.get("prompt") or ""
                 if prompt:
-                    return str(persona.get("name") or persona_id), prompt
+                    return {
+                        "name": str(persona.get("name") or persona_id),
+                        "prompt": prompt,
+                        "begin_dialogs": self._normalize_begin_dialogs(
+                            persona.get("_begin_dialogs_processed")
+                            or persona.get("begin_dialogs")
+                        ),
+                    }
 
         # 再尝试数据库记录（旧版 / 未进入 v3 缓存的场景）。
         getter = getattr(persona_manager, "get_persona", None)
@@ -457,17 +475,60 @@ class ContextService:
             if persona:
                 prompt = getattr(persona, "system_prompt", "") or ""
                 if prompt:
-                    return (
-                        str(getattr(persona, "persona_id", "") or persona_id),
-                        prompt,
-                    )
+                    return {
+                        "name": str(getattr(persona, "persona_id", "") or persona_id),
+                        "prompt": prompt,
+                        # 数据库存的 begin_dialogs 是交替成对的裸文本，
+                        # 由核心 normalize 成 messages 形态，这里同样处理。
+                        "begin_dialogs": self._normalize_begin_dialogs(
+                            getattr(persona, "begin_dialogs", None)
+                        ),
+                    }
 
         # default 人格允许在 AstrBot 中被改写，因此必须等上面的查询全部落空后
         # 才回落到内置提示词，否则会覆盖用户已保存的正文。
         if persona_id == "default":
-            return "default", BUILTIN_FALLBACK_PERSONA_PROMPT
+            return {
+                "name": "default",
+                "prompt": BUILTIN_FALLBACK_PERSONA_PROMPT,
+                "begin_dialogs": [],
+            }
 
-        return "", ""
+        return empty
+
+    @staticmethod
+    def _normalize_begin_dialogs(raw: Any) -> list[dict[str, Any]]:
+        """把人格示例对话归一化为 messages 形态。
+
+        核心在 v3 缓存里已把裸文本成对转成 user/assistant 消息，但数据库
+        形态仍是裸字符串列表，两种都要兼容。奇数条直接丢弃，与核心
+        “条数应为偶数”的校验保持一致。并对两个分支都做偶数校验。
+        """
+        if not raw or not isinstance(raw, (list, tuple)):
+            return []
+
+        items = list(raw)
+        if len(items) % 2 != 0:
+            logger.debug(
+                f"[主动消息] 人格示例对话条数为奇数（{len(items)}），已整体忽略喵。"
+            )
+            return []
+
+        # 已经是 messages 形态时复用原条目，只补 _no_save
+        # （核心的“不要落库”标记），避免丢弃 tool_calls 等 agent 形态字段。
+        if all(isinstance(item, dict) and item.get("role") for item in items):
+            return [{**item, "_no_save": True} for item in items]
+
+        dialogs: list[dict[str, Any]] = []
+        for index, text in enumerate(items):
+            dialogs.append(
+                {
+                    "role": "user" if index % 2 == 0 else "assistant",
+                    "content": str(text),
+                    "_no_save": True,
+                }
+            )
+        return dialogs
 
     async def resolve_persona(
         self,
@@ -559,16 +620,19 @@ class ContextService:
             if persona_id in seen:
                 continue
             seen.add(persona_id)
-            persona_name, prompt = await self.find_persona_prompt(persona_id)
-            if prompt:
+            detail = await self.find_persona_detail(persona_id)
+            if detail["prompt"]:
                 if log_shadow:
                     logger.debug(
-                        f"[主动消息] 人格解析命中来源：{source} 喵，使用人格：{persona_name}。"
+                        f"[主动消息] 人格解析命中来源：{source} 喵，"
+                        f"使用人格：{detail['name']}，"
+                        f"预设对话 {len(detail['begin_dialogs']) // 2} 组。"
                     )
                 return PersonaResolution(
                     persona_id=persona_id,
-                    persona_name=persona_name,
-                    system_prompt=prompt,
+                    persona_name=detail["name"],
+                    system_prompt=detail["prompt"],
+                    begin_dialogs=detail["begin_dialogs"],
                     source=source,
                 )
 
@@ -1233,10 +1297,12 @@ class ContextService:
             "hybrid": "混合模式",
         }
         source_mode_label = mode_label_map.get(source_mode, source_mode)
+        # 这里不报“最终上下文条数”：人格预设对话在调用方之后才注入，
+        # 此处统计的数字会与最终实际注入量不一致，反而误导排障。
         logger.info(
             f"[主动消息] 上下文注入来源：{source_mode_label}，读取到对话历史 {conversation_count} 条，"
             f"平台流水原始记录 {platform_records_count} 条，注入上下文 {platform_injected_count} 条，"
-            f"平台流水上下文长度 {platform_chars} 字，最终稳定上下文共 {len(contexts)} 条喵。"
+            f"平台流水上下文长度 {platform_chars} 字喵。"
         )
         return contexts, platform_context
 
@@ -1353,8 +1419,21 @@ class ContextService:
                 unanswered_count=current_unanswered_count,
             )
 
+            # 在上下文传入人格卡自带的预设对话
+            if persona.begin_dialogs:
+                effective_history_messages = (
+                    list(persona.begin_dialogs) + effective_history_messages
+                )
+
+            persona_meta = f"人格 {persona.display_name}"
+            if persona.persona_id and persona.persona_id != persona.persona_name:
+                persona_meta += f"（ID {persona.persona_id}）"
+            persona_meta += f"，来源 {persona.source_label}"
+            persona_meta += f"，提示词 {len(original_system_prompt)} 字"
+            persona_meta += f"，预设对话 {persona.begin_dialog_count // 2} 组"
             logger.info(
-                f"[主动消息] 上下文与人格设定已准备完成喵（人格来源：{persona.source_label}）。"
+                f"[主动消息] 上下文已准备完成（{persona_meta}，"
+                f"共 {len(effective_history_messages)} 条）喵。"
             )
             if plugin.telemetry and plugin.telemetry.enabled:
                 plugin._track_task(
@@ -1362,10 +1441,14 @@ class ContextService:
                         plugin.telemetry.track_feature(
                             "llm_context_prepared",
                             {
+                                # history_count 含人格预设对话，与
+                                # conversation_history_count 分别上报，
+                                # 避免“上下文膨胀”类判断被预设对话误报。
                                 "history_count": len(effective_history_messages),
                                 "conversation_history_count": len(
                                     pure_history_messages
                                 ),
+                                "begin_dialog_count": persona.begin_dialog_count,
                                 "context_source_mode": context_settings["source_mode"],
                                 "has_persona": bool(original_system_prompt),
                                 "persona_source": persona.source,
