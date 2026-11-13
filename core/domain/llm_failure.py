@@ -135,6 +135,24 @@ _MESSAGE_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
         ),
         FailureKind.RATE_LIMIT,
     ),
+    # 网络类必须排在内容拒绝之前：裸词 "refused" 曾让 "Connection refused"
+    # 被判成内容拒绝并直接中止整条回退链，是纯粹的误伤。
+    (
+        (
+            "connection refused",
+            "connection reset",
+            "connection aborted",
+            "connect failed",
+            "failed to connect",
+            "connection error",
+            "network is unreachable",
+            "temporary failure in name resolution",
+            "连接被拒绝",
+            "连接失败",
+            "网络不可达",
+        ),
+        FailureKind.NETWORK,
+    ),
     (
         (
             "content_filter",
@@ -142,9 +160,9 @@ _MESSAGE_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
             "content_policy",
             "safety system",
             "safety setting",
-            "flagged",
-            "refused",
-            "refusal",
+            "content management policy",
+            "flagged by",
+            "content refusal",
             "内容安全",
             "内容政策",
             "拒绝生成",
@@ -249,11 +267,17 @@ def _message_kind(message: str) -> str | None:
     return None
 
 
+# 状态码语义存在歧义、需要先看文案再决定的范围。
+# - 403 既可能是鉴权失败也可能是内容审核拦截；
+# - 429 既可能是限流也可能是配额耗尽，两者对用户的处置建议完全不同，因此也要先看文案。
+_AMBIGUOUS_STATUS_CODES: frozenset[int] = frozenset({400, 403, 422, 429})
+
+
 def classify_failure(exc: BaseException | None) -> str:
     """把异常归因为 FailureKind。
 
-    归因顺序：异常类型 -> 状态码 -> 文案。类型最可靠（TimeoutError 不会误判），
-    文案最不可靠但覆盖面最广，因此放在最后作为兜底。
+    归因顺序：异常类型 -> 歧义状态码的文案 -> 状态码 -> 文案。
+    类型最可靠（TimeoutError 不会误判），文案最不可靠但覆盖面最广。
     """
     if exc is None:
         return FailureKind.UNKNOWN
@@ -262,18 +286,25 @@ def classify_failure(exc: BaseException | None) -> str:
     if by_name:
         return by_name
 
+    message = f"{exc}"
     status = _status_code_of(exc)
     if status is not None:
+        # 歧义状态码优先看文案：内容审核拦截常以 400/403 返回。
+        if status in _AMBIGUOUS_STATUS_CODES:
+            by_message = _message_kind(message)
+            if by_message:
+                return by_message
+
         mapped = _STATUS_CODE_KINDS.get(status)
         if mapped:
             return mapped
         if 400 <= status < 500:
             # 未登记的 4xx：再看文案能否细分（模型不存在 / 上下文超长等）。
-            return _message_kind(f"{exc}") or FailureKind.UNKNOWN
+            return _message_kind(message) or FailureKind.UNKNOWN
         if status >= 500:
             return FailureKind.NETWORK
 
-    return _message_kind(f"{exc}") or FailureKind.UNKNOWN
+    return _message_kind(message) or FailureKind.UNKNOWN
 
 
 def resolve_policy(
