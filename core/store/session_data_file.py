@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,31 @@ def _dump(payload: Any) -> str:
     return json.dumps(payload, indent=4, ensure_ascii=False)
 
 
+def _fsync_file(path: Path) -> None:
+    """把临时文件内容刷到磁盘。
+
+    只对文件本身同步：目录同步是 POSIX 语义，在 Windows 上无意义且会失败。
+    """
+    with open(path, "rb+") as f:
+        os.fsync(f.fileno())
+
+
+def _fsync_dir(path: Path) -> None:
+    """同步父目录项，保证 rename 结果落盘（仅 POSIX）。"""
+    if sys.platform.startswith("win"):
+        return
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 async def atomic_write_json(
     path: Path,
     payload: Any,
@@ -46,12 +73,18 @@ async def atomic_write_json(
     path = Path(path)
     await aio_os.makedirs(path.parent, exist_ok=True)
 
-    content = await asyncio.to_thread(_dump, payload)
+    # 必须在事件循环线程中同步复制：调用方传入的是共享的 session_data，
+    # 后台线程序列化期间其他协程可能删除条目，导致
+    # "dictionary changed size during iteration"。
+    snapshot = copy.deepcopy(payload)
+
+    content = await asyncio.to_thread(_dump, snapshot)
     temp_path = path.with_name(path.name + TEMP_SUFFIX)
 
     async with aiofiles.open(temp_path, "w", encoding="utf-8") as f:
         await f.write(content)
         await f.flush()
+        await asyncio.to_thread(_fsync_file, temp_path)
 
     if keep_backup:
         # 备份失败不应阻断主流程：哪怕没有回滚点也要保证数据能存下去。
@@ -62,6 +95,7 @@ async def atomic_write_json(
             pass
 
     await asyncio.to_thread(os.replace, temp_path, path)
+    await asyncio.to_thread(_fsync_dir, path.parent)
 
 
 async def _try_read_json(path: Path) -> tuple[dict | None, str]:
@@ -78,7 +112,9 @@ async def _try_read_json(path: Path) -> tuple[dict | None, str]:
         async with aiofiles.open(path, encoding="utf-8") as f:
             content = await f.read()
         loaded = await asyncio.to_thread(json.loads, content)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:
+        # ValueError 覆盖 JSONDecodeError 与 UnicodeDecodeError：
+        # 非法字节同样属于"文件损坏"，必须走备份恢复而不是直接抛出去。
         return None, f"{type(e).__name__}: {e}"
 
     if not isinstance(loaded, dict):
