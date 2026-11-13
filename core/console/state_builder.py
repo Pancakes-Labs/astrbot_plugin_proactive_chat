@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import time
 from datetime import datetime
@@ -22,7 +23,6 @@ from ..domain.config_keys import (
     SESSION_LIST_KEY,
     STARTUP_CHECK_SETTINGS_KEY,
 )
-from ..services.model_router import maybe_await
 
 
 class StateBuilder:
@@ -754,13 +754,26 @@ class StateBuilder:
 
     @staticmethod
     async def _fetch_models(provider: Any) -> list[str]:
-        """并发安全地拉取单个 Provider 的模型列表。"""
+        """并发安全地拉取单个 Provider 的模型列表。
+
+        关键点：get_models 可能被第三方 source 实现成同步阻塞调用（直接发
+        requests 请求）。若在事件循环里直接调用，wait_for 根本来不及生效，
+        整个控制台都会被卡住。因此先用 to_thread 把调用本身挪进线程池。
+        """
         getter = getattr(provider, "get_models", None)
         if not callable(getter):
             return []
+
+        async def _invoke() -> Any:
+            # 同步实现交给线程池跑：第三方 source 可能在里面直接发 http 请求，
+            # 留在事件循环里会让 wait_for 形同虚设。
+            if inspect.iscoroutinefunction(getter):
+                return await getter()
+            return await asyncio.to_thread(getter)
+
         try:
             models = await asyncio.wait_for(
-                maybe_await(getter()), timeout=StateBuilder.PROVIDER_MODELS_TIMEOUT
+                _invoke(), timeout=StateBuilder.PROVIDER_MODELS_TIMEOUT
             )
         except Exception:
             # 超时与各类 Provider 自定义异常统一视为"拿不到模型列表"。
