@@ -479,7 +479,10 @@ class LlmService:
                         )
                         return None, req, final_user_simulation_prompt, None
                     # 钩子可能把 prompt 清空，此时回退到原始提示词。
+                    # 必须同时写回 req：本次请求随后就要发给 Provider，
+                    # 只更新 baseline 会让首个请求带着空 prompt 出去。
                     if not req_prompt(req):
+                        req.prompt = final_user_simulation_prompt
                         baseline["prompt"] = final_user_simulation_prompt
                 else:
                     # 回退时只替换候选相关字段，其余沿用钩子处理后的基线。
