@@ -24,6 +24,11 @@ from ..domain.config_keys import (
     WEB_ADMIN_KEY,
 )
 from ..domain.domain_enums import TriggerSource
+from ..services.prompt_admin_service import (
+    SIMULATE_DEFAULT_ROUNDS,
+    SIMULATE_MAX_ROUNDS,
+    PromptAdminService,
+)
 
 # 注意：WebSocket / FileResponse / JSONResponse 必须在模块全局命名空间可用。
 try:  # pragma: no cover - 取决于是否安装 FastAPI
@@ -255,6 +260,144 @@ class ApiRoutes:
                 except Exception as e:
                     logger.error(f"[主动消息] 读取 Schema 失败喵: {e}")
             return {}
+
+        # ------------------------------------------------------------------
+        # 提示词模板管理（专用页面使用，配置页之外的可视化入口）
+        # ------------------------------------------------------------------
+        prompt_admin = PromptAdminService(plugin)
+
+        def _prompt_save_failed_response(action: str, error: Exception) -> Any:
+            """保存失败时的统一响应：内存已改但磁盘没写成功，必须显式报错。"""
+            logger.error(f"[主动消息] {action}后保存配置失败喵: {error}")
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"{action}已应用到内存，但保存到磁盘失败",
+                    "message": str(error),
+                },
+                status_code=500,
+            )
+
+        def _persist_prompts(action: str) -> Any:
+            """把提示词改动落盘；成功返回 None。"""
+            try:
+                plugin.config.save_config()
+            except Exception as e:
+                return _prompt_save_failed_response(action, e)
+            return None
+
+        # 读取模板列表 + 各池概率分布。
+        @app.get("/api/prompts")
+        async def list_prompts():
+            return prompt_admin.build_list_payload()
+
+        # 整表保存模板。
+        @app.put("/api/prompts")
+        async def update_prompts(payload: dict[str, Any]):
+            templates = payload.get("templates")
+            if not isinstance(templates, list):
+                return JSONResponse({"error": "模板必须是数组"}, status_code=400)
+
+            warnings = prompt_admin.save_templates(templates)
+            failed = _persist_prompts("保存提示词")
+            if failed is not None:
+                return failed
+
+            await _broadcast_web_update("prompts")
+            return {
+                "ok": True,
+                "warnings": warnings,
+                **prompt_admin.build_list_payload(),
+            }
+
+        # 渲染完整提示词（服务端跑真实装配逻辑，与运行期同源）。
+        @app.post("/api/prompts/preview")
+        async def preview_prompt(payload: dict[str, Any]):
+            session_type = str(payload.get("session_type") or "friend")
+            if session_type not in {"friend", "group"}:
+                return JSONResponse(
+                    {"error": "会话类型必须是私聊或群聊"}, status_code=400
+                )
+            try:
+                unanswered_count = int(payload.get("unanswered_count") or 0)
+            except (TypeError, ValueError):
+                return JSONResponse({"error": "未回复次数必须是整数"}, status_code=400)
+
+            return prompt_admin.build_prompt_preview(
+                session_type=session_type,
+                unanswered_count=max(0, unanswered_count),
+                source_mode=str(payload.get("source_mode") or "conversation_history"),
+                template_id=str(payload.get("template_id") or ""),
+            )
+
+        # 抽样预演：真实跑 N 次加权抽取并返回分布。
+        @app.post("/api/prompts/simulate")
+        async def simulate_prompts(payload: dict[str, Any]):
+            session_type = str(payload.get("session_type") or "friend")
+            if session_type not in {"friend", "group"}:
+                return JSONResponse(
+                    {"error": "会话类型必须是私聊或群聊"}, status_code=400
+                )
+            try:
+                rounds = int(payload.get("rounds") or SIMULATE_DEFAULT_ROUNDS)
+            except (TypeError, ValueError):
+                rounds = SIMULATE_DEFAULT_ROUNDS
+            if rounds < 1 or rounds > SIMULATE_MAX_ROUNDS:
+                return JSONResponse(
+                    {"error": f"轮数必须在 1 ~ {SIMULATE_MAX_ROUNDS} 之间"},
+                    status_code=400,
+                )
+
+            seed = payload.get("seed")
+            if seed is not None:
+                try:
+                    seed = int(seed)
+                except (TypeError, ValueError):
+                    seed = None
+
+            return prompt_admin.simulate(
+                session_type=session_type, rounds=rounds, seed=seed
+            )
+
+        # 导出模板包。
+        @app.get("/api/prompts/export")
+        async def export_prompts():
+            return prompt_admin.export_payload()
+
+        # 导入模板包。
+        @app.post("/api/prompts/import")
+        async def import_prompts(payload: dict[str, Any]):
+            count, warnings = prompt_admin.import_payload(payload)
+            if count == 0:
+                return JSONResponse(
+                    {"error": "导入失败", "warnings": warnings}, status_code=400
+                )
+            failed = _persist_prompts("导入提示词")
+            if failed is not None:
+                return failed
+
+            await _broadcast_web_update("prompts")
+            return {
+                "ok": True,
+                "imported": count,
+                "warnings": warnings,
+                **prompt_admin.build_list_payload(),
+            }
+
+        # 恢复出厂预设。
+        @app.post("/api/prompts/reset")
+        async def reset_prompts():
+            count = prompt_admin.apply_preset()
+            failed = _persist_prompts("恢复出厂预设")
+            if failed is not None:
+                return failed
+
+            await _broadcast_web_update("prompts")
+            return {
+                "ok": True,
+                "restored": count,
+                **prompt_admin.build_list_payload(),
+            }
 
         # 更新配置：接受 Schema 中全部可编辑分组，避免前端保存后字段被静默丢弃。
         @app.post("/api/config")
