@@ -14,6 +14,7 @@ from astrbot.api.event import AstrMessageEvent
 
 from ..domain.config_keys import ENABLED_KEY
 from ..domain.session_key import is_group_umo
+from ..domain.unanswered_counter import UNTRUSTED_MARK_KEY
 
 
 class EventHandlers:
@@ -324,10 +325,11 @@ class EventHandlers:
         async with self.plugin.data_lock:
             changed = False
             if normalized_session_id in self.plugin.session_data:
-                current_unanswered = self.plugin.session_data[
-                    normalized_session_id
-                ].get("unanswered_count", 0)
-                self.plugin.session_data[normalized_session_id]["unanswered_count"] = 0
+                session_payload = self.plugin.session_data[normalized_session_id]
+                current_unanswered = session_payload.get("unanswered_count", 0)
+                session_payload["unanswered_count"] = 0
+                # 用户真实发言后计数重新有意义，清掉「计数不可信」标记。
+                session_payload.pop(UNTRUSTED_MARK_KEY, None)
                 changed = True
                 if current_unanswered > 0:
                     logger.debug(

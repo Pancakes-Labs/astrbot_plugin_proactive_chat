@@ -23,6 +23,10 @@ from ..domain.config_keys import (
 from ..domain.session_key import is_friend_type
 from ..domain.unanswered_counter import (
     REASON_MISSING_WITH_HISTORY,
+    UNANSWERED_COUNT_KEY,
+    UNTRUSTED_MARK_KEY,
+    is_unanswered_limit_enabled,
+    mark_untrusted,
     reaches_max_unanswered,
     resolve_unanswered_state,
 )
@@ -482,7 +486,9 @@ class SchedulerService:
         state = resolve_unanswered_state(plugin.session_data.get(resolved_session_id))
         # 计数缺失但存在历史调度痕迹时无法证明未达上限，保守跳过，
         # 避免数据丢失后立刻为已达上限的会话重新排期。
-        if state.reason == REASON_MISSING_WITH_HISTORY and int(max_unanswered) > 0:
+        if state.reason == REASON_MISSING_WITH_HISTORY and is_unanswered_limit_enabled(
+            max_unanswered
+        ):
             logger.warning(
                 f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id, session_config)} 的未回复计数缺失，"
                 "但存在历史调度痕迹，跳过初始化自动触发器设置以避免误排期喵。"
@@ -640,9 +646,12 @@ class SchedulerService:
                     pass
 
             if reset_counter:
-                plugin.session_data.setdefault(normalized_session_id, {})[
-                    "unanswered_count"
-                ] = 0
+                reset_payload = plugin.session_data.setdefault(
+                    normalized_session_id, {}
+                )
+                reset_payload["unanswered_count"] = 0
+                # 计数被显式重置为 0，此前的「不可信」推断随之失效。
+                reset_payload.pop(UNTRUSTED_MARK_KEY, None)
 
             (
                 run_date,
@@ -895,9 +904,8 @@ class SchedulerService:
                         state = resolve_unanswered_state(
                             plugin.session_data.get(normalized_session_id)
                         )
-                        if (
-                            state.reason == REASON_MISSING_WITH_HISTORY
-                            and int(max_unanswered) > 0
+                        if state.reason == REASON_MISSING_WITH_HISTORY and (
+                            is_unanswered_limit_enabled(max_unanswered)
                         ):
                             auto_result = "untrusted_count"
                         elif reaches_max_unanswered(state, max_unanswered):
@@ -979,8 +987,19 @@ class SchedulerService:
                     return
 
                 # 计数缺失但存在历史调度痕迹时无法证明未达上限，保守跳过。
-                state = resolve_unanswered_state(plugin.session_data.get(session_id))
-                if state.reason == REASON_MISSING_WITH_HISTORY:
+                # 上限为 0 表示不限制，此时必须放行，与初始化 / Reset / GATE 保持一致。
+                session_info = plugin.session_data.get(session_id)
+                state = resolve_unanswered_state(session_info)
+                limit_enabled = is_unanswered_limit_enabled(
+                    (current_config.get("schedule_settings", {}) or {}).get(
+                        "max_unanswered_times", 3
+                    )
+                )
+                if state.reason == REASON_MISSING_WITH_HISTORY and limit_enabled:
+                    # 立即落盘显式标记：后续排期会补写 next_trigger_time 让痕迹失效，
+                    # 只有持久标记才能继续拦住该会话。
+                    if mark_untrusted(session_info):
+                        await plugin.storage_service.save_data()
                     logger.warning(
                         f"[主动消息] {plugin.session_service.get_session_log_str(session_id, current_config)} 的未回复计数缺失，"
                         "但存在历史调度痕迹，跳过本次自动触发以避免误排期喵。"
@@ -1005,6 +1024,12 @@ class SchedulerService:
                 ) = self.compute_next_trigger(schedule_conf)
 
                 session_payload = plugin.session_data.setdefault(session_id, {})
+                # 新会话首次自动触发会走到这里：此时没有任何计数记录，
+                # 若不初始化，GATE 会把「有 last_scheduled_at 却无计数」误判为
+                # 计数丢失，导致该会话的第一次主动消息永远发不出去。
+                # 仅对确实没有计数字段的记录写入，绝不覆盖已丢失的计数。
+                if UNANSWERED_COUNT_KEY not in session_payload:
+                    session_payload[UNANSWERED_COUNT_KEY] = 0
                 session_payload["last_scheduled_at"] = scheduled_at
                 session_payload["last_schedule_min_interval_seconds"] = min_interval
                 session_payload["last_schedule_max_interval_seconds"] = max_interval

@@ -10,6 +10,8 @@ from astrbot.api import logger
 from ..domain.domain_enums import HookPoint, StageResult
 from ..domain.unanswered_counter import (
     REASON_MISSING_WITH_HISTORY,
+    is_unanswered_limit_enabled,
+    mark_untrusted,
     reaches_max_unanswered,
     resolve_unanswered_state,
 )
@@ -63,11 +65,18 @@ class GatingStage(BaseStage):
         schedule_conf = session_config.get("schedule_settings", {})
         # 在锁内读取未回复计数并与上限比较。
         async with plugin.data_lock:
-            state = resolve_unanswered_state(plugin.session_data.get(session_id))
+            session_info = plugin.session_data.get(session_id)
+            state = resolve_unanswered_state(session_info)
             unanswered_count = state.count
             max_unanswered = schedule_conf.get("max_unanswered_times", 3)
-            # 计数缺失但存在历史调度痕迹：无法证明未达上限，保守暂停并提示人工确认。
-            if state.reason == REASON_MISSING_WITH_HISTORY and int(max_unanswered) > 0:
+            # 计数不可信且上限启用：无法证明未达上限，保守暂停并提示人工确认。
+            # 同时在锁内落盘显式标记，避免本会话被重新排期后痕迹消失、判定失效。
+            if (
+                state.reason == REASON_MISSING_WITH_HISTORY
+                and is_unanswered_limit_enabled(max_unanswered)
+            ):
+                if mark_untrusted(session_info):
+                    await plugin.storage_service.save_data()
                 logger.warning(
                     f"[主动消息] {plugin.session_service.get_session_log_str(session_id, session_config)} 的未回复计数缺失，"
                     "但存在历史调度痕迹，本次主动消息暂停，请人工确认是否已达上限喵。"
