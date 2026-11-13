@@ -568,7 +568,9 @@ class LlmService:
                 logger.info(
                     f"[主动消息] 调用 LLM 成功喵"
                     f"（候选 #{candidate.index} / {candidate.source}"
-                    f"{'，已回退' if candidate.index > 0 else ''}）。"
+                    f"{'，已回退' if candidate.index > 0 else ''}"
+                    f"，系统提示词 {len(getattr(req, 'system_prompt', '') or '')} 字"
+                    f"，上下文 {len(getattr(req, 'contexts', None) or [])} 条）。"
                 )
                 self._report_success(
                     req, history_messages, candidate, failures, scene, provider

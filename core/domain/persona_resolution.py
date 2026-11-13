@@ -15,7 +15,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 # 人格来源标识
 PERSONA_SOURCE_PLUGIN = "plugin_config"
@@ -58,6 +59,8 @@ class PersonaResolution:
     persona_name: str = ""
     system_prompt: str = ""
     source: str = PERSONA_SOURCE_BUILTIN
+    # 人格卡自带的示例对话。追加在末尾：作为公共 dataclass。
+    begin_dialogs: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def source_label(self) -> str:
@@ -68,6 +71,11 @@ class PersonaResolution:
     def display_name(self) -> str:
         """优先展示人格名，缺失时回退 ID，最后回退来源标签。"""
         return self.persona_name or self.persona_id or self.source_label
+
+    @property
+    def begin_dialog_count(self) -> int:
+        """人格示例对话的条数，供日志与诊断使用。"""
+        return len(self.begin_dialogs)
 
     @property
     def ok(self) -> bool:
@@ -86,6 +94,7 @@ class PersonaResolution:
             "persona_name": self.persona_name,
             "persona_source": self.source,
             "persona_source_label": self.source_label,
+            "persona_begin_dialog_count": str(self.begin_dialog_count),
         }
 
 

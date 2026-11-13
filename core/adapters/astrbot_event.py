@@ -242,30 +242,26 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
         sent = False
         via_core_api = False
         platform = self._resolve_platform()
-        # 平台实例可用且运行中时优先直发。
-        if platform is not None and platform.status == PlatformStatus.RUNNING:
-            if MessageSession is None:  # pragma: no cover - 极旧版本
-                sent = await self._send_via_core_api(message)
-                via_core_api = sent
-            else:
-                try:
-                    session_obj = MessageSession(
-                        platform_name=platform.meta().id,
-                        message_type=(
-                            MessageType.GROUP_MESSAGE
-                            if self._proactive_is_group
-                            else MessageType.FRIEND_MESSAGE
-                        ),
-                        session_id=self._proactive_target_id,
-                    )
-                    await platform.send_by_session(session_obj, message)
-                    sent = True
-                except Exception as e:
-                    logger.error(f"[主动消息] 平台发送失败喵，尝试核心 API 兜底: {e}")
+        # 直发必须同时满足三个条件才算“真的尝试过”。
+        tried_platform = (
+            platform is not None
+            and platform.status == PlatformStatus.RUNNING
+            and MessageSession is not None
+        )
+        if tried_platform:
+            sent = await self._send_via_platform(platform, message)
 
         if not sent:
             sent = await self._send_via_core_api(message)
             via_core_api = sent
+            # 只有确实尝试过直发才说“直发未成功”；否则说明直发条件不满足
+            # （平台实例缺失/未运行，或当前版本不提供 MessageSession）。
+            if sent:
+                logger.info(
+                    "[主动消息] 平台直发未成功，已由核心 API 兜底送达喵。"
+                    if tried_platform
+                    else "[主动消息] 直发条件不满足，已由核心 API 直接送达喵。"
+                )
 
         if not sent:
             self.proactive_send_failed = True
@@ -275,6 +271,33 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
         self._has_send_oper = True
         await self._persist_sent_chain(message, via_core_api=via_core_api)
         return True
+
+    async def _send_via_platform(self, platform: Any, message: MessageChain) -> bool:
+        """通过平台实例直发消息。
+
+        调用方必须先用 MessageSession 是否可用做前置判断，本方法不再重复探测。
+
+        平台侧可能因瞬时状态（如 NapCat 未就绪、群成员信息缓存缺失）返回
+        retcode 1200，这类失败由调用方转核心 API 兜底重试即可恢复，
+        因此这里只记 warning，不按 error 上报。
+        """
+        try:
+            session_obj = MessageSession(
+                platform_name=platform.meta().id,
+                message_type=(
+                    MessageType.GROUP_MESSAGE
+                    if self._proactive_is_group
+                    else MessageType.FRIEND_MESSAGE
+                ),
+                session_id=self._proactive_target_id,
+            )
+            await platform.send_by_session(session_obj, message)
+            return True
+        except Exception as e:
+            logger.warning(
+                f"[主动消息] 平台直发未成功喵，转核心 API 兜底重试: {_describe_send_error(e)}"
+            )
+            return False
 
     async def _send_via_core_api(self, message: MessageChain) -> bool:
         """通过核心发送 API 兜底发送。"""
@@ -324,6 +347,22 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
         platform_id = getattr(meta, "id", None) or getattr(meta, "name", None)
         manager = getattr(getattr(plugin, "context", None), "platform_manager", None)
         return resolve_platform_instance(manager, platform_id)
+
+
+def _describe_send_error(error: BaseException) -> str:
+    """把平台发送异常压缩成一行可读诊断信息。
+
+    aiocqhttp 的 ActionFailed 里 retcode 与 wording 是排障关键，
+    直接 str(e) 会把整个 echo 与 stream 打印出来，淹没有效信息。
+    """
+    retcode = getattr(error, "retcode", None)
+    wording = getattr(error, "wording", None) or getattr(error, "message", None)
+    if retcode is None and not wording:
+        return f"{type(error).__name__}: {error}"
+    parts = [f"retcode={retcode}"] if retcode is not None else []
+    if wording:
+        parts.append(str(wording))
+    return " ".join(parts) or f"{type(error).__name__}: {error}"
 
 
 def _resolve_persist_history_callback(plugin: Any) -> Any:
