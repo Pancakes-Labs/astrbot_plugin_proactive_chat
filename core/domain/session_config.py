@@ -17,6 +17,7 @@ from .config_keys import (
     LEGACY_FRIEND_SETTINGS_KEY,
     LEGACY_GROUP_SETTINGS_KEY,
     LEGACY_TYPE_FALLBACK_KEY,
+    MODEL_SETTINGS_KEY,
     NOTIFICATION_SETTINGS_KEY,
     PERSONA_ID_KEY,
     PROMPT_SETTINGS_KEY,
@@ -91,6 +92,29 @@ class SessionConfig:
         return self.section(PROMPT_SETTINGS_KEY)
 
     @property
+    def model_settings(self) -> dict[str, Any]:
+        """模型场景配置（Provider / 模型 / 回退链）。"""
+        return self.section(MODEL_SETTINGS_KEY)
+
+    def scene_model_settings(self, scene: str) -> dict[str, Any]:
+        """读取单个场景的模型配置；缺失时返回空 dict。
+
+        scene 由调用方传入规范名（见 ModelScene），这里不做别名归一：
+        归一属于领域层的职责，重复实现会导致两处规则漂移。
+        """
+        scenes = self.model_settings.get("scenes")
+        if not isinstance(scenes, dict):
+            return {}
+        node = scenes.get(scene)
+        return node if isinstance(node, dict) else {}
+
+    @property
+    def failure_policy(self) -> dict[str, Any]:
+        """模型调用失败处置策略。"""
+        policy = self.model_settings.get("failure_policy")
+        return policy if isinstance(policy, dict) else {}
+
+    @property
     def startup_check_settings(self) -> dict[str, Any]:
         return self.section(STARTUP_CHECK_SETTINGS_KEY)
 
@@ -120,6 +144,7 @@ __all__ = [
     "LEGACY_FRIEND_SETTINGS_KEY",
     "LEGACY_GROUP_SETTINGS_KEY",
     "LEGACY_TYPE_FALLBACK_KEY",
+    "MODEL_SETTINGS_KEY",
     "NOTIFICATION_SETTINGS_KEY",
     "PERSONA_ID_KEY",
     "PROMPT_SETTINGS_KEY",
