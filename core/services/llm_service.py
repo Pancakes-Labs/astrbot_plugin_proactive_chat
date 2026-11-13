@@ -14,6 +14,8 @@ from ...utils.time_utils import format_current_time
 from ..adapters.astrbot_event import dispatch_event_hook
 from ..adapters.astrbot_provider import build_provider_request, invoke_provider
 from ..domain import prompt_contract
+from ..domain.llm_failure import FailureKind, classify_failure, resolve_policy
+from ..domain.model_scene import ModelScene
 from ..domain.prompt_placeholders import (
     PLACEHOLDER_CONVERSATION_TYPE,
     PLACEHOLDER_CURRENT_TIME,
@@ -30,6 +32,7 @@ from ..domain.prompt_templates import (
     session_type_of,
 )
 from ..domain.tool_markup_cleaner import clean_llm_text
+from .model_router import RETRY_BACKOFF_SECONDS, ModelCandidate, ModelRouter
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -42,6 +45,8 @@ class LlmService:
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
+        # 惰性构造：插件装配顺序变化时仍可自愈，不依赖 main 里的初始化顺序。
+        self._model_router: ModelRouter | None = None
 
     # ------------------------------------------------------------------
     # 动态内容块
@@ -133,30 +138,30 @@ class LlmService:
     # ------------------------------------------------------------------
     # Provider 解析
     # ------------------------------------------------------------------
+    @property
+    def model_router(self) -> ModelRouter:
+        """惰性构造模型路由服务。"""
+        router = self._model_router
+        if router is None:
+            router = ModelRouter(self.plugin)
+            self._model_router = router
+        return router
+
     async def resolve_chat_provider(self, session_id: str) -> Any:
-        """解析用于本轮请求的 Provider 实例。"""
+        """解析用于本轮请求的 Provider 实例（兼容旧调用契约）。
+
+        保留此方法是为了不打断既有调用点与测试；实际解析已交给
+        ModelRouter，它会按 proactive 场景的候选链挑选首个可用的 Provider。
+        """
         plugin = self.plugin
-        provider_id = None
         try:
-            provider_id = await plugin.context.get_current_chat_provider_id(session_id)
-        except Exception as e:
-            logger.warning(f"[主动消息] 获取当前对话 Provider 失败喵: {e}")
-
-        if provider_id:
-            try:
-                provider = await plugin.context.provider_manager.get_provider_by_id(
-                    provider_id
-                )
-                if provider:
-                    return provider
-            except Exception as e:
-                logger.warning(f"[主动消息] 按 ID 获取 Provider 失败喵: {e}")
-
-        try:
-            return plugin.context.get_using_provider(umo=session_id)
-        except Exception as e:
-            logger.warning(f"[主动消息] 回退获取 Provider 失败喵: {e}")
-            return None
+            session_config = plugin.config_service.get_session_config(session_id) or {}
+        except Exception:
+            session_config = {}
+        provider, _ = await self.model_router.resolve(
+            ModelScene.PROACTIVE, session_config, session_id=session_id
+        )
+        return provider
 
     # ------------------------------------------------------------------
     # 生成
@@ -174,11 +179,17 @@ class LlmService:
         model: str | None = None,
         prepared_prompt: str | None = None,
         extra_parts: list | None = None,
+        scene: str = ModelScene.PROACTIVE,
+        trace: dict | None = None,
     ) -> tuple[Any | None, str]:
         """统一 LLM 调用入口。
 
-        model 为 None 时使用 Provider 自身的默认模型；传入非空值时仅覆盖本次
-        请求的模型，供后续按场景（压缩、降级、专用模型）分层调用复用。
+        scene 决定使用哪一组模型配置（proactive / decisions / vision）；
+        候选链按「场景显式配置 -> 回退链 -> 会话默认 Provider」顺序遍历，
+        首个成功的候选即被采用。
+
+        trace 为可选的可变 dict，用于回填本次实际使用的 provider_id / model /
+        fallback_index / failures。不改变返回值形态是为了不打断既有解包调用点。
 
         prepared_prompt / extra_parts 由 PROMPT 阶段预渲染后传入；
         两者为 None 时退回本服务自行拼装，保持旧的调用契约可用。
@@ -272,67 +283,30 @@ class LlmService:
         else:
             extra_parts = list(extra_parts)
 
-        provider = await self.resolve_chat_provider(session_id)
-        if not provider:
-            logger.warning("[主动消息] 未找到 LLM Provider，放弃并重新调度喵。")
-            return None, final_user_simulation_prompt
-
-        req = build_provider_request(
-            prompt=final_user_simulation_prompt,
+        (
+            llm_response_obj,
+            req,
+            final_user_simulation_prompt,
+            call_error,
+        ) = await self._call_with_fallback(
             session_id=session_id,
-            contexts=history_messages,
+            session_config=session_config,
+            scene=scene,
+            history_messages=history_messages,
             system_prompt=system_prompt,
             extra_parts=extra_parts,
             conversation=conversation,
+            final_user_simulation_prompt=final_user_simulation_prompt,
+            event=event,
             model=model,
+            trace=trace,
         )
-
-        try:
-            stopped = await self.dispatch_llm_request_hooks(event, req)
-        except Exception as e:
-            # 钩子可能已部分注入工具，失败后整体丢弃，避免半注入状态被执行。
-            logger.error(f"[主动消息] 派发 LLM 前置钩子失败喵: {e}")
-            req.func_tool = None
-            # 钩子可能先请求停止事件再抛错，停止意图需保留。
-            stopped = self._safe_is_stopped(event)
-        if stopped:
-            logger.info("[主动消息] LLM 前置钩子终止了事件传播，放弃本次请求喵。")
-            return None, final_user_simulation_prompt
-
-        llm_response_obj = None
-        try:
-            llm_response_obj = await invoke_provider(provider, req)
-            logger.info("[主动消息] 调用 LLM 成功喵。")
-            if plugin.telemetry and plugin.telemetry.enabled:
-                plugin._track_task(
-                    asyncio.create_task(
-                        plugin.telemetry.track_feature(
-                            "llm_generate_result",
-                            {
-                                "provider_mode": "provider_request",
-                                "success": True,
-                                "history_count": len(history_messages),
-                                "extra_part_count": len(req.extra_user_content_parts),
-                            },
-                        )
-                    )
-                )
-        except Exception as llm_error:
-            logger.error(f"[主动消息] 调用 LLM 失败喵: {llm_error}")
-            logger.info(f"[主动消息] 错误类型喵: {type(llm_error).__name__}")
-            if plugin.telemetry and plugin.telemetry.enabled:
-                plugin._track_task(
-                    asyncio.create_task(
-                        plugin.telemetry.track_error(
-                            llm_error,
-                            module="core.llm_adapter._generate_llm_response",
-                        )
-                    )
-                )
-            return None, final_user_simulation_prompt
-
         if llm_response_obj is None:
-            logger.warning("[主动消息] LLM 返回空响应，重新调度喵。")
+            # 具体原因已在 _call_with_fallback 内逐候选记录并上报。
+            if call_error is not None:
+                logger.warning("[主动消息] LLM 调用失败，重新调度喵。")
+            else:
+                logger.warning("[主动消息] 未找到可用的 LLM Provider，重新调度喵。")
             return None, final_user_simulation_prompt
 
         response_stopped = False
@@ -412,6 +386,331 @@ class LlmService:
         return llm_response_obj, self.resolve_final_user_prompt(
             req, final_user_simulation_prompt
         )
+
+    # ------------------------------------------------------------------
+    # 候选链调用
+    # ------------------------------------------------------------------
+    async def _call_with_fallback(
+        self,
+        *,
+        session_id: str,
+        session_config: dict,
+        scene: str,
+        history_messages: list,
+        system_prompt: str,
+        extra_parts: list,
+        conversation: Any,
+        final_user_simulation_prompt: str,
+        event: Any,
+        model: str | None,
+        trace: dict | None,
+    ) -> tuple[Any | None, Any, str, BaseException | None]:
+        """按候选链依次调用 Provider，返回首个成功结果。
+
+        Returns:
+            (响应对象, 最终使用的 req, 最终用户提示词, 最后一个异常)。
+            响应对象为 None 表示全部候选都失败；此时最后一个异常用于区分
+            "没有可用 Provider"（异常为空）与"调用失败"（异常非空）。
+
+        钩子只对首个候选派发一次：OnLLMRequestEvent 可能往 req.func_tool
+        注入工具，逐候选重复派发会让回退时工具被注入多份。
+        """
+        router = self.model_router
+        policy = router.get_policy(session_config)
+        chain = router.resolve_chain(scene, session_config, session_id=session_id)
+
+        failures: list[dict] = []
+        last_error: BaseException | None = None
+        # 钩子产物：首个候选派发后固化，后续候选复用。
+        hooked_prompt: str | None = None
+        hooked_func_tool: Any = None
+        hooks_done = False
+
+        for candidate in chain:
+            provider = await router.load_provider(candidate, session_id=session_id)
+            if provider is None:
+                failures.append(
+                    {
+                        "index": candidate.index,
+                        "source": candidate.source,
+                        "kind": FailureKind.PROVIDER_MISSING,
+                    }
+                )
+                continue
+
+            # 每个候选内部的尝试计数；MODEL_NOT_FOUND 会额外触发一次
+            # "摘掉 model 覆盖、用 Provider 默认模型"的重试。
+            attempt = 0
+            strip_model = False
+            while True:
+                req = self._build_request(
+                    prompt=hooked_prompt or final_user_simulation_prompt,
+                    session_id=session_id,
+                    history_messages=history_messages,
+                    system_prompt=system_prompt,
+                    extra_parts=extra_parts,
+                    conversation=conversation,
+                    # strip_model 为真时不传 model，让 Provider 用自身默认模型。
+                    model=None if strip_model else (candidate.model or model),
+                )
+
+                if not hooks_done:
+                    (
+                        stopped,
+                        hooked_prompt,
+                        hooked_func_tool,
+                    ) = await self._run_request_hooks(
+                        event, req, final_user_simulation_prompt
+                    )
+                    hooks_done = True
+                    if stopped:
+                        logger.info(
+                            "[主动消息] LLM 前置钩子终止了事件传播，放弃本次请求喵。"
+                        )
+                        return None, req, final_user_simulation_prompt, None
+                elif hooked_func_tool is not None:
+                    # 回退时不重复派发钩子，但要把已注入的工具带过来。
+                    req.func_tool = hooked_func_tool
+
+                try:
+                    response = await asyncio.wait_for(
+                        invoke_provider(provider, req),
+                        timeout=policy.request_timeout_seconds,
+                    )
+                except Exception as llm_error:
+                    kind = classify_failure(llm_error)
+                    last_error = llm_error
+                    failures.append(
+                        {
+                            "index": candidate.index,
+                            "source": candidate.source,
+                            "kind": kind,
+                            "error_type": type(llm_error).__name__,
+                        }
+                    )
+                    self._report_failure(llm_error, candidate, kind, attempt)
+                    step = resolve_policy(
+                        kind,
+                        fallback_on_content_refusal=policy.fallback_on_content_refusal,
+                    )
+
+                    # 模型名写错：先摘掉 model 覆盖、用 Provider 默认模型重试一次，
+                    # 而不是直接跳到下一个候选。
+                    if step.strip_model_override and not strip_model:
+                        strip_model = True
+                        logger.warning(
+                            f"[主动消息] 候选 {candidate.index} 的模型不可用，"
+                            "改用该 Provider 的默认模型重试喵。"
+                        )
+                        continue
+
+                    if step.retry_same and attempt < policy.retry_same_provider_times:
+                        attempt += 1
+                        logger.warning(
+                            f"[主动消息] 候选 {candidate.index} 遇到{kind}，"
+                            f"第 {attempt} 次重试喵。"
+                        )
+                        await asyncio.sleep(RETRY_BACKOFF_SECONDS)
+                        continue
+
+                    if step.abort:
+                        self._fill_trace(trace, scene, None, failures=failures)
+                        return None, req, final_user_simulation_prompt, last_error
+                    break
+
+                if response is None:
+                    # 空响应：按空结果处理，继续尝试下一个候选。
+                    failures.append(
+                        {
+                            "index": candidate.index,
+                            "source": candidate.source,
+                            "kind": FailureKind.EMPTY_RESPONSE,
+                        }
+                    )
+                    break
+
+                self._fill_trace(trace, scene, candidate, failures=failures)
+                logger.info(
+                    f"[主动消息] 调用 LLM 成功喵"
+                    f"（候选 #{candidate.index} / {candidate.source}"
+                    f"{'，已回退' if candidate.index > 0 else ''}）。"
+                )
+                self._report_success(req, history_messages, candidate, failures, scene)
+                return (
+                    response,
+                    req,
+                    self.resolve_final_user_prompt(req, final_user_simulation_prompt),
+                    None,
+                )
+
+        # 全部候选失败。
+        self._fill_trace(trace, scene, None, failures=failures)
+        if failures:
+            logger.error(
+                f"[主动消息] 所有模型候选均调用失败喵（共 {len(failures)} 次尝试）："
+                + "；".join(
+                    f"#{item['index']}/{item.get('source', '')}={item['kind']}"
+                    for item in failures
+                )
+            )
+        return None, None, final_user_simulation_prompt, last_error
+
+    @staticmethod
+    def _build_request(
+        *,
+        prompt: str,
+        session_id: str,
+        history_messages: list,
+        system_prompt: str,
+        extra_parts: list,
+        conversation: Any,
+        model: str | None,
+    ) -> Any:
+        """构造一次请求对象。"""
+        return build_provider_request(
+            prompt=prompt,
+            session_id=session_id,
+            contexts=history_messages,
+            system_prompt=system_prompt,
+            extra_parts=extra_parts,
+            conversation=conversation,
+            model=model,
+        )
+
+    async def _run_request_hooks(
+        self, event: Any, req: Any, fallback_prompt: str
+    ) -> tuple[bool, str, Any]:
+        """派发 LLM 请求前置钩子，返回 (是否被停止, 钩子后提示词, 注入的工具)。"""
+        try:
+            stopped = await self.dispatch_llm_request_hooks(event, req)
+        except Exception as e:
+            # 钩子可能已部分注入工具，失败后整体丢弃，避免半注入状态被执行。
+            logger.error(f"[主动消息] 派发 LLM 前置钩子失败喵: {e}")
+            req.func_tool = None
+            # 钩子可能先请求停止事件再抛错，停止意图需保留。
+            stopped = self._safe_is_stopped(event)
+
+        prompt = getattr(req, "prompt", None)
+        if not isinstance(prompt, str) or not prompt.strip():
+            prompt = fallback_prompt
+        return bool(stopped), prompt, getattr(req, "func_tool", None)
+
+    @staticmethod
+    def _fill_trace(
+        trace: dict | None,
+        scene: str,
+        candidate: ModelCandidate | None,
+        *,
+        failures: list[dict],
+    ) -> None:
+        """把本次调用结论写回调用方持有的 trace。
+
+        只写脱敏后的结构：provider_id 与模型名可能含业务含义，这里保留供
+        本地日志与调试使用，但遥测侧只取 provider_type 与失败分类。
+        """
+        if trace is None:
+            return
+        trace["scene"] = scene
+        trace["failures"] = list(failures)
+        if candidate is None:
+            trace["provider_id"] = ""
+            trace["model"] = ""
+            trace["fallback_index"] = 0
+            trace["provider_type"] = ""
+            return
+
+        trace["provider_id"] = candidate.provider_id
+        trace["model"] = candidate.model
+        trace["fallback_index"] = candidate.index
+        trace["provider_type"] = ""
+
+    def _report_success(
+        self,
+        req: Any,
+        history_messages: list,
+        candidate: ModelCandidate,
+        failures: list[dict],
+        scene: str,
+    ) -> None:
+        """上报一次成功调用。"""
+        plugin = self.plugin
+        if not (plugin.telemetry and plugin.telemetry.enabled):
+            return
+        plugin._track_task(
+            asyncio.create_task(
+                plugin.telemetry.track_feature(
+                    "llm_generate_result",
+                    {
+                        "provider_mode": "provider_request",
+                        "success": True,
+                        "history_count": len(history_messages),
+                        "extra_part_count": len(
+                            getattr(req, "extra_user_content_parts", None) or []
+                        ),
+                        "scene": scene,
+                        "is_fallback": candidate.index > 0,
+                        "fallback_index": candidate.index,
+                        "failed_before": len(failures),
+                    },
+                )
+            )
+        )
+
+    def _report_failure(
+        self,
+        error: BaseException,
+        candidate: ModelCandidate,
+        kind: str,
+        attempt: int,
+    ) -> None:
+        """记录并上报单个候选的失败，不上报 provider_id 与模型名。"""
+        logger.error(
+            f"[主动消息] 候选 #{candidate.index}（{candidate.source}）调用失败喵: "
+            f"{type(error).__name__}: {error}"
+        )
+        plugin = self.plugin
+        if not (plugin.telemetry and plugin.telemetry.enabled):
+            return
+        plugin._track_task(
+            asyncio.create_task(
+                plugin.telemetry.track_feature(
+                    "llm_fallback_attempt",
+                    {
+                        "failure_kind": kind,
+                        "fallback_index": candidate.index,
+                        "source": candidate.source,
+                        "attempt": attempt,
+                    },
+                )
+            )
+        )
+        plugin._track_task(
+            asyncio.create_task(
+                plugin.telemetry.track_error(
+                    error, module="core.services.llm_service.generate_llm_response"
+                )
+            )
+        )
+
+
+def _response_model(response: Any) -> str:
+    """尽力从响应对象上读取实际生效的模型名，读不到返回空串。
+
+    AstrBot 的 LLMResponse 并非所有版本都携带模型字段，因此这里逐级探测，
+    全部失败时交由调用方使用候选配置里的模型名兜底。
+    """
+    if response is None:
+        return ""
+    for attr in ("model", "model_name"):
+        value = getattr(response, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raw = getattr(response, "raw_completion", None)
+    if raw is not None:
+        value = getattr(raw, "model", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
     @staticmethod
     def _safe_is_stopped(event: Any) -> bool:
