@@ -245,7 +245,7 @@ class EventHandlers:
                 session_payload.pop(UNTRUSTED_MARK_KEY, None) is not None
             )
             session_payload["unanswered_count"] = 0
-            if group_mark_cleared:
+            if group_mark_cleared or last_unanswered_reset:
                 await self.plugin.storage_service.save_data()
 
             if self._mark_persisted_message_time(normalized_session_id, current_time):
