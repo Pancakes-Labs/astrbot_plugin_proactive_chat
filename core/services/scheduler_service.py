@@ -128,7 +128,7 @@ class SchedulerService:
             plugin._track_task(
                 asyncio.create_task(
                     self.handle_auto_trigger_callback(
-                        captured_session_id, auto_trigger_minutes
+                        captured_session_id, auto_trigger_minutes, token
                     )
                 )
             )
@@ -948,12 +948,17 @@ class SchedulerService:
         plugin.auto_trigger_baselines[session_id] = time.time()
 
     async def handle_auto_trigger_callback(
-        self, session_id: str, auto_trigger_minutes: int | float
+        self,
+        session_id: str,
+        auto_trigger_minutes: int | float,
+        timer_generation: int = 0,
     ) -> None:
         """在异步上下文中处理自动触发回调。
 
         仅当插件启动后该会话一直无消息、且已达到配置静默时长时才真正触发；
         无论结果如何，最后都会清理相关计时器引用。
+
+        timer_generation 用于识别旧回调。
         """
         plugin = self.plugin
         if getattr(plugin, "_terminating", False):
@@ -1024,12 +1029,13 @@ class SchedulerService:
                 ) = self.compute_next_trigger(schedule_conf)
 
                 session_payload = plugin.session_data.setdefault(session_id, {})
-                # 新会话首次自动触发会走到这里：此时没有任何计数记录，
-                # 若不初始化，GATE 会把「有 last_scheduled_at 却无计数」误判为
-                # 计数丢失，导致该会话的第一次主动消息永远发不出去。
-                # 仅对确实没有计数字段的记录写入，绝不覆盖已丢失的计数。
-                if UNANSWERED_COUNT_KEY not in session_payload:
+                # 这里只为确定是全新会话的记录初始化计数。
+                if not session_payload:
                     session_payload[UNANSWERED_COUNT_KEY] = 0
+                elif resolve_unanswered_state(session_payload).reason == (
+                    REASON_MISSING_WITH_HISTORY
+                ):
+                    mark_untrusted(session_payload)
                 session_payload["last_scheduled_at"] = scheduled_at
                 session_payload["last_schedule_min_interval_seconds"] = min_interval
                 session_payload["last_schedule_max_interval_seconds"] = max_interval
@@ -1045,8 +1051,17 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"[主动消息] 自动触发任务创建失败喵: {e}")
         finally:
-            for timer_key in self.iter_related_auto_trigger_keys(session_id):
-                plugin.auto_trigger_timers.pop(timer_key, None)
+            # 只清理属于本次回调的计时器：若期间已被重建，代次会变化，
+            # 此时直接 pop 会把新计时器的引用删掉，导致重新计时失效。
+            if timer_generation and (
+                self._current_timer_generation(f"auto:{session_id}") != timer_generation
+            ):
+                logger.debug(
+                    f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 的自动触发已被重建，跳过计时器清理喵。"
+                )
+            else:
+                for timer_key in self.iter_related_auto_trigger_keys(session_id):
+                    plugin.auto_trigger_timers.pop(timer_key, None)
             # 计时器已从内存移除，卡片必须同步消失，否则会残留过期状态。
             await self._notify_web_console("auto_trigger_finished")
 
