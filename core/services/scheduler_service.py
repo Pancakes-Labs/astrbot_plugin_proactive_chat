@@ -967,6 +967,16 @@ class SchedulerService:
         session_id = plugin.session_service.normalize_session_id(session_id)
         try:
             async with plugin.data_lock:
+                # 持锁后必须重新比对代次。
+                if timer_generation and (
+                    self._current_timer_generation(f"auto:{session_id}")
+                    != timer_generation
+                ):
+                    logger.debug(
+                        f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 的自动触发已被重置取代，跳过喵。"
+                    )
+                    return
+
                 if session_id not in plugin.auto_trigger_timers:
                     logger.debug(
                         f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 的自动触发已被取消，跳过喵。"
