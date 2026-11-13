@@ -8,6 +8,11 @@ from typing import Any
 from astrbot.api import logger
 
 from ..domain.domain_enums import HookPoint, StageResult
+from ..domain.unanswered_counter import (
+    REASON_MISSING_WITH_HISTORY,
+    reaches_max_unanswered,
+    resolve_unanswered_state,
+)
 from ..pipeline.stage_protocol import BaseStage
 
 
@@ -58,11 +63,18 @@ class GatingStage(BaseStage):
         schedule_conf = session_config.get("schedule_settings", {})
         # 在锁内读取未回复计数并与上限比较。
         async with plugin.data_lock:
-            unanswered_count = plugin.session_data.get(session_id, {}).get(
-                "unanswered_count", 0
-            )
+            state = resolve_unanswered_state(plugin.session_data.get(session_id))
+            unanswered_count = state.count
             max_unanswered = schedule_conf.get("max_unanswered_times", 3)
-            if max_unanswered > 0 and unanswered_count >= max_unanswered:
+            # 计数缺失但存在历史调度痕迹：无法证明未达上限，保守暂停并提示人工确认。
+            if state.reason == REASON_MISSING_WITH_HISTORY and int(max_unanswered) > 0:
+                logger.warning(
+                    f"[主动消息] {plugin.session_service.get_session_log_str(session_id, session_config)} 的未回复计数缺失，"
+                    "但存在历史调度痕迹，本次主动消息暂停，请人工确认是否已达上限喵。"
+                )
+                ctx.abort("untrusted_unanswered_count")
+                return StageResult.STOP
+            if reaches_max_unanswered(state, max_unanswered):
                 logger.info(
                     f"[主动消息] {plugin.session_service.get_session_log_str(session_id, session_config)} 的未回复次数 ({unanswered_count}) 已达到上限 ({max_unanswered})，暂停主动消息喵。"
                 )

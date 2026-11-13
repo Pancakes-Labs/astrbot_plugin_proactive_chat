@@ -21,6 +21,11 @@ from ..domain.config_keys import (
     STARTUP_CHECK_SETTINGS_KEY,
 )
 from ..domain.session_key import is_friend_type
+from ..domain.unanswered_counter import (
+    REASON_MISSING_WITH_HISTORY,
+    reaches_max_unanswered,
+    resolve_unanswered_state,
+)
 
 
 class SchedulerService:
@@ -380,6 +385,7 @@ class SchedulerService:
         skipped_invalid = 0
         skipped_disabled = 0
         skipped_max_unanswered = 0
+        skipped_untrusted = 0
 
         # 合并后只有一个会话分组，私聊与群聊统一遍历。
         defaults = plugin.config.get(SESSION_DEFAULTS_KEY, {})
@@ -398,6 +404,8 @@ class SchedulerService:
                     skipped_disabled += 1
                 elif result == "max_unanswered":
                     skipped_max_unanswered += 1
+                elif result == "untrusted_count":
+                    skipped_untrusted += 1
 
         # POST /api/config 允许把分组写成 null；直接链式 .get() 会抛异常，
         # 让全局开关命令后续的排期整体中断，这里统一归一化为空字典。
@@ -417,6 +425,10 @@ class SchedulerService:
                     reasons.append(
                         f"{skipped_max_unanswered} 个会话已达到未回复次数上限"
                     )
+                if skipped_untrusted:
+                    reasons.append(
+                        f"{skipped_untrusted} 个会话未回复计数不可信，保守跳过"
+                    )
                 reason_str = "，".join(reasons) if reasons else "未发现可设置的会话"
                 logger.info(
                     f"[主动消息] 检测到自动主动消息配置，但没有需要设置的触发器喵（{reason_str}）。"
@@ -427,7 +439,7 @@ class SchedulerService:
             logger.info(
                 f"[主动消息] 已为 {auto_trigger_count} 个会话设置自动主动消息触发器喵。"
                 f"（跳过：已有任务 {skipped_existing}，无效 {skipped_invalid}，未启用 {skipped_disabled}，"
-                f"已达未回复上限 {skipped_max_unanswered}）"
+                f"已达未回复上限 {skipped_max_unanswered}，计数不可信 {skipped_untrusted}）"
             )
 
     async def setup_auto_trigger_for_session_config(
@@ -467,12 +479,18 @@ class SchedulerService:
 
         schedule_conf = session_config.get("schedule_settings", {})
         max_unanswered = schedule_conf.get("max_unanswered_times", 3)
-        unanswered_count = plugin.session_data.get(resolved_session_id, {}).get(
-            "unanswered_count", 0
-        )
-        if max_unanswered > 0 and unanswered_count >= max_unanswered:
+        state = resolve_unanswered_state(plugin.session_data.get(resolved_session_id))
+        # 计数缺失但存在历史调度痕迹时无法证明未达上限，保守跳过，
+        # 避免数据丢失后立刻为已达上限的会话重新排期。
+        if state.reason == REASON_MISSING_WITH_HISTORY and int(max_unanswered) > 0:
+            logger.warning(
+                f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id, session_config)} 的未回复计数缺失，"
+                "但存在历史调度痕迹，跳过初始化自动触发器设置以避免误排期喵。"
+            )
+            return "untrusted_count"
+        if reaches_max_unanswered(state, max_unanswered):
             logger.info(
-                f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id, session_config)} 的未回复次数 ({unanswered_count}) "
+                f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id, session_config)} 的未回复次数 ({state.count}) "
                 f"已达到上限 ({max_unanswered})，跳过初始化自动触发器设置喵。"
             )
             return "max_unanswered"
@@ -874,10 +892,15 @@ class SchedulerService:
                     else:
                         schedule_conf = session_config.get("schedule_settings", {})
                         max_unanswered = schedule_conf.get("max_unanswered_times", 3)
-                        unanswered_count = plugin.session_data.get(
-                            normalized_session_id, {}
-                        ).get("unanswered_count", 0)
-                        if max_unanswered > 0 and unanswered_count >= max_unanswered:
+                        state = resolve_unanswered_state(
+                            plugin.session_data.get(normalized_session_id)
+                        )
+                        if (
+                            state.reason == REASON_MISSING_WITH_HISTORY
+                            and int(max_unanswered) > 0
+                        ):
+                            auto_result = "untrusted_count"
+                        elif reaches_max_unanswered(state, max_unanswered):
                             auto_result = "max_unanswered"
                         else:
                             await self.cancel_auto_trigger(normalized_session_id)
@@ -894,6 +917,8 @@ class SchedulerService:
             if not reset_done:
                 if auto_result == "max_unanswered":
                     return {"ok": False, "reason": "max_unanswered"}
+                if auto_result == "untrusted_count":
+                    return {"ok": False, "reason": "untrusted_count"}
                 if auto_result == "existing":
                     return {"ok": False, "reason": "already_scheduled"}
                 return {"ok": False, "reason": "no_timer_config"}
@@ -951,6 +976,15 @@ class SchedulerService:
                 if last_message_time >= origin or current_time - origin < (
                     auto_trigger_minutes * 60
                 ):
+                    return
+
+                # 计数缺失但存在历史调度痕迹时无法证明未达上限，保守跳过。
+                state = resolve_unanswered_state(plugin.session_data.get(session_id))
+                if state.reason == REASON_MISSING_WITH_HISTORY:
+                    logger.warning(
+                        f"[主动消息] {plugin.session_service.get_session_log_str(session_id, current_config)} 的未回复计数缺失，"
+                        "但存在历史调度痕迹，跳过本次自动触发以避免误排期喵。"
+                    )
                     return
 
                 # 已有持久化任务时不再重复登记，避免覆盖已排好的发送时间。
