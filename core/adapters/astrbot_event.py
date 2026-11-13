@@ -242,9 +242,11 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
         sent = False
         via_core_api = False
         platform = self._resolve_platform()
-        # 平台实例可用且运行中时优先直发。
+        # 直发必须同时满足三个条件才算“真的尝试过”。
         tried_platform = (
-            platform is not None and platform.status == PlatformStatus.RUNNING
+            platform is not None
+            and platform.status == PlatformStatus.RUNNING
+            and MessageSession is not None
         )
         if tried_platform:
             sent = await self._send_via_platform(platform, message)
@@ -252,12 +254,13 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
         if not sent:
             sent = await self._send_via_core_api(message)
             via_core_api = sent
-            # 只有确实尝试过直发才说“直发未成功”。
+            # 只有确实尝试过直发才说“直发未成功”；否则说明直发条件不满足
+            # （平台实例缺失/未运行，或当前版本不提供 MessageSession）。
             if sent:
                 logger.info(
                     "[主动消息] 平台直发未成功，已由核心 API 兜底送达喵。"
                     if tried_platform
-                    else "[主动消息] 平台实例不可用，已由核心 API 直接送达喵。"
+                    else "[主动消息] 直发条件不满足，已由核心 API 直接送达喵。"
                 )
 
         if not sent:
@@ -272,12 +275,12 @@ class ProactiveMessageEvent(_EventBase):  # type: ignore[misc, valid-type]
     async def _send_via_platform(self, platform: Any, message: MessageChain) -> bool:
         """通过平台实例直发消息。
 
+        调用方必须先用 MessageSession 是否可用做前置判断，本方法不再重复探测。
+
         平台侧可能因瞬时状态（如 NapCat 未就绪、群成员信息缓存缺失）返回
         retcode 1200，这类失败由调用方转核心 API 兜底重试即可恢复，
         因此这里只记 warning，不按 error 上报。
         """
-        if MessageSession is None:  # pragma: no cover - 极旧版本
-            return False
         try:
             session_obj = MessageSession(
                 platform_name=platform.meta().id,
