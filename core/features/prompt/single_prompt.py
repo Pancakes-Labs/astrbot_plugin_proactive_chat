@@ -31,6 +31,10 @@ class DeliberateStage(BaseStage):
     hook = HookPoint.DELIBERATE
     priority = 10
 
+    # 空回重试上限。模型偶尔会返回空串或只有标点；
+    # 直接放弃本次调度会让用户白等一个周期，原地重试一次的成本远低于重新排期。
+    MAX_EMPTY_RETRIES = 1
+
     def __init__(self, orchestrator: Any) -> None:
         self.orchestrator = orchestrator
 
@@ -45,47 +49,59 @@ class DeliberateStage(BaseStage):
         prepared_prompt = ctx.prompts.merge_text() if ctx.prompts.blocks else None
         extra_parts = ctx.prompts.extra_parts if prompt_assembled else None
 
-        # trace 由调用链就地回填实际使用的 Provider / 模型 / 回退位置，
-        # 避免像旧实现那样在事后二次查询会话 Provider 导致数据失真。
+        final_user_prompt = ""
+        response_text = ""
+        result_chain: list = []
+        llm_response: Any = None
         trace: dict = {}
-        (
-            llm_response,
-            final_user_prompt,
-        ) = await plugin.llm_service.generate_llm_response(
-            session_id,
-            session_config,
-            ctx.history,
-            ctx.system_prompt,
-            ctx.unanswered_count,
-            event=ctx.event,
-            conversation=ctx.conversation,
-            platform_context=ctx.platform_context,
-            prepared_prompt=prepared_prompt,
-            extra_parts=extra_parts,
-            scene=ModelScene.PROACTIVE,
-            trace=trace,
-        )
-        if not llm_response:
-            # LLM 调用失败或无返回：中止并重调度。
-            ctx.abort("llm_failed")
-            return StageResult.RESCHEDULE
 
-        response_text = plugin.llm_service.extract_response_text(llm_response)
-        result_chain = plugin.llm_service.extract_response_chain(llm_response)
-
-        # 清洗必须在构造 LlmOutcome 之前：RECORD 阶段会按 outcome 存档，
-        # 脏内容一旦入库会在下一轮被当作上下文回灌，形成自我强化。
-        raw_text = response_text
-        response_text = clean_llm_text(response_text)
-        result_chain = clean_chain_components(result_chain)
-        if response_text != raw_text or contains_tool_markup(raw_text):
-            logger.warning(
-                "[主动消息] 检测到不合规的 LLM 输出（工具调用标记或对象残留），"
-                "已在存档与发送前完成清洗喵。"
+        for attempt in range(self.MAX_EMPTY_RETRIES + 1):
+            # trace 由调用链就地回填实际使用的 Provider / 模型 / 回退位置。
+            trace = {}
+            (
+                llm_response,
+                final_user_prompt,
+            ) = await plugin.llm_service.generate_llm_response(
+                session_id,
+                session_config,
+                ctx.history,
+                ctx.system_prompt,
+                ctx.unanswered_count,
+                event=ctx.event,
+                conversation=ctx.conversation,
+                platform_context=ctx.platform_context,
+                prepared_prompt=prepared_prompt,
+                extra_parts=extra_parts,
+                scene=ModelScene.PROACTIVE,
+                trace=trace,
             )
+            if not llm_response:
+                # LLM 调用失败或无返回：中止并重调度。
+                ctx.abort("llm_failed")
+                return StageResult.RESCHEDULE
 
-        # 文本与消息链都为空同样视为失败。
-        if not response_text and not result_chain:
+            response_text = plugin.llm_service.extract_response_text(llm_response)
+            result_chain = plugin.llm_service.extract_response_chain(llm_response)
+
+            # 清洗必须在构造 LlmOutcome 之前：RECORD 阶段会按 outcome 存档，
+            # 脏内容一旦入库会在下一轮被当作上下文回灌，形成自我强化。
+            raw_text = response_text
+            response_text = clean_llm_text(response_text)
+            result_chain = clean_chain_components(result_chain)
+            if response_text != raw_text or contains_tool_markup(raw_text):
+                logger.warning(
+                    "[主动消息] 检测到不合规的 LLM 输出（工具调用标记或对象残留），"
+                    "已在存档与发送前完成清洗喵。"
+                )
+
+            if response_text or result_chain:
+                break
+
+            # 文本与消息链都为空：还有重试机会就原地重来一次。
+            if attempt < self.MAX_EMPTY_RETRIES:
+                logger.warning("[主动消息] LLM 返回空内容，原地重试一次喵。")
+                continue
+
             ctx.abort("empty_response")
             return StageResult.RESCHEDULE
 
