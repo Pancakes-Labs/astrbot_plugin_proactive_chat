@@ -423,7 +423,6 @@ function ProviderChainField({ schema, fieldKey, value, onChange, depth }) {
                                             size="small"
                                             label="模型"
                                             value={model}
-                                            disabled={!providerId}
                                             onChange={(e) => updateAt(index, joinRef(providerId, e.target.value))}
                                             placeholder={(current && current.default_model) || '使用默认模型'}
                                             variant="outlined"
@@ -436,7 +435,6 @@ function ProviderChainField({ schema, fieldKey, value, onChange, depth }) {
                                             size="small"
                                             label="模型"
                                             value={model}
-                                            disabled={!providerId}
                                             onChange={(e) => updateAt(index, joinRef(providerId, e.target.value))}
                                             variant="outlined"
                                             sx={FIELD_SX}
