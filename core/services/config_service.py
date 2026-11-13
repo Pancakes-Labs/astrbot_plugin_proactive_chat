@@ -15,6 +15,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..domain import config_keys as ck
+from ..domain.model_scene import format_model_ref, parse_model_ref_list
 from ..domain.session_key import is_friend_type, is_group_type
 
 # 会话类型标签（与 PromptBlock / 前端约定一致）
@@ -79,11 +80,66 @@ class ConfigService:
                             "[主动消息] 群聊沉默判定时长为 0，群聊主动消息不可用喵。"
                         )
 
+            self._validate_model_settings(defaults)
+
             logger.info("[主动消息] 配置验证完成喵。")
 
         except Exception as e:
             logger.error(f"[主动消息] 配置验证过程出错喵: {e}")
             raise
+
+    def _validate_model_settings(self, defaults: dict) -> None:
+        """校验模型场景配置，主要拦截"填了但不存在"的回退候选。
+
+        这一步只在启动期做一次：用户填错 Provider ID 时立刻能看到提示，
+        而不是等到真正故障触发回退、恰好经过那个坏候选时才暴露。
+        """
+        model_settings = defaults.get(ck.MODEL_SETTINGS_KEY)
+        if not isinstance(model_settings, dict):
+            return
+
+        known_ids = self._known_provider_ids()
+        scenes = model_settings.get("scenes")
+        if not isinstance(scenes, dict):
+            return
+
+        for scene_name, node in scenes.items():
+            if not isinstance(node, dict):
+                continue
+            invalid: list[str] = []
+
+            provider_id = str(node.get("provider_id") or "").strip()
+            if provider_id and known_ids is not None and provider_id not in known_ids:
+                invalid.append(f"provider_id={provider_id}")
+
+            refs, malformed = parse_model_ref_list(node.get("fallback_chain"))
+            invalid.extend(malformed)
+            if known_ids is not None:
+                for ref in refs:
+                    if ref.provider_id and ref.provider_id not in known_ids:
+                        invalid.append(format_model_ref(ref))
+
+            if invalid:
+                logger.warning(
+                    f"[主动消息] 模型场景 {scene_name} 存在不可用的候选喵: "
+                    f"{', '.join(invalid)}。这些候选在实际调用时会被跳过，"
+                    "请检查服务提供商是否已被删除或改名。"
+                )
+
+    def _known_provider_ids(self) -> set[str] | None:
+        """读取当前已注册的 Provider ID 集合；无法读取时返回 None。"""
+        manager = getattr(
+            getattr(self.plugin, "context", None), "provider_manager", None
+        )
+        if manager is None:
+            return None
+        try:
+            insts = manager.inst_map
+        except Exception:
+            return None
+        if not isinstance(insts, dict):
+            return None
+        return {str(key) for key in insts.keys()}
 
     # ------------------------------------------------------------------
     # 会话配置解析
