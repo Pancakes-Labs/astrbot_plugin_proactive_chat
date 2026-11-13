@@ -54,7 +54,8 @@
                                         "description": "模型名称",
                                         "type": "string",
                                         "default": "",
-                                        "hint": "留空表示使用该服务提供商的默认模型。部分兼容端点不支持自动列出模型，可直接手动填写模型名。"
+                                        "hint": "留空表示使用该服务提供商的默认模型。部分兼容端点不支持自动列出模型，可直接手动填写模型名。",
+                                        "_special": "select_model"
                                     },
                                     "fallback_chain": {
                                         "description": "回退模型链",
@@ -81,7 +82,8 @@
                                         "description": "模型名称",
                                         "type": "string",
                                         "default": "",
-                                        "hint": "推荐填写上下文小、响应快的模型。"
+                                        "hint": "推荐填写上下文小、响应快的模型。",
+                                        "_special": "select_model"
                                     },
                                     "fallback_chain": {
                                         "description": "回退模型链",
@@ -108,7 +110,8 @@
                                         "description": "模型名称",
                                         "type": "string",
                                         "default": "",
-                                        "hint": "必须是支持多模态输入的模型，否则请求会失败并触发回退。"
+                                        "hint": "必须是支持多模态输入的模型，否则请求会失败并触发回退。",
+                                        "_special": "select_model"
                                     },
                                     "fallback_chain": {
                                         "description": "回退模型链",
