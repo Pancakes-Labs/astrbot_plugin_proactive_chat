@@ -303,7 +303,10 @@ class LlmService:
         )
         if llm_response_obj is None:
             # 具体原因已在 _call_with_fallback 内逐候选记录并上报。
-            if call_error is not None:
+            # 三者必须区分：钩子主动中止不是故障，记成"未找到 Provider"会误导排障。
+            if trace and trace.get("aborted"):
+                logger.info("[主动消息] 请求已被前置钩子中止，重新调度喵。")
+            elif call_error is not None:
                 logger.warning("[主动消息] LLM 调用失败，重新调度喵。")
             else:
                 logger.warning("[主动消息] 未找到可用的 LLM Provider，重新调度喵。")
@@ -421,10 +424,10 @@ class LlmService:
 
         failures: list[dict] = []
         last_error: BaseException | None = None
-        # 钩子产物：首个候选派发后固化，后续候选复用。
-        hooked_prompt: str | None = None
-        hooked_func_tool: Any = None
-        hooks_done = False
+        # 钩子只对首个候选派发一次，但其产物必须完整保留：
+        # 只带 prompt 与 func_tool 会让钩子写进 system_prompt / contexts /
+        # extra_user_content_parts 的内容在回退时整份丢失。
+        baseline: dict[str, Any] | None = None
 
         for candidate in chain:
             provider = await router.load_provider(candidate, session_id=session_id)
@@ -438,39 +441,50 @@ class LlmService:
                 )
                 continue
 
-            # 每个候选内部的尝试计数；MODEL_NOT_FOUND 会额外触发一次
-            # "摘掉 model 覆盖、用 Provider 默认模型"的重试。
+            # 本次候选实际请求的模型；strip 后置空表示走 Provider 默认模型。
+            requested_model = candidate.model or model
             attempt = 0
             strip_model = False
             while True:
+                effective_model = None if strip_model else requested_model
                 req = self._build_request(
-                    prompt=hooked_prompt or final_user_simulation_prompt,
+                    prompt=(baseline or {}).get("prompt")
+                    or final_user_simulation_prompt,
                     session_id=session_id,
-                    history_messages=history_messages,
-                    system_prompt=system_prompt,
-                    extra_parts=extra_parts,
-                    conversation=conversation,
-                    # strip_model 为真时不传 model，让 Provider 用自身默认模型。
-                    model=None if strip_model else (candidate.model or model),
+                    history_messages=(baseline or {}).get("contexts")
+                    if baseline is not None
+                    else history_messages,
+                    system_prompt=(baseline or {}).get("system_prompt")
+                    if baseline is not None
+                    else system_prompt,
+                    extra_parts=(baseline or {}).get("extra_parts")
+                    if baseline is not None
+                    else extra_parts,
+                    conversation=(baseline or {}).get("conversation")
+                    if baseline is not None
+                    else conversation,
+                    model=effective_model,
                 )
 
-                if not hooks_done:
-                    (
-                        stopped,
-                        hooked_prompt,
-                        hooked_func_tool,
-                    ) = await self._run_request_hooks(
+                if baseline is None:
+                    stopped, baseline = await self._run_request_hooks(
                         event, req, final_user_simulation_prompt
                     )
-                    hooks_done = True
                     if stopped:
                         logger.info(
                             "[主动消息] LLM 前置钩子终止了事件传播，放弃本次请求喵。"
                         )
+                        self._fill_trace(
+                            trace, scene, None, failures=failures, aborted=True
+                        )
                         return None, req, final_user_simulation_prompt, None
-                elif hooked_func_tool is not None:
-                    # 回退时不重复派发钩子，但要把已注入的工具带过来。
-                    req.func_tool = hooked_func_tool
+                    # 钩子可能把 prompt 清空，此时回退到原始提示词。
+                    if not req_prompt(req):
+                        baseline["prompt"] = final_user_simulation_prompt
+                else:
+                    # 回退时只替换候选相关字段，其余沿用钩子处理后的基线。
+                    if baseline.get("func_tool") is not None:
+                        req.func_tool = baseline["func_tool"]
 
                 try:
                     response = await asyncio.wait_for(
@@ -494,9 +508,14 @@ class LlmService:
                         fallback_on_content_refusal=policy.fallback_on_content_refusal,
                     )
 
-                    # 模型名写错：先摘掉 model 覆盖、用 Provider 默认模型重试一次，
-                    # 而不是直接跳到下一个候选。
-                    if step.strip_model_override and not strip_model:
+                    # 模型名写错：仅当本次确实带了 model 覆盖时，
+                    # 才摘掉覆盖改用 Provider 默认模型重试。
+                    # 否则重发的是完全相同的请求，纯属浪费一次调用。
+                    if (
+                        step.strip_model_override
+                        and not strip_model
+                        and effective_model
+                    ):
                         strip_model = True
                         logger.warning(
                             f"[主动消息] 候选 {candidate.index} 的模型不可用，"
@@ -518,8 +537,9 @@ class LlmService:
                         return None, req, final_user_simulation_prompt, last_error
                     break
 
-                if response is None:
-                    # 空响应：按空结果处理，继续尝试下一个候选。
+                # 空回应必须在候选循环内判定：放到循环外的话，
+                # 一个返回空对象的候选会把整条回退链提前终止。
+                if not self._is_usable_response(response):
                     failures.append(
                         {
                             "index": candidate.index,
@@ -527,15 +547,29 @@ class LlmService:
                             "kind": FailureKind.EMPTY_RESPONSE,
                         }
                     )
+                    logger.warning(
+                        f"[主动消息] 候选 #{candidate.index} 返回空内容，"
+                        "继续尝试下一个候选喵。"
+                    )
                     break
 
-                self._fill_trace(trace, scene, candidate, failures=failures)
+                self._fill_trace(
+                    trace,
+                    scene,
+                    candidate,
+                    failures=failures,
+                    provider=provider,
+                    response=response,
+                    effective_model=effective_model,
+                )
                 logger.info(
                     f"[主动消息] 调用 LLM 成功喵"
                     f"（候选 #{candidate.index} / {candidate.source}"
                     f"{'，已回退' if candidate.index > 0 else ''}）。"
                 )
-                self._report_success(req, history_messages, candidate, failures, scene)
+                self._report_success(
+                    req, history_messages, candidate, failures, scene, provider
+                )
                 return (
                     response,
                     req,
@@ -554,6 +588,19 @@ class LlmService:
                 )
             )
         return None, None, final_user_simulation_prompt, last_error
+
+    @staticmethod
+    def _is_usable_response(response: Any) -> bool:
+        """判断响应是否可用于投递。
+
+        文本或消息链至少有一个非空才算有效；两者皆空说明模型确实没产出，
+        应当继续尝试下一个候选，而不是把空结果当成成功返回。
+        """
+        if response is None:
+            return False
+        if LlmService.extract_response_text(response):
+            return True
+        return bool(LlmService.extract_response_chain(response))
 
     @staticmethod
     def _build_request(
@@ -579,8 +626,13 @@ class LlmService:
 
     async def _run_request_hooks(
         self, event: Any, req: Any, fallback_prompt: str
-    ) -> tuple[bool, str, Any]:
-        """派发 LLM 请求前置钩子，返回 (是否被停止, 钩子后提示词, 注入的工具)。"""
+    ) -> tuple[bool, dict[str, Any]]:
+        """派发 LLM 请求前置钩子，返回 (是否被停止, 钩子处理后的请求基线)。
+
+        基线必须完整捕获钩子对请求的所有改写：prompt、system_prompt、
+        contexts、extra_user_content_parts、conversation、func_tool。
+        回退或重试时据此重建请求，只替换 model，钩子注入的内容才不会丢。
+        """
         try:
             stopped = await self.dispatch_llm_request_hooks(event, req)
         except Exception as e:
@@ -590,10 +642,16 @@ class LlmService:
             # 钩子可能先请求停止事件再抛错，停止意图需保留。
             stopped = self._safe_is_stopped(event)
 
-        prompt = getattr(req, "prompt", None)
-        if not isinstance(prompt, str) or not prompt.strip():
-            prompt = fallback_prompt
-        return bool(stopped), prompt, getattr(req, "func_tool", None)
+        prompt = req_prompt(req) or fallback_prompt
+        baseline = {
+            "prompt": prompt,
+            "system_prompt": getattr(req, "system_prompt", None),
+            "contexts": getattr(req, "contexts", None),
+            "extra_parts": getattr(req, "extra_user_content_parts", None),
+            "conversation": getattr(req, "conversation", None),
+            "func_tool": getattr(req, "func_tool", None),
+        }
+        return bool(stopped), baseline
 
     @staticmethod
     def _fill_trace(
@@ -602,16 +660,22 @@ class LlmService:
         candidate: ModelCandidate | None,
         *,
         failures: list[dict],
+        provider: Any = None,
+        response: Any = None,
+        effective_model: str | None = None,
+        aborted: bool = False,
     ) -> None:
         """把本次调用结论写回调用方持有的 trace。
 
-        只写脱敏后的结构：provider_id 与模型名可能含业务含义，这里保留供
-        本地日志与调试使用，但遥测侧只取 provider_type 与失败分类。
+        关键点：provider_id 取"实际载入的 Provider"，而不是候选里配置的值。
+        会话默认候选的 provider_id 为空，若直接写候选值，默认配置下这个字段
+        永远是空的，等于没记录。
         """
         if trace is None:
             return
         trace["scene"] = scene
         trace["failures"] = list(failures)
+        trace["aborted"] = aborted
         if candidate is None:
             trace["provider_id"] = ""
             trace["model"] = ""
@@ -619,10 +683,11 @@ class LlmService:
             trace["provider_type"] = ""
             return
 
-        trace["provider_id"] = candidate.provider_id
-        trace["model"] = candidate.model
+        trace["provider_id"] = provider_id_of(provider) or candidate.provider_id
+        # 摘掉 model 覆盖后成功时，实际生效的是 Provider 默认模型。
+        trace["model"] = _response_model(response) or effective_model or ""
         trace["fallback_index"] = candidate.index
-        trace["provider_type"] = ""
+        trace["provider_type"] = type(provider).__name__ if provider else ""
 
     def _report_success(
         self,
@@ -631,8 +696,13 @@ class LlmService:
         candidate: ModelCandidate,
         failures: list[dict],
         scene: str,
+        provider: Any = None,
     ) -> None:
-        """上报一次成功调用。"""
+        """上报一次成功调用。
+
+        只上报 Provider 类型与回退位置，不上报 provider_id 与模型名：
+        两者都是用户在面板里自定义的、可能含业务含义的文本。
+        """
         plugin = self.plugin
         if not (plugin.telemetry and plugin.telemetry.enabled):
             return
@@ -643,11 +713,12 @@ class LlmService:
                     {
                         "provider_mode": "provider_request",
                         "success": True,
-                        "history_count": len(history_messages),
+                        "history_count": len(history_messages or []),
                         "extra_part_count": len(
                             getattr(req, "extra_user_content_parts", None) or []
                         ),
                         "scene": scene,
+                        "provider_type": type(provider).__name__ if provider else "",
                         "is_fallback": candidate.index > 0,
                         "fallback_index": candidate.index,
                         "failed_before": len(failures),
@@ -691,26 +762,6 @@ class LlmService:
                 )
             )
         )
-
-
-def _response_model(response: Any) -> str:
-    """尽力从响应对象上读取实际生效的模型名，读不到返回空串。
-
-    AstrBot 的 LLMResponse 并非所有版本都携带模型字段，因此这里逐级探测，
-    全部失败时交由调用方使用候选配置里的模型名兜底。
-    """
-    if response is None:
-        return ""
-    for attr in ("model", "model_name"):
-        value = getattr(response, attr, None)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    raw = getattr(response, "raw_completion", None)
-    if raw is not None:
-        value = getattr(raw, "model", None)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
 
     @staticmethod
     def _safe_is_stopped(event: Any) -> bool:
@@ -758,3 +809,54 @@ def _response_model(response: Any) -> str:
             return [comp for comp in chain if comp is not None]
         except Exception:
             return []
+
+
+# ----------------------------------------------------------------------
+# 模块级辅助函数：必须放在类定义之后。
+# ----------------------------------------------------------------------
+def req_prompt(req: Any) -> str:
+    """读取请求对象上的提示词，非字符串或空串时返回空串。"""
+    prompt = getattr(req, "prompt", None)
+    if isinstance(prompt, str) and prompt.strip():
+        return prompt
+    return ""
+
+
+def provider_id_of(provider: Any) -> str:
+    """从 Provider 实例读取其 ID。
+
+    会话默认候选的 ModelRef 里 provider_id 是空的，真正的 ID 只能从
+    载入后的 Provider 实例上取，否则默认配置下 trace 永远是空。
+    """
+    if provider is None:
+        return ""
+    config = getattr(provider, "provider_config", None)
+    if isinstance(config, dict):
+        value = config.get("id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for attr in ("provider_id", "id"):
+        value = getattr(provider, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _response_model(response: Any) -> str:
+    """尽力从响应对象上读取实际生效的模型名，读不到返回空串。
+
+    AstrBot 的 LLMResponse 并非所有版本都携带模型字段，因此这里逐级探测，
+    全部失败时交由调用方使用候选配置里的模型名兜底。
+    """
+    if response is None:
+        return ""
+    for attr in ("model", "model_name"):
+        value = getattr(response, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raw = getattr(response, "raw_completion", None)
+    if raw is not None:
+        value = getattr(raw, "model", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
