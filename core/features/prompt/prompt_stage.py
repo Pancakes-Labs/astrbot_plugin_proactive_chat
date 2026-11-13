@@ -69,7 +69,7 @@ class PromptStage(BaseStage):
             session_type=session_type,
             source_mode=source_mode,
             platform_history_count=platform_history_count,
-            conversation_history_count=len(getattr(ctx, "history", []) or []),
+            conversation_history_count=self._conversation_history_count(ctx),
         )
         values = {
             PLACEHOLDER_CURRENT_TIME: format_current_time(plugin.timezone),
@@ -190,6 +190,18 @@ class PromptStage(BaseStage):
                     metadata=dict(layer.get("metadata") or {}),
                 )
             )
+
+    @staticmethod
+    def _conversation_history_count(ctx) -> int:
+        """真实对话历史条数：扣除人格预设对话占用的条数。"""
+        total = len(getattr(ctx, "history", []) or [])
+        persona = getattr(ctx, "persona", None)
+        begin_count = getattr(persona, "begin_dialog_count", 0) if persona else 0
+        try:
+            begin_count = int(begin_count or 0)
+        except Exception:
+            begin_count = 0
+        return max(total - begin_count, 0)
 
     @staticmethod
     def _platform_history_count(ctx) -> int:
