@@ -199,6 +199,22 @@ class ApiRoutes:
                 "telemetry_config": _config_group(TELEMETRY_CONFIG_KEY),
             }
 
+        # 可用服务提供商与模型清单：供 select_provider 控件渲染。
+        @app.get("/api/providers")
+        async def list_providers(refresh: bool = False):
+            try:
+                providers = await state.list_providers(force_refresh=bool(refresh))
+            except Exception as e:
+                logger.error(f"[主动消息] 读取 Provider 清单失败喵: {e}")
+                providers = []
+            return {
+                "providers": providers,
+                # 留空表示跟随该会话当前对话模型，对应配置里的空 provider_id。
+                "special_options": [
+                    {"value": "", "label": "跟随 AstrBot 当前对话模型"},
+                ],
+            }
+
         # 可用人格列表：直接读 AstrBot 的 persona_manager，与 WebUI 保持同源。
         @app.get("/api/personas")
         async def list_personas():
@@ -320,6 +336,10 @@ class ApiRoutes:
             invalidate = getattr(state, "invalidate_persona_cache", None)
             if callable(invalidate):
                 invalidate()
+            # 模型配置变更后 Provider 清单可能不再匹配，一并失效缓存。
+            invalidate_providers = getattr(state, "invalidate_provider_cache", None)
+            if callable(invalidate_providers):
+                invalidate_providers()
 
             try:
                 plugin.config.save_config()
