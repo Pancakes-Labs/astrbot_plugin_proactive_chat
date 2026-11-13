@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from datetime import datetime
@@ -21,6 +22,7 @@ from ..domain.config_keys import (
     SESSION_LIST_KEY,
     STARTUP_CHECK_SETTINGS_KEY,
 )
+from ..services.model_router import maybe_await
 
 
 class StateBuilder:
@@ -42,6 +44,8 @@ class StateBuilder:
         # 的路径改变，缓存只是广播合并窗口的补充，不能当成权威来源。
         self._persona_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._persona_cache_ttl = 10.0
+        # Provider 清单缓存：(缓存时间, 清单)。模型列表拉取可能产生真实网络请求。
+        self._provider_cache: tuple[float, list[dict[str, Any]]] | None = None
         # 缓存代次：每次失效都递增。解析在 await 期间可能跨越一次失效，
         # 写完前比对代次即可丢弃这次结果，避免把旧人格重新灌回缓存。
         self._persona_cache_generation = 0
@@ -631,3 +635,141 @@ class StateBuilder:
         """将绝对路径转换为插件工作区内的相对路径。"""
         plugin_root = Path(__file__).resolve().parents[2].resolve()
         return str(path.resolve().relative_to(plugin_root)).replace("\\", "/")
+
+    # ------------------------------------------------------------------
+    # 可用模型清单
+    # ------------------------------------------------------------------
+    # 模型清单变化频率极低，而拉取可能触发真实 HTTP 请求，因此缓存时间取长一些。
+    PROVIDER_CACHE_TTL = 60.0
+    # 单个 Provider 的模型清单拉取上限：OpenAI 兼容端点会真的发一次请求，
+    # 逐个串行等待会把配置页拖到十几秒，必须并发 + 单点超时。
+    PROVIDER_MODELS_TIMEOUT = 3.0
+
+    async def list_providers(self, force_refresh: bool = False) -> list[dict[str, Any]]:
+        """返回可用于配置选择的 Provider 清单（含模型列表）。
+
+        模型列表是"尽力提供"：拿不到时返回空数组，前端会退化为只能手填模型名，
+        不影响选择 Provider 本身。
+        """
+        now = time.time()
+        cached = self._provider_cache
+        if (
+            not force_refresh
+            and cached is not None
+            and now - cached[0] < self.PROVIDER_CACHE_TTL
+        ):
+            return cached[1]
+
+        providers = self._collect_provider_instances()
+        if not providers:
+            self._provider_cache = (now, [])
+            return []
+
+        models_list = await asyncio.gather(
+            *(self._fetch_models(provider) for provider in providers.values()),
+            return_exceptions=True,
+        )
+
+        items: list[dict[str, Any]] = []
+        for (provider_id, provider), models in zip(providers.items(), models_list):
+            if isinstance(models, BaseException):
+                logger.debug(
+                    f"[主动消息] 读取 Provider {provider_id} 的模型列表失败喵: {models}"
+                )
+                models = []
+            items.append(
+                {
+                    "id": provider_id,
+                    "name": self._provider_display_name(provider_id, provider),
+                    "type": type(provider).__name__,
+                    "default_model": self._provider_default_model(provider),
+                    "models": models,
+                }
+            )
+
+        items.sort(key=lambda item: item["id"].lower())
+        self._provider_cache = (now, items)
+        return items
+
+    def invalidate_provider_cache(self) -> None:
+        """清空模型清单缓存，配置保存后调用以拿到最新状态。"""
+        self._provider_cache = None
+
+    def _collect_provider_instances(self) -> dict[str, Any]:
+        """收集 chat completion 类型的 Provider 实例。"""
+        context = getattr(self.plugin, "context", None)
+        if context is None:
+            return {}
+        getter = getattr(context, "get_all_providers", None)
+        if not callable(getter):
+            return {}
+        try:
+            insts = list(getter() or [])
+        except Exception as e:
+            logger.debug(f"[主动消息] 读取 Provider 列表失败喵: {e}")
+            return {}
+
+        result: dict[str, Any] = {}
+        for provider in insts:
+            config = getattr(provider, "provider_config", None)
+            provider_id = ""
+            if isinstance(config, dict):
+                provider_id = str(config.get("id") or "").strip()
+            if not provider_id:
+                provider_id = str(getattr(provider, "provider_id", "") or "").strip()
+            if not provider_id:
+                continue
+            result[provider_id] = provider
+        return result
+
+    @staticmethod
+    def _provider_display_name(provider_id: str, provider: Any) -> str:
+        """取 Provider 的可读名称，缺失时回落到 ID。"""
+        config = getattr(provider, "provider_config", None)
+        if isinstance(config, dict):
+            for key in ("name", "display_name", "type"):
+                value = config.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return provider_id
+
+    @staticmethod
+    def _provider_default_model(provider: Any) -> str:
+        """读取 Provider 当前默认模型名。"""
+        getter = getattr(provider, "get_model", None)
+        if callable(getter):
+            try:
+                value = getter()
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            except Exception:
+                pass
+        config = getattr(provider, "provider_config", None)
+        if isinstance(config, dict):
+            for key in ("model", "model_name", "default_model"):
+                value = config.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    @staticmethod
+    async def _fetch_models(provider: Any) -> list[str]:
+        """并发安全地拉取单个 Provider 的模型列表。"""
+        getter = getattr(provider, "get_models", None)
+        if not callable(getter):
+            return []
+        try:
+            models = await asyncio.wait_for(
+                maybe_await(getter()), timeout=StateBuilder.PROVIDER_MODELS_TIMEOUT
+            )
+        except Exception:
+            # 超时与各类 Provider 自定义异常统一视为"拿不到模型列表"。
+            return []
+        if not isinstance(models, (list, tuple)):
+            return []
+        result: list[str] = []
+        for item in models:
+            text = str(item or "").strip()
+            if text and text not in result:
+                result.append(text)
+        return result
