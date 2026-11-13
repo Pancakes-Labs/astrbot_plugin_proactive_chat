@@ -2,25 +2,23 @@
 /**
  * 文件职责：服务提供商与模型选择控件。
  *
- * 对外数据契约与后端保持一致，仍然只输出字符串：
- * - select_provider      -> "provider_id" 或 "provider_id::model"
- * - select_providers     -> ["provider_id::model", ...]
- * 可视化编辑（providers 下拉、模型联动、回退链上下移动）只发生在 UI 层，
- * 这样 AstrBot 原生面板、我们自己改的配置文件、运行时解析读到的都是同一份结构。
+ * 数据契约与 _conf_schema.json 严格一致，绝不自行组合编码：
+ * - select_provider  -> 纯 provider_id 字符串
+ * - select_model     -> 纯 model 字符串，靠同层 provider_id 联动
+ * - select_providers -> ["provider_id::model", ...]，只有回退链这一处用组合编码
  *
- * 之所以不把回退链做成对象数组：顺序即优先级，纯字符串列表在文本编辑器、
- * 手改配置文件、任何前端里语义都唯一确定，而对象数组/多选控件无法表达稳定顺序。
+ * 回退链之所以用组合编码：它本身是"有序候选列表"，配置形态只有一个 string[]，
+ * 而场景配置有独立的 provider_id / model 两个字段，二者不能混用同一套写法。
  */
 
 const {
-    Box, TextField, Typography, Paper, Chip, MenuItem, Button, IconButton, Tooltip,
+    Box, TextField, Typography, Paper, Chip, MenuItem, Button, IconButton,
+    Tooltip, Autocomplete, Switch, FormControlLabel,
 } = MaterialUI;
 const { useState, useEffect } = React;
 
-// 值与模型的组合分隔符，与后端 model_scene.REF_SEPARATOR 必须保持一致。
+// 回退链元素的分隔符，与后端 model_scene.REF_SEPARATOR 必须一致。
 const REF_SEPARATOR = '::';
-// 模拟对话模型列表可能一次都请求不到；部分兼容端点不提供模型接口，只能手填。
-const MODEL_MANUAL_HINT = '可直接输入模型名，留空表示使用该服务提供商的默认模型';
 
 // Provider 清单在页面生命周期内只请求一次：控件数量多，逐字段请求会重复开销。
 const providerStore = {
@@ -29,21 +27,30 @@ const providerStore = {
     promise: null,
 };
 
+/**
+ * 拉取 Provider 清单。
+ *
+ * 失败时**不写入 items**：空数组是真值，一旦缓存成 []，后续所有控件都会
+ * 认为是"没有可用提供商"而不再重试，用户只能刷新整个页面才能恢复。
+ */
 function loadProvidersOnce() {
     if (providerStore.items) return Promise.resolve(providerStore);
     if (providerStore.promise) return providerStore.promise;
 
     const api = window.ApiClient;
     if (!api || typeof api.getProviders !== 'function') {
-        providerStore.items = [];
         return Promise.resolve(providerStore);
     }
 
     providerStore.promise = api.getProviders()
         .then((data) => {
-            providerStore.items = (data && data.providers) || [];
-            providerStore.specialOptions = (data && data.special_options) || [];
-            return providerStore;
+            const items = (data && data.providers) || [];
+            // 仅在拿到非空结果时缓存，空结果视为一次无效响应。
+            if (items.length > 0) {
+                providerStore.items = items;
+                providerStore.specialOptions = (data && data.special_options) || [];
+            }
+            return { ...providerStore, items };
         })
         .catch((err) => {
             console.error('加载服务提供商列表失败', err);
@@ -53,8 +60,7 @@ function loadProvidersOnce() {
                     key: 'config-provider-load',
                 });
             }
-            providerStore.items = [];
-            return providerStore;
+            return { ...providerStore, items: [] };
         })
         .finally(() => {
             providerStore.promise = null;
@@ -75,7 +81,7 @@ function splitRef(raw) {
     };
 }
 
-// 反向拼装。model 为空时只输出 provider_id，避免产生 "pid::" 这类冗余写法。
+// 反向拼装。model 为空时只输出 provider_id，避免产生 "pid::" 冗余写法。
 function joinRef(providerId, model) {
     const pid = (providerId || '').trim();
     const mid = (model || '').trim();
@@ -84,7 +90,6 @@ function joinRef(providerId, model) {
     return `${pid}${REF_SEPARATOR}${mid}`;
 }
 
-// 统一的输入框外观，与其它配置项保持一致的圆角与边框。
 const FIELD_SX = {
     '& .MuiOutlinedInput-root': {
         borderRadius: 1.5,
@@ -109,14 +114,7 @@ function FieldHeading({ schema, fieldKey, hint }) {
     );
 }
 
-/**
- * 服务提供商 + 模型联动选择。
- *
- * 值形如 "provider_id::model"。选择 provider 后模型下拉会切到该 provider 的
- * 模型列表，同时保留自由输入：很多 OpenAI 兼容端点不提供模型枚举接口，
- * 强制下拉会让这些用户完全无法配置。
- */
-function ProviderSelectField({ schema, fieldKey, value, onChange, depth }) {
+function useProviders() {
     const [providers, setProviders] = useState(providerStore.items || []);
     const [specialOptions, setSpecialOptions] = useState(providerStore.specialOptions || []);
 
@@ -130,26 +128,37 @@ function ProviderSelectField({ schema, fieldKey, value, onChange, depth }) {
         return () => { disposed = true; };
     }, []);
 
-    const { providerId, model } = splitRef(value);
-    const current = providers.find((item) => item.id === providerId);
-    const modelOptions = (current && current.models) || [];
-    // 已保存的模型中可能有已被删除的项，补一个占位避免下拉显示空白。
-    const modelMissing = Boolean(model) && modelOptions.length > 0 && !modelOptions.includes(model);
-    const providerMissing = Boolean(providerId) && providers.length > 0 && !current;
+    return { providers, specialOptions };
+}
 
-    const emit = (nextProviderId, nextModel) => onChange(joinRef(nextProviderId, nextModel));
+function findProvider(providers, providerId) {
+    return providers.find((item) => item.id === providerId) || null;
+}
+
+function providerLabel(item) {
+    return item.name === item.id ? item.id : `${item.name}（${item.id}）`;
+}
+
+/**
+ * 服务提供商选择。对外只输出纯 provider_id。
+ */
+function ProviderSelectField({ schema, fieldKey, value, onChange, depth }) {
+    const { providers, specialOptions } = useProviders();
+    const providerId = value === undefined || value === null ? '' : String(value).trim();
+    const current = findProvider(providers, providerId);
+    const providerMissing = Boolean(providerId) && providers.length > 0 && !current;
 
     return (
         <Box sx={{ py: 1.75, borderBottom: depth === 0 ? 'none' : '1px solid', borderColor: 'divider' }}>
             <FieldHeading schema={schema} fieldKey={fieldKey} />
-            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                 <TextField
                     select
                     fullWidth
                     size="small"
                     label="服务提供商"
                     value={providerId}
-                    onChange={(e) => emit(e.target.value, '')}
+                    onChange={(e) => onChange(e.target.value)}
                     variant="outlined"
                     sx={FIELD_SX}
                 >
@@ -165,91 +174,101 @@ function ProviderSelectField({ schema, fieldKey, value, onChange, depth }) {
                     )}
                     {providers.map((item) => (
                         <MenuItem key={item.id} value={item.id}>
-                            {item.name === item.id ? item.id : `${item.name}（${item.id}）`}
+                            {providerLabel(item)}
                         </MenuItem>
                     ))}
                 </TextField>
-
-                {modelOptions.length > 0 ? (
-                    <TextField
-                        select
-                        fullWidth
-                        size="small"
-                        label="模型"
-                        value={model}
-                        onChange={(e) => emit(providerId, e.target.value)}
-                        helperText={MODEL_MANUAL_HINT}
-                        variant="outlined"
-                        SelectProps={{
-                            // 允许自由输入：兼容端点常常给不出完整模型列表。
-                            SelectDisplayProps: { 'data-free-input': 'true' }
-                        }}
-                        sx={FIELD_SX}
-                    >
-                        <MenuItem value="">
-                            <em>使用默认模型</em>
-                        </MenuItem>
-                        {modelMissing && (
-                            <MenuItem key="missing_model" value={model}>
-                                {`${model}（不在已知列表）`}
-                            </MenuItem>
-                        )}
-                        {modelOptions.map((name) => (
-                            <MenuItem key={name} value={name}>{name}</MenuItem>
-                        ))}
-                    </TextField>
-                ) : (
-                    <TextField
-                        fullWidth
-                        size="small"
-                        label="模型"
-                        value={model}
-                        disabled={!providerId}
-                        onChange={(e) => emit(providerId, e.target.value)}
-                        placeholder={(current && current.default_model) || '使用默认模型'}
-                        helperText={MODEL_MANUAL_HINT}
-                        variant="outlined"
-                        sx={FIELD_SX}
-                    />
+                {current && (
+                    <Typography variant="caption" color="text.secondary">
+                        该提供商默认模型：{current.default_model || '未知'}
+                    </Typography>
+                )}
+                {providers.length === 0 && (
+                    <Typography variant="caption" color="warning.main">
+                        未读取到任何服务提供商，请先在 AstrBot 中配置对话模型。
+                    </Typography>
                 )}
             </Box>
-            {current && (
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
-                    该提供商默认模型：{current.default_model || '未知'}
-                    {modelOptions.length === 0 && ' ｜ 未获取到模型列表，可手动填写'}
-                </Typography>
-            )}
         </Box>
     );
 }
 
 /**
- * 回退链可视化编辑器。
+ * 模型输入控件（受同层 provider_id 驱动）。
  *
- * 对外输出 string[]：每行一个候选。UI 提供 provider 下拉、模型联动与
- * 上移 / 下移按钮，让"顺序即优先级"这件事可被直观操作，
- * 而不是让用户在一行行文本里手动调换。
+ * 用 Autocomplete freeSolo：既能从已知列表里选，也能直接手打任意模型名。
+ * 很多 OpenAI 兼容端点不提供模型枚举接口，强制下拉会让这些用户无法配置。
+ */
+function ModelAutocomplete({ value, options, placeholder, helperText, onChange }) {
+    return (
+        <Autocomplete
+            freeSolo
+            autoSelect
+            options={options}
+            value={value || ''}
+            onChange={(event, next) => onChange(typeof next === 'string' ? next : (next || ''))}
+            onInputChange={(event, next, reason) => {
+                // 只有用户实际输入才回写，避免选项切换时被重置成空。
+                if (reason === 'input') onChange(next);
+            }}
+            renderInput={(params) => (
+                <TextField
+                    {...params}
+                    size="small"
+                    label="模型"
+                    placeholder={placeholder}
+                    helperText={helperText}
+                    variant="outlined"
+                    sx={FIELD_SX}
+                />
+            )}
+        />
+    );
+}
+
+/**
+ * 场景级模型选择：读取同层 provider_id 作为联动依据。
+ */
+function ModelSelectField({ schema, fieldKey, value, onChange, depth, siblings }) {
+    const { providers } = useProviders();
+    const parent = siblings && typeof siblings === 'object' ? siblings : {};
+    const providerId = parent.provider_id ? String(parent.provider_id).trim() : '';
+    const current = findProvider(providers, providerId);
+    const modelOptions = (current && current.models) || [];
+    const model = value === undefined || value === null ? '' : String(value).trim();
+
+    return (
+        <Box sx={{ py: 1.75, borderBottom: depth === 0 ? 'none' : '1px solid', borderColor: 'divider' }}>
+            <FieldHeading schema={schema} fieldKey={fieldKey} />
+            <ModelAutocomplete
+                value={model}
+                options={modelOptions}
+                placeholder={(current && current.default_model) || '留空则使用提供商默认模型'}
+                helperText={
+                    !providerId
+                        ? '尚未选择服务提供商，此处填写的模型将应用于该会话当前使用的提供商'
+                        : (modelOptions.length === 0
+                            ? '未获取到模型列表，可直接手动填写模型名'
+                            : '可从列表选择，也可直接输入列表外的模型名')
+                }
+                onChange={onChange}
+            />
+        </Box>
+    );
+}
+
+/**
+ * 回退链可视化编辑器。对外输出 string[]。
  */
 function ProviderChainField({ schema, fieldKey, value, onChange, depth }) {
-    const [providers, setProviders] = useState(providerStore.items || []);
-    const [specialOptions, setSpecialOptions] = useState(providerStore.specialOptions || []);
+    const { providers, specialOptions } = useProviders();
+    // 每行的"手填模型"开关状态：列表外的模型必须能录入。
+    const [manualRows, setManualRows] = useState({});
 
-    useEffect(() => {
-        let disposed = false;
-        loadProvidersOnce().then((store) => {
-            if (disposed) return;
-            setProviders(store.items || []);
-            setSpecialOptions(store.specialOptions || []);
-        });
-        return () => { disposed = true; };
-    }, []);
-
-    // 容错：非数组、或包含非字符串项时统一归一为空数组后按行渲染。
     const chain = Array.isArray(value) ? value.map((item) => String(item || '')) : [];
 
     const updateAt = (index, nextRef) => {
         const next = chain.slice();
-        // 空行代表"还没选完"，原样保留占位，避免用户刚点开下拉就被删除。
         next[index] = nextRef;
         onChange(next);
     };
@@ -301,10 +320,16 @@ function ProviderChainField({ schema, fieldKey, value, onChange, depth }) {
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                 {chain.map((raw, index) => {
                     const { providerId, model } = splitRef(raw);
-                    const current = providers.find((item) => item.id === providerId);
+                    const current = findProvider(providers, providerId);
                     const modelOptions = (current && current.models) || [];
                     const providerMissing = Boolean(providerId) && providers.length > 0 && !current;
-                    const modelMissing = Boolean(model) && modelOptions.length > 0 && !modelOptions.includes(model);
+                    const modelInList = Boolean(model) && modelOptions.includes(model);
+                    // 有列表但当前值不在列表里，或模型列表压根拿不到，都要走手填分支。
+                    const manual = manualRows[index] !== undefined
+                        ? manualRows[index]
+                        : (modelOptions.length === 0 || (Boolean(model) && !modelInList));
+
+                    const setManual = (next) => setManualRows((prev) => ({ ...prev, [index]: next }));
 
                     return (
                         <Paper
@@ -386,47 +411,58 @@ function ProviderChainField({ schema, fieldKey, value, onChange, depth }) {
                                     )}
                                     {providers.map((item) => (
                                         <MenuItem key={item.id} value={item.id}>
-                                            {item.name === item.id ? item.id : `${item.name}（${item.id}）`}
+                                            {providerLabel(item)}
                                         </MenuItem>
                                     ))}
                                 </TextField>
 
-                                {modelOptions.length > 0 ? (
-                                    <TextField
-                                        select
-                                        fullWidth
-                                        size="small"
-                                        label="模型"
-                                        value={model}
-                                        onChange={(e) => updateAt(index, joinRef(providerId, e.target.value))}
-                                        variant="outlined"
-                                        sx={FIELD_SX}
-                                    >
-                                        <MenuItem value="">
-                                            <em>使用默认模型</em>
-                                        </MenuItem>
-                                        {modelMissing && (
-                                            <MenuItem key="missing_model" value={model}>
-                                                {`${model}（不在已知列表）`}
+                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                                    {manual ? (
+                                        <TextField
+                                            fullWidth
+                                            size="small"
+                                            label="模型"
+                                            value={model}
+                                            disabled={!providerId}
+                                            onChange={(e) => updateAt(index, joinRef(providerId, e.target.value))}
+                                            placeholder={(current && current.default_model) || '使用默认模型'}
+                                            variant="outlined"
+                                            sx={FIELD_SX}
+                                        />
+                                    ) : (
+                                        <TextField
+                                            select
+                                            fullWidth
+                                            size="small"
+                                            label="模型"
+                                            value={model}
+                                            disabled={!providerId}
+                                            onChange={(e) => updateAt(index, joinRef(providerId, e.target.value))}
+                                            variant="outlined"
+                                            sx={FIELD_SX}
+                                        >
+                                            <MenuItem value="">
+                                                <em>使用默认模型</em>
                                             </MenuItem>
-                                        )}
-                                        {modelOptions.map((name) => (
-                                            <MenuItem key={name} value={name}>{name}</MenuItem>
-                                        ))}
-                                    </TextField>
-                                ) : (
-                                    <TextField
-                                        fullWidth
-                                        size="small"
-                                        label="模型"
-                                        value={model}
-                                        disabled={!providerId}
-                                        onChange={(e) => updateAt(index, joinRef(providerId, e.target.value))}
-                                        placeholder={(current && current.default_model) || '使用默认模型'}
-                                        variant="outlined"
-                                        sx={FIELD_SX}
-                                    />
-                                )}
+                                            {modelOptions.map((name) => (
+                                                <MenuItem key={name} value={name}>{name}</MenuItem>
+                                            ))}
+                                        </TextField>
+                                    )}
+                                    {modelOptions.length > 0 && (
+                                        <FormControlLabel
+                                            sx={{ m: 0, '& .MuiFormControlLabel-label': { fontSize: '0.7rem' } }}
+                                            control={
+                                                <Switch
+                                                    size="small"
+                                                    checked={manual}
+                                                    onChange={(e) => setManual(e.target.checked)}
+                                                />
+                                            }
+                                            label="手动填写模型名"
+                                        />
+                                    )}
+                                </Box>
                             </Box>
                         </Paper>
                     );
@@ -442,17 +478,12 @@ function ProviderChainField({ schema, fieldKey, value, onChange, depth }) {
             >
                 添加回退模型
             </Button>
-
-            {providers.length === 0 && (
-                <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 1 }}>
-                    未读取到任何服务提供商，请先在 AstrBot 中配置对话模型。
-                </Typography>
-            )}
         </Box>
     );
 }
 
 window.ProviderSelectField = ProviderSelectField;
+window.ModelSelectField = ModelSelectField;
 window.ProviderChainField = ProviderChainField;
 window.ProviderSelectUtil = Object.freeze({
     splitRef: splitRef,

@@ -626,7 +626,7 @@ function QuietHoursField({ schema, fieldKey, value, onChange, depth = 1 }) {
     );
 }
 
-function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', expandedKeys = [], onToggleExpand = () => {}, sessionType = '' }) {
+function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', expandedKeys = [], onToggleExpand = () => {}, sessionType = '', siblings = null }) {
     // 隐藏字段完全不渲染：hidden 为本项目写法，invisible 与 AstrBot 面板保持一致，
     // 两者都用于后端保留字段或不希望用户直接编辑的项。
     if (schema.hidden || schema.invisible) return null;
@@ -674,6 +674,23 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                     value={localValue !== undefined ? localValue : (schema.default || '')}
                     onChange={handleChange}
                     depth={depth}
+                />
+            );
+        }
+    }
+
+    // 模型选择：需要读取同层 provider_id 做联动，故必须拿到 siblings。
+    if (schema._special === 'select_model') {
+        const ModelSelectField = window.ModelSelectField;
+        if (ModelSelectField) {
+            return (
+                <ModelSelectField
+                    schema={schema}
+                    fieldKey={fieldKey}
+                    value={localValue !== undefined ? localValue : (schema.default || '')}
+                    onChange={handleChange}
+                    depth={depth}
+                    siblings={siblings}
                 />
             );
         }
@@ -834,6 +851,8 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
                                     // 必须向下透传：模板列表嵌在 prompt_settings 这一层内部，
                                     // 漏传会让会话差异页拿不到会话类型，过滤逻辑整体失效。
                                     sessionType={sessionType}
+                                    // 同层配置对象：select_model 靠它读取同组的 provider_id。
+                                    siblings={localValue && typeof localValue === 'object' ? localValue : null}
                                 />
                             ))}
                         </Box>
