@@ -10,6 +10,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..domain.unanswered_counter import UnansweredState, resolve_unanswered_state
 from ..store.session_store import SessionStore
 
 
@@ -24,8 +25,40 @@ class StorageService:
             self._store.session_data_file = plugin.session_data_file
 
     async def load_data(self) -> None:
-        """从文件中加载会话数据（异步无锁内部实现）。"""
+        """从文件中加载会话数据（异步无锁内部实现）。
+
+        主文件损坏时 SessionStore 会自动回退备份；这里负责把恢复结果
+        与条目数记录下来，便于启动后核对数据是否凭空变少。
+        """
         self.plugin.session_data = await self._store.load()
+
+        # 只在主文件损坏 / 主备均不可用这两种真实故障时告警，
+        # 正常启动与非规范键的历史数据不会走到这里。
+        notice = getattr(self._store, "last_load_notice", "")
+        if notice:
+            logger.error(f"[主动消息] 会话数据加载异常喵: {notice}")
+        logger.info(
+            f"[主动消息] 会话数据加载完成，共 {len(self.plugin.session_data)} 条记录喵。"
+        )
+        await self._persist_initial_backup()
+
+    async def _persist_initial_backup(self) -> None:
+        """启动加载完成后固化一份备份。
+
+        此时内存数据已确认可用，用它重建备份可以修复「主文件好、备份坏」
+        或「备份落后于主文件」的情况，保证下次强杀时总有可靠回滚点。
+        """
+        try:
+            if not self.plugin.session_data:
+                return
+            await self._store.save(self.plugin.session_data)
+        except Exception as e:
+            logger.warning(f"[主动消息] 启动期写入会话数据备份失败喵: {e}")
+
+    def get_unanswered_state(self, session_id: str) -> UnansweredState:
+        """读取会话的未回复计数状态，区分「缺失」与「为 0」。"""
+        session_info = self.plugin.session_data.get(session_id)
+        return resolve_unanswered_state(session_info)
 
     async def save_data(self) -> None:
         """将会话数据保存到文件（异步无锁内部实现）。"""

@@ -29,6 +29,138 @@
                 "default": "",
                 "hint": "留空表示不干预，按“自定义规则 > /persona 会话人格 > 绑定档案默认人格 > 全局默认人格”的顺序自动解析，填写 [%None] 可让主动消息不使用任何人格。会话差异配置中可单独覆盖。"
             },
+            "model_settings": {
+                "description": "模型选择与回退链",
+                "type": "object",
+                "hint": "在这里选择进行主动消息时使用的模型。留空表示跟随该会话当前使用的对话模型，与旧版行为完全一致。会话差异配置中可单独覆盖。",
+                "items": {
+                    "scenes": {
+                        "description": "分场景模型设置",
+                        "type": "object",
+                        "items": {
+                            "proactive": {
+                                "description": "主动消息生成",
+                                "type": "object",
+                                "hint": "真正决定主动消息内容的模型。",
+                                "items": {
+                                    "provider_id": {
+                                        "description": "服务提供商",
+                                        "type": "string",
+                                        "_special": "select_provider",
+                                        "default": "",
+                                        "hint": "留空表示跟随该会话当前对话模型。"
+                                    },
+                                    "model": {
+                                        "description": "模型名称",
+                                        "type": "string",
+                                        "default": "",
+                                        "hint": "留空表示使用该服务提供商的默认模型。部分兼容端点不支持自动列出模型，可直接手动填写模型名。",
+                                        "_special": "select_model"
+                                    },
+                                    "fallback_chain": {
+                                        "description": "回退模型链",
+                                        "type": "list",
+                                        "_special": "select_providers",
+                                        "default": [],
+                                        "hint": "配置顺序即优先级：主模型调用失败时按从上到下的顺序依次尝试，第一个成功的即被采用。model 留空表示使用该提供商默认模型。所有候选都失败时，本轮主动消息会被放弃并重新排入调度。"
+                                    }
+                                }
+                            },
+                            "decisions": {
+                                "description": "轻量判定",
+                                "type": "object",
+                                "hint": "用于“要不要发言”“这条要不要发”之类的判定调用，适合配成便宜的小模型以降低成本。",
+                                "items": {
+                                    "provider_id": {
+                                        "description": "服务提供商",
+                                        "type": "string",
+                                        "_special": "select_provider",
+                                        "default": "",
+                                        "hint": "留空表示跟随该会话当前对话模型。"
+                                    },
+                                    "model": {
+                                        "description": "模型名称",
+                                        "type": "string",
+                                        "default": "",
+                                        "hint": "推荐填写上下文小、响应快的模型。",
+                                        "_special": "select_model"
+                                    },
+                                    "fallback_chain": {
+                                        "description": "回退模型链",
+                                        "type": "list",
+                                        "_special": "select_providers",
+                                        "default": [],
+                                        "hint": "顺序即优先级，格式与主动消息生成一致。"
+                                    }
+                                }
+                            },
+                            "vision": {
+                                "description": "图片理解与生成",
+                                "type": "object",
+                                "hint": "处理图片、截图等多模态输入时使用的模型，需要该模型本身支持图像输入。若模型本身具备图像理解和生成能力可略过该项。",
+                                "items": {
+                                    "provider_id": {
+                                        "description": "服务提供商",
+                                        "type": "string",
+                                        "_special": "select_provider",
+                                        "default": "",
+                                        "hint": "留空表示跟随该会话当前对话模型。"
+                                    },
+                                    "model": {
+                                        "description": "模型名称",
+                                        "type": "string",
+                                        "default": "",
+                                        "hint": "必须是支持多模态输入的模型，否则请求会失败并触发回退。",
+                                        "_special": "select_model"
+                                    },
+                                    "fallback_chain": {
+                                        "description": "回退模型链",
+                                        "type": "list",
+                                        "_special": "select_providers",
+                                        "default": [],
+                                        "hint": "格式同上；建议把视觉与图像处理能力更强的模型放在靠前位置。"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "failure_policy": {
+                        "description": "失败处置策略",
+                        "type": "object",
+                        "hint": "控制单次请求的耗时上限与重试次数。",
+                        "items": {
+                            "request_timeout_seconds": {
+                                "description": "单个候选请求超时（秒）",
+                                "type": "int",
+                                "default": 120,
+                                "hint": "单个候选最多等待多久。超时后按策略决定原地重试还是切换到下一个候选。",
+                                "slider": {
+                                    "min": 10,
+                                    "max": 600,
+                                    "step": 10
+                                }
+                            },
+                            "retry_same_provider_times": {
+                                "description": "同一候选重试次数",
+                                "type": "int",
+                                "default": 1,
+                                "hint": "仅在超时、网络异常这类瞬时故障时生效；限流、额度耗尽、鉴权失败会直接切换候选，不会原地重试。",
+                                "slider": {
+                                    "min": 0,
+                                    "max": 5,
+                                    "step": 1
+                                }
+                            },
+                            "fallback_on_content_refusal": {
+                                "description": "内容拒绝时也尝试回退",
+                                "type": "bool",
+                                "default": false,
+                                "hint": "默认关闭。开启后模型因内容安全策略拒绝生成时仍会继续尝试回退链。"
+                            }
+                        }
+                    }
+                }
+            },
             "prompt_settings": {
                 "description": "🧠 主动消息提示词设置",
                 "type": "object",

@@ -21,6 +21,15 @@ from ..domain.config_keys import (
     STARTUP_CHECK_SETTINGS_KEY,
 )
 from ..domain.session_key import is_friend_type
+from ..domain.unanswered_counter import (
+    REASON_MISSING_WITH_HISTORY,
+    UNANSWERED_COUNT_KEY,
+    UNTRUSTED_MARK_KEY,
+    is_unanswered_limit_enabled,
+    mark_untrusted,
+    reaches_max_unanswered,
+    resolve_unanswered_state,
+)
 
 
 class SchedulerService:
@@ -119,7 +128,7 @@ class SchedulerService:
             plugin._track_task(
                 asyncio.create_task(
                     self.handle_auto_trigger_callback(
-                        captured_session_id, auto_trigger_minutes
+                        captured_session_id, auto_trigger_minutes, token
                     )
                 )
             )
@@ -380,6 +389,7 @@ class SchedulerService:
         skipped_invalid = 0
         skipped_disabled = 0
         skipped_max_unanswered = 0
+        skipped_untrusted = 0
 
         # 合并后只有一个会话分组，私聊与群聊统一遍历。
         defaults = plugin.config.get(SESSION_DEFAULTS_KEY, {})
@@ -398,6 +408,8 @@ class SchedulerService:
                     skipped_disabled += 1
                 elif result == "max_unanswered":
                     skipped_max_unanswered += 1
+                elif result == "untrusted_count":
+                    skipped_untrusted += 1
 
         # POST /api/config 允许把分组写成 null；直接链式 .get() 会抛异常，
         # 让全局开关命令后续的排期整体中断，这里统一归一化为空字典。
@@ -417,6 +429,10 @@ class SchedulerService:
                     reasons.append(
                         f"{skipped_max_unanswered} 个会话已达到未回复次数上限"
                     )
+                if skipped_untrusted:
+                    reasons.append(
+                        f"{skipped_untrusted} 个会话未回复计数不可信，保守跳过"
+                    )
                 reason_str = "，".join(reasons) if reasons else "未发现可设置的会话"
                 logger.info(
                     f"[主动消息] 检测到自动主动消息配置，但没有需要设置的触发器喵（{reason_str}）。"
@@ -427,7 +443,7 @@ class SchedulerService:
             logger.info(
                 f"[主动消息] 已为 {auto_trigger_count} 个会话设置自动主动消息触发器喵。"
                 f"（跳过：已有任务 {skipped_existing}，无效 {skipped_invalid}，未启用 {skipped_disabled}，"
-                f"已达未回复上限 {skipped_max_unanswered}）"
+                f"已达未回复上限 {skipped_max_unanswered}，计数不可信 {skipped_untrusted}）"
             )
 
     async def setup_auto_trigger_for_session_config(
@@ -467,12 +483,20 @@ class SchedulerService:
 
         schedule_conf = session_config.get("schedule_settings", {})
         max_unanswered = schedule_conf.get("max_unanswered_times", 3)
-        unanswered_count = plugin.session_data.get(resolved_session_id, {}).get(
-            "unanswered_count", 0
-        )
-        if max_unanswered > 0 and unanswered_count >= max_unanswered:
+        state = resolve_unanswered_state(plugin.session_data.get(resolved_session_id))
+        # 计数缺失但存在历史调度痕迹时无法证明未达上限，保守跳过，
+        # 避免数据丢失后立刻为已达上限的会话重新排期。
+        if state.reason == REASON_MISSING_WITH_HISTORY and is_unanswered_limit_enabled(
+            max_unanswered
+        ):
+            logger.warning(
+                f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id, session_config)} 的未回复计数缺失，"
+                "但存在历史调度痕迹，跳过初始化自动触发器设置以避免误排期喵。"
+            )
+            return "untrusted_count"
+        if reaches_max_unanswered(state, max_unanswered):
             logger.info(
-                f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id, session_config)} 的未回复次数 ({unanswered_count}) "
+                f"[主动消息] {plugin.session_service.get_session_log_str(resolved_session_id, session_config)} 的未回复次数 ({state.count}) "
                 f"已达到上限 ({max_unanswered})，跳过初始化自动触发器设置喵。"
             )
             return "max_unanswered"
@@ -622,9 +646,12 @@ class SchedulerService:
                     pass
 
             if reset_counter:
-                plugin.session_data.setdefault(normalized_session_id, {})[
-                    "unanswered_count"
-                ] = 0
+                reset_payload = plugin.session_data.setdefault(
+                    normalized_session_id, {}
+                )
+                reset_payload["unanswered_count"] = 0
+                # 计数被显式重置为 0，此前的「不可信」推断随之失效。
+                reset_payload.pop(UNTRUSTED_MARK_KEY, None)
 
             (
                 run_date,
@@ -874,10 +901,14 @@ class SchedulerService:
                     else:
                         schedule_conf = session_config.get("schedule_settings", {})
                         max_unanswered = schedule_conf.get("max_unanswered_times", 3)
-                        unanswered_count = plugin.session_data.get(
-                            normalized_session_id, {}
-                        ).get("unanswered_count", 0)
-                        if max_unanswered > 0 and unanswered_count >= max_unanswered:
+                        state = resolve_unanswered_state(
+                            plugin.session_data.get(normalized_session_id)
+                        )
+                        if state.reason == REASON_MISSING_WITH_HISTORY and (
+                            is_unanswered_limit_enabled(max_unanswered)
+                        ):
+                            auto_result = "untrusted_count"
+                        elif reaches_max_unanswered(state, max_unanswered):
                             auto_result = "max_unanswered"
                         else:
                             await self.cancel_auto_trigger(normalized_session_id)
@@ -894,6 +925,8 @@ class SchedulerService:
             if not reset_done:
                 if auto_result == "max_unanswered":
                     return {"ok": False, "reason": "max_unanswered"}
+                if auto_result == "untrusted_count":
+                    return {"ok": False, "reason": "untrusted_count"}
                 if auto_result == "existing":
                     return {"ok": False, "reason": "already_scheduled"}
                 return {"ok": False, "reason": "no_timer_config"}
@@ -915,12 +948,17 @@ class SchedulerService:
         plugin.auto_trigger_baselines[session_id] = time.time()
 
     async def handle_auto_trigger_callback(
-        self, session_id: str, auto_trigger_minutes: int | float
+        self,
+        session_id: str,
+        auto_trigger_minutes: int | float,
+        timer_generation: int = 0,
     ) -> None:
         """在异步上下文中处理自动触发回调。
 
         仅当插件启动后该会话一直无消息、且已达到配置静默时长时才真正触发；
         无论结果如何，最后都会清理相关计时器引用。
+
+        timer_generation 用于识别旧回调。
         """
         plugin = self.plugin
         if getattr(plugin, "_terminating", False):
@@ -929,6 +967,16 @@ class SchedulerService:
         session_id = plugin.session_service.normalize_session_id(session_id)
         try:
             async with plugin.data_lock:
+                # 持锁后必须重新比对代次。
+                if timer_generation and (
+                    self._current_timer_generation(f"auto:{session_id}")
+                    != timer_generation
+                ):
+                    logger.debug(
+                        f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 的自动触发已被重置取代，跳过喵。"
+                    )
+                    return
+
                 if session_id not in plugin.auto_trigger_timers:
                     logger.debug(
                         f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 的自动触发已被取消，跳过喵。"
@@ -953,6 +1001,26 @@ class SchedulerService:
                 ):
                     return
 
+                # 计数缺失但存在历史调度痕迹时无法证明未达上限，保守跳过。
+                # 上限为 0 表示不限制，此时必须放行，与初始化 / Reset / GATE 保持一致。
+                session_info = plugin.session_data.get(session_id)
+                state = resolve_unanswered_state(session_info)
+                limit_enabled = is_unanswered_limit_enabled(
+                    (current_config.get("schedule_settings", {}) or {}).get(
+                        "max_unanswered_times", 3
+                    )
+                )
+                if state.reason == REASON_MISSING_WITH_HISTORY and limit_enabled:
+                    # 立即落盘显式标记：后续排期会补写 next_trigger_time 让痕迹失效，
+                    # 只有持久标记才能继续拦住该会话。
+                    if mark_untrusted(session_info):
+                        await plugin.storage_service.save_data()
+                    logger.warning(
+                        f"[主动消息] {plugin.session_service.get_session_log_str(session_id, current_config)} 的未回复计数缺失，"
+                        "但存在历史调度痕迹，跳过本次自动触发以避免误排期喵。"
+                    )
+                    return
+
                 # 已有持久化任务时不再重复登记，避免覆盖已排好的发送时间。
                 if self.has_related_persisted_task(session_id):
                     logger.debug(
@@ -971,6 +1039,13 @@ class SchedulerService:
                 ) = self.compute_next_trigger(schedule_conf)
 
                 session_payload = plugin.session_data.setdefault(session_id, {})
+                # 这里只为确定是全新会话的记录初始化计数。
+                if not session_payload:
+                    session_payload[UNANSWERED_COUNT_KEY] = 0
+                elif resolve_unanswered_state(session_payload).reason == (
+                    REASON_MISSING_WITH_HISTORY
+                ):
+                    mark_untrusted(session_payload)
                 session_payload["last_scheduled_at"] = scheduled_at
                 session_payload["last_schedule_min_interval_seconds"] = min_interval
                 session_payload["last_schedule_max_interval_seconds"] = max_interval
@@ -986,8 +1061,17 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"[主动消息] 自动触发任务创建失败喵: {e}")
         finally:
-            for timer_key in self.iter_related_auto_trigger_keys(session_id):
-                plugin.auto_trigger_timers.pop(timer_key, None)
+            # 只清理属于本次回调的计时器：若期间已被重建，代次会变化，
+            # 此时直接 pop 会把新计时器的引用删掉，导致重新计时失效。
+            if timer_generation and (
+                self._current_timer_generation(f"auto:{session_id}") != timer_generation
+            ):
+                logger.debug(
+                    f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 的自动触发已被重建，跳过计时器清理喵。"
+                )
+            else:
+                for timer_key in self.iter_related_auto_trigger_keys(session_id):
+                    plugin.auto_trigger_timers.pop(timer_key, None)
             # 计时器已从内存移除，卡片必须同步消失，否则会残留过期状态。
             await self._notify_web_console("auto_trigger_finished")
 

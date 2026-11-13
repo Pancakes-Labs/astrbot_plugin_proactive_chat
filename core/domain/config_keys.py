@@ -36,6 +36,8 @@ PROMPT_SETTINGS_KEY = "prompt_settings"
 # prompt_settings 内部的输出格式设置：预设值 + 自定义正文
 OUTPUT_FORMAT_KEY = "output_format"
 OUTPUT_FORMAT_CUSTOM_KEY = "output_format_custom"
+# 按场景（proactive / decisions / vision）指定 Provider 与模型，含回退链
+MODEL_SETTINGS_KEY = "model_settings"
 CONTEXT_SETTINGS_KEY = "context_settings"
 SCHEDULE_SETTINGS_KEY = "schedule_settings"
 STARTUP_CHECK_SETTINGS_KEY = "startup_check_settings"
@@ -53,6 +55,7 @@ OVERRIDABLE_ROOT_KEYS: frozenset[str] = frozenset(
         ENABLED_KEY,
         PERSONA_ID_KEY,
         PROMPT_SETTINGS_KEY,
+        MODEL_SETTINGS_KEY,
         CONTEXT_SETTINGS_KEY,
         SCHEDULE_SETTINGS_KEY,
         STARTUP_CHECK_SETTINGS_KEY,
@@ -116,6 +119,7 @@ __all__ = [
     "LEGACY_SESSION_SETTINGS_KEYS",
     "LEGACY_TYPE_FALLBACK_KEY",
     "NOTIFICATION_SETTINGS_KEY",
+    "MODEL_SETTINGS_KEY",
     "OUTPUT_FORMAT_CUSTOM_KEY",
     "OUTPUT_FORMAT_KEY",
     "OVERRIDABLE_ROOT_KEYS",

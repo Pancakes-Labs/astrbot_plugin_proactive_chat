@@ -17,6 +17,8 @@
         getConfigSchema: () => HttpUtil.get('/api/config-schema'),
         // 人格列表与 AstrBot 人格库同源，用于 select_persona 特殊控件。
         getPersonas: () => HttpUtil.get('/api/personas'),
+        // 服务提供商与模型清单，用于 select_provider / select_model / select_providers 控件。
+        getProviders: () => HttpUtil.get('/api/providers'),
         // 全局配置保存接口，传入完整 payload 由后端按分组白名单更新。
         updateConfig: (payload) => HttpUtil.post('/api/config', payload),
 

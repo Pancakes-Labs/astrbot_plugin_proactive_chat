@@ -22,6 +22,7 @@
         admin_users: '🔐',
         session_defaults: '🛠️',
         prompt_settings: '🧠',
+        model_settings: '🔌',
         context_settings: '🧩',
         schedule_settings: '🕒',
         startup_check_settings: '🤖',
@@ -47,6 +48,7 @@
         const rootItems = (schema && schema[rootKey] && schema[rootKey].items) || {};
         const orderedKeys = [
             'persona_id',
+            'model_settings',
             'prompt_settings',
             'startup_check_settings',
             'group_silence_settings',

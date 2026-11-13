@@ -14,6 +14,7 @@ from astrbot.api.event import AstrMessageEvent
 
 from ..domain.config_keys import ENABLED_KEY
 from ..domain.session_key import is_group_umo
+from ..domain.unanswered_counter import UNTRUSTED_MARK_KEY
 
 
 class EventHandlers:
@@ -90,12 +91,19 @@ class EventHandlers:
         self._mark_memory_message_time(normalized_session_id, current_time)
 
         async with self.plugin.data_lock:
+            friend_payload = self.plugin.session_data.setdefault(
+                normalized_session_id, {}
+            )
             if event.get_self_id():
-                self.plugin.session_data.setdefault(normalized_session_id, {})[
-                    "self_id"
-                ] = event.get_self_id()
+                friend_payload["self_id"] = event.get_self_id()
 
             self._mark_persisted_message_time(normalized_session_id, current_time)
+            # 真实用户发言后计数重新有意义：必须在会话是否启用的检查之前
+            # 完成归零与清标记；归零与清标记必须立即落盘。
+            friend_cleared = friend_payload.pop(UNTRUSTED_MARK_KEY, None) is not None
+            if friend_payload.get("unanswered_count", 0) != 0 or friend_cleared:
+                friend_payload["unanswered_count"] = 0
+                await self.plugin.storage_service.save_data()
 
         auto_trigger_cancelled = (
             await self.plugin.scheduler_service.cancel_all_related_auto_triggers(
@@ -231,6 +239,15 @@ class EventHandlers:
             if sender_name:
                 session_payload["last_sender_name"] = sender_name
 
+            # 与私聊一致：真实用户发言即恢复计数可信，且必须早于启用检查。
+            last_unanswered_reset = session_payload.get("unanswered_count", 0)
+            group_mark_cleared = (
+                session_payload.pop(UNTRUSTED_MARK_KEY, None) is not None
+            )
+            session_payload["unanswered_count"] = 0
+            if group_mark_cleared or last_unanswered_reset:
+                await self.plugin.storage_service.save_data()
+
             if self._mark_persisted_message_time(normalized_session_id, current_time):
                 logger.debug(
                     f"[主动消息] 已记录插件启动后 {self.plugin.session_service.get_session_log_str(session_id)} 的消息时间喵 -> {current_time}"
@@ -321,28 +338,14 @@ class EventHandlers:
             normalized_session_id
         )
 
+        # 计数归零与清标记已在上面的持锁区间完成，这里只清理调度残留并落盘。
         async with self.plugin.data_lock:
             changed = False
-            if normalized_session_id in self.plugin.session_data:
-                current_unanswered = self.plugin.session_data[
+            if is_group_umo(normalized_session_id):
+                changed = self.plugin.scheduler_service.clear_session_schedule_state(
                     normalized_session_id
-                ].get("unanswered_count", 0)
-                self.plugin.session_data[normalized_session_id]["unanswered_count"] = 0
-                changed = True
-                if current_unanswered > 0:
-                    logger.debug(
-                        f"[主动消息] {self.plugin.session_service.get_session_log_str(normalized_session_id, session_config)} 的用户已回复， 未回复计数器已重置喵。"
-                    )
-
-                if is_group_umo(normalized_session_id):
-                    changed = (
-                        self.plugin.scheduler_service.clear_session_schedule_state(
-                            normalized_session_id
-                        )
-                        or changed
-                    )
-
-            if changed:
+                )
+            if changed or last_unanswered_reset:
                 await self.plugin.storage_service.save_data()
 
         # 群沉默计时器已在上面重置，立即广播让卡片刷新而不是等慢轮询。

@@ -199,6 +199,27 @@ class ApiRoutes:
                 "telemetry_config": _config_group(TELEMETRY_CONFIG_KEY),
             }
 
+        # 可用服务提供商与模型清单：供 select_provider 控件渲染。
+        @app.get("/api/providers")
+        async def list_providers(refresh: bool = False):
+            try:
+                providers = await state.list_providers(force_refresh=bool(refresh))
+            except Exception as e:
+                # 必须返回错误状态而不是"成功 + 空列表"：前端无法区分
+                # "加载失败"与"确实没有可用提供商"，会把空结果一直缓存下去。
+                logger.error(f"[主动消息] 读取 Provider 清单失败喵: {e}")
+                return JSONResponse(
+                    {"error": "读取服务提供商清单失败", "message": str(e)},
+                    status_code=500,
+                )
+            return {
+                "providers": providers,
+                # 留空表示跟随该会话当前对话模型，对应配置里的空 provider_id。
+                "special_options": [
+                    {"value": "", "label": "跟随 AstrBot 当前对话模型"},
+                ],
+            }
+
         # 可用人格列表：直接读 AstrBot 的 persona_manager，与 WebUI 保持同源。
         @app.get("/api/personas")
         async def list_personas():
@@ -320,6 +341,10 @@ class ApiRoutes:
             invalidate = getattr(state, "invalidate_persona_cache", None)
             if callable(invalidate):
                 invalidate()
+            # 模型配置变更后 Provider 清单可能不再匹配，一并失效缓存。
+            invalidate_providers = getattr(state, "invalidate_provider_cache", None)
+            if callable(invalidate_providers):
+                invalidate_providers()
 
             try:
                 plugin.config.save_config()
@@ -862,6 +887,11 @@ class ApiRoutes:
                     error = "会话未启用或不存在，无法重置计时器"
                 elif reason == "already_scheduled":
                     error = "该会话已有待发送任务，无需重新计时"
+                elif reason == "untrusted_count":
+                    error = (
+                        "该会话的未回复计数缺失且存在历史调度痕迹，"
+                        "为避免误排期已暂停，请人工确认后再重新计时"
+                    )
                 elif reason == "max_unanswered":
                     error = "未回复次数已达上限，不会重新计时"
                 else:
