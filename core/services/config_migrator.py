@@ -402,8 +402,6 @@ def _merge_prompt_settings(
 
     if merged:
         prompt_settings["templates"] = merged
-        # 写入模板的同时写入预设版本号，让不变量局部自洽。
-        prompt_settings[PRESET_REVISION_KEY] = PRESET_REVISION
 
     # 风格是单值偏好：优先私聊侧，私聊未设置时才用群聊侧。
     style_text = friend_style or group_style
@@ -669,20 +667,18 @@ def migrate_config(config: Any) -> bool:
         defaults_section = {}
         config[ck.SESSION_DEFAULTS_KEY] = defaults_section
 
-    # 预设强推先于结构迁移：结构迁移会写入 targets 并覆盖 prompt_settings，
-    # 若顺序反过来，本轮写入的预设会被随后合并的旧模板覆盖掉。
-    changed = apply_preset_templates(defaults_section)
+    # 预设强推必须在结构合并之后执行。
+    # 这里只负责合并前的模板清洗，强推统一放在函数末尾。
+    changed = False
     # 模板清洗独立于结构迁移：旧默认模板可能已在上一轮迁移里写进新结构。
     if sanitize_templates(defaults_section):
         changed = True
-    # 结构迁移会重建 prompt_settings，迁移后必须再次强推预设，
-    # 否则旧分组里的模板会在本次启动重新覆盖新预设。
-    changed = apply_preset_templates(defaults_section) or changed
 
     friend = config.get(ck.LEGACY_FRIEND_SETTINGS_KEY)
     group = config.get(ck.LEGACY_GROUP_SETTINGS_KEY)
     if not _is_legacy_present(friend, group):
-        return changed
+        # 无旧分组时不需要合并，直接在当前结构上强推即可。
+        return apply_preset_templates(defaults_section) or changed
 
     friend_dict = copy.deepcopy(friend) if isinstance(friend, dict) else {}
     group_dict = copy.deepcopy(group) if isinstance(group, dict) else {}
@@ -723,6 +719,10 @@ def migrate_config(config: Any) -> bool:
     # 同时保证下次启动不会重复迁移。
     config[ck.LEGACY_FRIEND_SETTINGS_KEY] = None
     config[ck.LEGACY_GROUP_SETTINGS_KEY] = None
+
+    # 合并已完成，此时强推才能覆盖旧分组带进来的模板。
+    if apply_preset_templates(merged_defaults):
+        changed = True
 
     logger.info(
         "[主动消息] 已将 friend_settings / group_settings 合并为 "
