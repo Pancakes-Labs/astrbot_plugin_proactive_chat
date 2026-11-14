@@ -288,6 +288,55 @@ class ConfigAssemblyService:
     # 备份文件名沿用 v1.2 之前版本的约定，便于老用户凭直觉找到。
     CONFIG_SNAPSHOT_FILE = "user_config_snapshot.json"
     PROMPTS_COLLECTION_FILE = "prompts_collection.md"
+    OVERRIDES_SNAPSHOT_FILE = "session_overrides_snapshot.json"
+
+    def _collect_overrides_snapshot(self) -> dict[str, Any]:
+        """收集全部会话覆写内容，供迁移前备份。
+
+        覆写不写在 plugin.config 里，全局快照完全覆盖不到它们；
+        而预设强推会整组替换会话级模板，没有这份快照就等于直接丢数据。
+        """
+        store = getattr(self.plugin, "session_override_manager", None)
+        if store is None:
+            return {}
+        try:
+            session_ids = list(store.list_sessions())
+        except Exception as e:
+            logger.warning(f"[主动消息] 读取会话覆写列表失败，备份将不含覆写喵: {e}")
+            return {}
+
+        snapshot: dict[str, Any] = {}
+        for session_id in session_ids:
+            try:
+                snapshot[session_id] = store.get_override(session_id)
+            except Exception as e:
+                logger.warning(f"[主动消息] 读取会话 {session_id} 的覆写失败喵: {e}")
+        return snapshot
+
+    @staticmethod
+    def _override_needs_preset_refresh(override: Any) -> bool:
+        """覆写是否会被预设强推整组替换。
+
+        与 _migrate_override 的替换条件保持一致：只有确实存在自定义模板
+        且版本落后时才会被覆盖。否则没有模板的覆写也会被当成"待备份"，
+        导致每次启动都写一份时间戳快照。
+        """
+        if not isinstance(override, dict):
+            return False
+        settings = override.get(PROMPT_SETTINGS_KEY)
+        if not isinstance(settings, dict):
+            return False
+        templates = settings.get("templates")
+        if not isinstance(templates, list) or not templates:
+            return False
+        return config_migrator.needs_preset_refresh(override)
+
+    def _has_stale_overrides(self) -> bool:
+        """是否存在会被预设强推覆盖的会话覆写。"""
+        return any(
+            self._override_needs_preset_refresh(override)
+            for override in self._collect_overrides_snapshot().values()
+        )
 
     def _backup_config_before_migration(self, config: dict[str, Any]) -> bool:
         """结构迁移 / 预设强推前备份原始配置与提示词。
@@ -315,9 +364,12 @@ class ConfigAssemblyService:
             # 结构无需迁移时仍可能因为预设版本落后而整组替换模板，
             # 此时用户的改动同样需要留档，不能因为"没有旧分组"就跳过备份。
             defaults_section = config.get(SESSION_DEFAULTS_KEY)
-            if not isinstance(defaults_section, dict):
-                return True
-            if not config_migrator.needs_preset_refresh(defaults_section):
+            global_stale = isinstance(
+                defaults_section, dict
+            ) and config_migrator.needs_preset_refresh(defaults_section)
+            # 覆写层不经过全局配置，必须单独门控：否则全局已是最新时
+            # 会直接返回，导致会话级模板被强推覆盖却没有留下任何备份。
+            if not global_stale and not self._has_stale_overrides():
                 return True
 
         data_dir = getattr(self.plugin, "data_dir", None)
@@ -327,8 +379,10 @@ class ConfigAssemblyService:
         try:
             root = Path(data_dir)
             root.mkdir(parents=True, exist_ok=True)
+            overrides = self._collect_overrides_snapshot()
             config_text = json.dumps(dict(config), ensure_ascii=False, indent=4)
-            prompts_text = self._build_prompts_collection(config)
+            overrides_text = json.dumps(overrides, ensure_ascii=False, indent=4)
+            prompts_text = self._build_prompts_collection(config, overrides)
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
             # 固定名文件：内容一致时跳过，变化时刷新，
@@ -337,6 +391,10 @@ class ConfigAssemblyService:
             self._write_text_if_changed(
                 root / self.PROMPTS_COLLECTION_FILE, prompts_text
             )
+            if overrides:
+                self._write_text_if_changed(
+                    root / self.OVERRIDES_SNAPSHOT_FILE, overrides_text
+                )
 
             # 本次源配置的独立快照：每次都写，确保当前内容必有备份。
             (root / f"user_config_snapshot.{stamp}.json").write_text(
@@ -345,6 +403,10 @@ class ConfigAssemblyService:
             (root / f"prompts_collection.{stamp}.md").write_text(
                 prompts_text, encoding="utf-8"
             )
+            if overrides:
+                (root / f"session_overrides_snapshot.{stamp}.json").write_text(
+                    overrides_text, encoding="utf-8"
+                )
 
             logger.info(f"[主动消息] 已在迁移前备份配置快照与提示词汇总到 {root} 喵。")
             return True
@@ -368,11 +430,13 @@ class ConfigAssemblyService:
         return True
 
     @staticmethod
-    def _build_prompts_collection(config: dict[str, Any]) -> str:
+    def _build_prompts_collection(
+        config: dict[str, Any], overrides: dict[str, Any] | None = None
+    ) -> str:
         """把即将被覆盖的提示词汇总成一份 Markdown，便于人工核对与回滚。
 
-        除旧分组外，也要收录当前 session_defaults 里的模板：预设强推会
-        整组替换它们，这是用户改动唯一的人眼可读留档。
+        除旧分组外，也要收录当前 session_defaults 与会话覆写里的模板：
+        预设强推会整组替换它们，这是用户改动唯一的人眼可读留档。
         """
         label_map = {
             LEGACY_FRIEND_SETTINGS_KEY: "私聊",
@@ -408,6 +472,37 @@ class ConfigAssemblyService:
                                 "",
                             ]
                         )
+
+        # 会话覆写里的模板同样会被预设强推整组替换，必须一并留档。
+        for session_id, override in (overrides or {}).items():
+            if not isinstance(override, dict):
+                continue
+            override_settings = override.get(PROMPT_SETTINGS_KEY)
+            if not isinstance(override_settings, dict):
+                continue
+            session_templates = override_settings.get("templates")
+            if not isinstance(session_templates, list) or not session_templates:
+                continue
+            for index, template in enumerate(session_templates, start=1):
+                if not isinstance(template, dict):
+                    continue
+                text = template.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                name = template.get("name") or f"模板 {index}"
+                scope = template.get("scope") or "通用"
+                weight = template.get("weight", "-")
+                lines.extend(
+                    [
+                        f"## 会话覆写模板：{session_id} / {name}"
+                        f"（范围 {scope}，权重 {weight}）",
+                        "",
+                        "```text",
+                        text,
+                        "```",
+                        "",
+                    ]
+                )
 
         for key, label in label_map.items():
             section = config.get(key)
