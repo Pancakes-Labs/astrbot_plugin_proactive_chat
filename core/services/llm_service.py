@@ -428,6 +428,8 @@ class LlmService:
 
         failures: list[dict] = []
         last_error: BaseException | None = None
+        # 是否有候选"调用成功但回了空内容"：决定调用方能否原地重试。
+        empty_seen = False
         # 钩子只对首个候选派发一次，但其产物必须完整保留：
         # 只带 prompt 与 func_tool 会让钩子写进 system_prompt / contexts /
         # extra_user_content_parts 的内容在回退时整份丢失。
@@ -558,6 +560,8 @@ class LlmService:
                         f"[主动消息] 候选 #{candidate.index} 返回空内容，"
                         "继续尝试下一个候选喵。"
                     )
+                    # 这是最常见的空返回形态（候选真的回了空正文）。
+                    empty_seen = True
                     break
 
                 self._fill_trace(
@@ -588,6 +592,9 @@ class LlmService:
 
         # 全部候选失败。
         self._fill_trace(trace, scene, None, failures=failures)
+        if empty_seen:
+            # 与"调用异常"区分：内容为空是可重试的，异常不是。
+            self._mark_empty_response(trace)
         if failures:
             logger.error(
                 f"[主动消息] 所有模型候选均调用失败喵（共 {len(failures)} 次尝试）："

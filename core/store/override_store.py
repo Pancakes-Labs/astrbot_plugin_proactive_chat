@@ -101,7 +101,14 @@ class OverrideStore:
         templates = settings.get("templates")
         if not isinstance(templates, list) or not templates:
             return
-        settings.setdefault(PRESET_REVISION_KEY, PRESET_REVISION)
+        # 不能只在缺失时补。
+        stored = settings.get(PRESET_REVISION_KEY)
+        if isinstance(stored, bool) or not isinstance(stored, int):
+            invalid = True
+        else:
+            invalid = stored <= 0 or stored < PRESET_REVISION
+        if invalid:
+            settings[PRESET_REVISION_KEY] = PRESET_REVISION
 
     async def set_override(
         self, session_id: str, override_patch: dict[str, Any]
