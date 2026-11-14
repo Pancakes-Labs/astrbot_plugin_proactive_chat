@@ -76,8 +76,15 @@ class DeliberateStage(BaseStage):
                 trace=trace,
             )
             if not llm_response:
-                # LLM 调用失败或无返回：中止并重调度。
-                ctx.abort("llm_failed")
+                # 调用失败与空内容分开处理：服务把"拿到响应但读不出正文"
+                # 也归为 None 返回，这里若不看 trace，重试分支永远不可达。
+                if trace.get("empty_response") and attempt < self.MAX_EMPTY_RETRIES:
+                    logger.warning("[主动消息] LLM 返回空内容，原地重试一次喵。")
+                    continue
+                reason = (
+                    "empty_response" if trace.get("empty_response") else "llm_failed"
+                )
+                ctx.abort(reason)
                 return StageResult.RESCHEDULE
 
             response_text = plugin.llm_service.extract_response_text(llm_response)

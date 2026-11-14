@@ -331,6 +331,9 @@ class LlmService:
                 return llm_response_obj, self.resolve_final_user_prompt(
                     req, final_user_simulation_prompt
                 )
+            # 这里拿到了响应对象却读不出正文：属于"空内容"而非"调用失败"，
+            # 调用方可以原地重试。必须在 trace 里标明，否则阶段层无法区分。
+            self._mark_empty_response(trace)
             logger.warning("[主动消息] LLM 调用失败或返回空内容，重新调度喵。")
             if plugin.telemetry and plugin.telemetry.enabled:
                 plugin._track_task(
@@ -359,6 +362,7 @@ class LlmService:
                 return llm_response_obj, self.resolve_final_user_prompt(
                     req, final_user_simulation_prompt
                 )
+            self._mark_empty_response(trace)
             logger.error(
                 "[主动消息] 喵呜！LLM 输出的正文只包含无法解析的对象或工具调用标记喵！"
             )
@@ -785,6 +789,12 @@ class LlmService:
         if isinstance(prompt, str) and prompt.strip():
             return prompt
         return fallback
+
+    @staticmethod
+    def _mark_empty_response(trace: dict | None) -> None:
+        """在 trace 上标记"调用成功但内容为空"，供阶段层决定是否原地重试。"""
+        if isinstance(trace, dict):
+            trace["empty_response"] = True
 
     @staticmethod
     def extract_response_text(llm_response_obj: Any) -> str:
