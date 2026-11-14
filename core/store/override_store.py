@@ -13,7 +13,8 @@ from typing import Any
 
 from astrbot.api import logger
 
-from ..domain.config_keys import OVERRIDABLE_ROOT_KEYS
+from ..domain.config_keys import OVERRIDABLE_ROOT_KEYS, PROMPT_SETTINGS_KEY
+from ..domain.prompt_presets import PRESET_REVISION, PRESET_REVISION_KEY
 
 
 class OverrideStore:
@@ -91,6 +92,17 @@ class OverrideStore:
         """读取会话差异配置（返回深拷贝，调用方修改不影响内部状态）。"""
         return copy.deepcopy(self._overrides.get(session_id, {}))
 
+    @staticmethod
+    def _stamp_preset_revision(patch: dict[str, Any]) -> None:
+        """会话模板自带预设版本号，避免下次启动被强推清空。"""
+        settings = patch.get(PROMPT_SETTINGS_KEY)
+        if not isinstance(settings, dict):
+            return
+        templates = settings.get("templates")
+        if not isinstance(templates, list) or not templates:
+            return
+        settings.setdefault(PRESET_REVISION_KEY, PRESET_REVISION)
+
     async def set_override(
         self, session_id: str, override_patch: dict[str, Any]
     ) -> bool:
@@ -103,6 +115,8 @@ class OverrideStore:
             raise ValueError("override_patch 必须是对象")
 
         patch = self._sanitize_patch(copy.deepcopy(override_patch))
+        # 清洗之后再补版本号：空子树会被剔除，提前补可能随子树一起消失。
+        self._stamp_preset_revision(patch)
         async with self._lock:
             if patch:
                 self._overrides[session_id] = patch
