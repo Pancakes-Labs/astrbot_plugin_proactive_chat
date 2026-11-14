@@ -52,17 +52,30 @@ function createEmptyTemplate(scope) {
     };
 }
 
+// 页面内唯一键自增源。
+let __uiKeySeed = 0;
+
+function nextUiKey() {
+    __uiKeySeed += 1;
+    return `ui_${__uiKeySeed}`;
+}
+
 // 归一化：保证受控输入始终拿到完整结构，未知扩展字段原样保留。
+// __ui_key 仅存在于前端状态，保存前由 stripUiKey 剥离。
 function normalizeItem(item) {
-    if (!item || typeof item !== 'object') return createEmptyTemplate();
+    if (!item || typeof item !== 'object') {
+        const created = createEmptyTemplate();
+        return { ...created, __ui_key: nextUiKey() };
+    }
     const extra = {};
     Object.keys(item).forEach((key) => {
-        if (['id', 'name', 'text', 'enabled', 'weight', 'scope', '__template_key'].includes(key)) return;
+        if (['id', 'name', 'text', 'enabled', 'weight', 'scope', '__template_key', '__ui_key'].includes(key)) return;
         extra[key] = item[key];
     });
     return {
         ...extra,
         __template_key: item.__template_key || 'prompt_template',
+        __ui_key: item.__ui_key || nextUiKey(),
         id: item.id || '',
         name: item.name || '',
         text: typeof item.text === 'string' ? item.text : '',
@@ -70,6 +83,11 @@ function normalizeItem(item) {
         weight: Number.isFinite(Number(item.weight)) ? Number(item.weight) : 100,
         scope: item.scope || '',
     };
+}
+
+// 提交前剥掉页面专用字段，避免污染配置。
+function stripUiKey(items) {
+    return (items || []).map(({ __ui_key, ...rest }) => rest);
 }
 
 // 与后端 _is_usable_template() 保持一致的排除项。
@@ -97,7 +115,9 @@ function poolProbabilities(templates, sessionType) {
     const total = pool.reduce((sum, item) => sum + Number(item.weight || 0), 0);
     const map = {};
     pool.forEach((item) => {
-        map[item.id] = total > 0 ? Number(item.weight || 0) / total : 1 / (pool.length || 1);
+        map[item.__ui_key] = total > 0
+            ? Number(item.weight || 0) / total
+            : 1 / (pool.length || 1);
     });
     return { map, pool, total };
 }
@@ -368,21 +388,35 @@ function PromptsView() {
         templatesRef.current = templates;
     }, [templates]);
 
+    // 加载序号：首屏加载与多次广播可能并发，只有最新请求能写状态。
+    // 旧响应晚到时若直接落库，会把保存后的新模板回滚成过期快照。
+    const loadSeqRef = React.useRef(0);
+
+    // 让所有进行中的加载失效：保存、导入、重置后调用。
+    const invalidateLoads = useCallback(() => {
+        loadSeqRef.current += 1;
+    }, []);
+
     // silent=true 用于后台同步：不切 loading、不清草稿。
     // 有未保存改动时不会被后台同步冲掉，否则用户输入会凭空消失。
     const load = useCallback(async (silent) => {
+        loadSeqRef.current += 1;
+        const seq = loadSeqRef.current;
         if (!silent) setLoading(true);
         if (!silent) setError('');
         try {
             const data = await api.listPrompts();
+            // 已有更新的请求或已被作废：丢弃这次结果。
+            if (seq !== loadSeqRef.current) return;
             if (silent && dirtyRef.current) return;
             setTemplates((data.templates || []).map(normalizeItem));
             setDirty(false);
         } catch (e) {
+            if (seq !== loadSeqRef.current) return;
             // 后台同步失败不打断当前编辑，只在首屏加载时展示错误。
             if (!silent) setError(e.message || '加载提示词失败');
         } finally {
-            if (!silent) setLoading(false);
+            if (!silent && seq === loadSeqRef.current) setLoading(false);
         }
     }, [api]);
 
@@ -434,17 +468,23 @@ function PromptsView() {
 
     const addItem = () => {
         const scope = filterType === 'friend' || filterType === 'group' ? filterType : '';
-        setTemplates((prev) => [...prev, createEmptyTemplate(scope)]);
+        // 新建项同样需要页面内唯一键，否则概率表与卡片 key 会缺失。
+        setTemplates((prev) => [
+            ...prev,
+            normalizeItem(createEmptyTemplate(scope)),
+        ]);
         setDirty(true);
     };
 
     const save = async () => {
         setSaving(true);
         setError('');
+        // 保存会改变服务端数据，先作废进行中的加载，避免旧快照覆盖结果。
+        invalidateLoads();
         // 记录提交时的快照：请求返回后若用户又改过，不能用旧响应覆盖新输入。
         const submitted = templates;
         try {
-            const data = await api.updatePrompts(submitted);
+            const data = await api.updatePrompts(stripUiKey(submitted));
             setTemplates((prev) => (prev === submitted
                 ? (data.templates || []).map(normalizeItem)
                 : prev));
@@ -474,7 +514,9 @@ function PromptsView() {
                 session_type: sessionType,
                 rounds: 2000,
                 // 带上未保存的草稿：否则预演结果与左侧概率面板对不上。
-                templates: dirtyRef.current ? templatesRef.current : undefined,
+                templates: dirtyRef.current
+                    ? stripUiKey(templatesRef.current)
+                    : undefined,
             });
             setSimulateResult(data);
         } catch (e) {
@@ -492,7 +534,9 @@ function PromptsView() {
                 source_mode: previewMode,
                 unanswered_count: previewUnanswered,
                 // 与预演一致：有草稿时按草稿渲染，预览才反映用户眼前的改动。
-                templates: dirtyRef.current ? templatesRef.current : undefined,
+                templates: dirtyRef.current
+                    ? stripUiKey(templatesRef.current)
+                    : undefined,
             });
             setPreview(data);
         } catch (e) {
@@ -528,6 +572,8 @@ function PromptsView() {
             setError('导入内容不是合法的 JSON');
             return;
         }
+        // 导入会替换全部模板，先作废进行中的加载，避免旧快照回写。
+        invalidateLoads();
         try {
             const data = await api.importPrompts(parsed);
             setTemplates((data.templates || []).map(normalizeItem));
@@ -546,6 +592,7 @@ function PromptsView() {
         if (!window.confirm('将把所有模板恢复为出厂预设，当前改动会被覆盖（迁移备份文件仍保留）。确定继续？')) {
             return;
         }
+        invalidateLoads();
         try {
             const data = await api.resetPrompts();
             setTemplates((data.templates || []).map(normalizeItem));
@@ -665,13 +712,16 @@ function PromptsView() {
                             // 专用模板只在自己的池里；通用模板同时服务两个池，
                             // 分母不同所以按各自的池内归一化分别展示。
                             const probability = item.scope === 'friend'
-                                ? friendPool.map[item.id]
+                                ? friendPool.map[item.__ui_key]
                                 : item.scope === 'group'
-                                    ? groupPool.map[item.id]
-                                    : [friendPool.map[item.id] || 0, groupPool.map[item.id] || 0];
+                                    ? groupPool.map[item.__ui_key]
+                                    : [
+                                        friendPool.map[item.__ui_key] || 0,
+                                        groupPool.map[item.__ui_key] || 0,
+                                    ];
                             return (
                                 <TemplateCard
-                                    key={item.id || index}
+                                    key={item.__ui_key}
                                     item={item}
                                     index={index}
                                     probability={probability}
@@ -716,7 +766,7 @@ function PromptsView() {
                                         .slice()
                                         .sort((a, b) => b.weight - a.weight)
                                         .map((item) => (
-                                            <Box key={item.id} sx={{ mb: 0.75 }}>
+                                            <Box key={item.__ui_key} sx={{ mb: 0.75 }}>
                                                 <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                                                     <Typography variant="caption" noWrap sx={{ maxWidth: 150 }}>
                                                         {item.name || '未命名'}
@@ -726,7 +776,7 @@ function PromptsView() {
                                                     </Typography>
                                                 </Box>
                                                 <ProbabilityBar
-                                                    value={pool.map[item.id] || 0}
+                                                    value={pool.map[item.__ui_key] || 0}
                                                     color={sessionType === 'friend' ? 'primary.main' : 'success.main'}
                                                 />
                                             </Box>
@@ -775,8 +825,8 @@ function PromptsView() {
                                         {simulateResult.message}
                                     </Typography>
                                 )}
-                                {(simulateResult.results || []).map((row) => (
-                                    <Box key={row.id} sx={{ mb: 0.6 }}>
+                                {(simulateResult.results || []).map((row, rowIndex) => (
+                                    <Box key={`${row.id}-${rowIndex}`} sx={{ mb: 0.6 }}>
                                         <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                                             <Typography variant="caption" noWrap sx={{ maxWidth: 150 }}>
                                                 {row.name || '未命名'}
