@@ -362,6 +362,12 @@ function PromptsView() {
         dirtyRef.current = dirty;
     }, [dirty]);
 
+    // 模板同样放进 ref：保存回调用它比对"期间是否又被编辑过"。
+    const templatesRef = React.useRef(templates);
+    useEffect(() => {
+        templatesRef.current = templates;
+    }, [templates]);
+
     // silent=true 用于后台同步：不切 loading、不清草稿。
     // 有未保存改动时不会被后台同步冲掉，否则用户输入会凭空消失。
     const load = useCallback(async (silent) => {
@@ -403,9 +409,12 @@ function PromptsView() {
     // 列表筛选：按适用范围与启用状态。
     const visibleItems = useMemo(() => {
         return templates.filter((item) => {
-            if (filterType !== 'all' && (item.scope || 'any') !== (filterType === 'any' ? 'any' : filterType)) {
-                // 通用模板在私聊/群聊两个筛选下都应当可见。
-                if (filterType !== 'any' && item.scope !== filterType) return false;
+            // 通用模板（scope 为空）在私聊/群聊筛选下都应当可见；
+            // 通用标签页则只显示通用模板，与标签上的计数保持同一口径。
+            if (filterType === 'any') {
+                if (item.scope) return false;
+            } else if (filterType !== 'all') {
+                if (item.scope && item.scope !== filterType) return false;
             }
             if (filterState === 'enabled' && !item.enabled) return false;
             if (filterState === 'disabled' && item.enabled) return false;
@@ -432,10 +441,14 @@ function PromptsView() {
     const save = async () => {
         setSaving(true);
         setError('');
+        // 记录提交时的快照：请求返回后若用户又改过，不能用旧响应覆盖新输入。
+        const submitted = templates;
         try {
-            const data = await api.updatePrompts(templates);
-            setTemplates((data.templates || []).map(normalizeItem));
-            setDirty(false);
+            const data = await api.updatePrompts(submitted);
+            setTemplates((prev) => (prev === submitted
+                ? (data.templates || []).map(normalizeItem)
+                : prev));
+            if (templatesRef.current === submitted) setDirty(false);
             if (window.Toast) {
                 const warnings = data.warnings || [];
                 if (warnings.length) {
@@ -457,7 +470,12 @@ function PromptsView() {
     const simulate = async (sessionType) => {
         setSimulating(true);
         try {
-            const data = await api.simulatePrompts({ session_type: sessionType, rounds: 2000 });
+            const data = await api.simulatePrompts({
+                session_type: sessionType,
+                rounds: 2000,
+                // 带上未保存的草稿：否则预演结果与左侧概率面板对不上。
+                templates: dirtyRef.current ? templatesRef.current : undefined,
+            });
             setSimulateResult(data);
         } catch (e) {
             setError(e.message || '预演失败');
@@ -473,6 +491,8 @@ function PromptsView() {
                 session_type: previewType,
                 source_mode: previewMode,
                 unanswered_count: previewUnanswered,
+                // 与预演一致：有草稿时按草稿渲染，预览才反映用户眼前的改动。
+                templates: dirtyRef.current ? templatesRef.current : undefined,
             });
             setPreview(data);
         } catch (e) {
@@ -599,12 +619,13 @@ function PromptsView() {
                                 <Tab value="all" label={`全部 ${templates.length}`} sx={{ minHeight: 32, py: 0 }} />
                                 <Tab
                                     value="friend"
-                                    label={`私聊 ${templates.filter((t) => t.scope === 'friend').length}`}
+                                    // 计数与列表同口径：该池实际可用的模板 = 专用 + 通用。
+                                    label={`私聊 ${templates.filter((t) => !t.scope || t.scope === 'friend').length}`}
                                     sx={{ minHeight: 32, py: 0 }}
                                 />
                                 <Tab
                                     value="group"
-                                    label={`群聊 ${templates.filter((t) => t.scope === 'group').length}`}
+                                    label={`群聊 ${templates.filter((t) => !t.scope || t.scope === 'group').length}`}
                                     sx={{ minHeight: 32, py: 0 }}
                                 />
                                 <Tab

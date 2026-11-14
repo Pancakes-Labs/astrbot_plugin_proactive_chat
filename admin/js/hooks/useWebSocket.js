@@ -160,7 +160,10 @@ function ensureGlobalWs() {
             }
             // 仅处理后端定义的两类数据推送消息，其余消息类型忽略。
             if (msg.type === 'full_update' || msg.type === 'update') {
-                const data = msg.data || {};
+                // reason 在后端消息顶层，必须并回 data：
+                // 否则订阅者永远读不到原因，只能对所有广播一视同仁。
+                const data = { ...(msg.data || {}) };
+                if (msg.reason) data.reason = msg.reason;
                 __wsListeners.forEach((listener) => {
                     try {
                         // 将后端 payload 原样广播给所有订阅者，由页面组件自行决定如何消费。
