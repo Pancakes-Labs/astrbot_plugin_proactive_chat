@@ -58,6 +58,13 @@
                 body: JSON.stringify(body || {}),
             });
         },
+        put: function (url, body) {
+            // PUT 用于整表替换语义（如提示词模板列表），与 POST 的增量语义区分。
+            return request(url, {
+                method: 'PUT',
+                body: JSON.stringify(body || {}),
+            });
+        },
         del: function (url) {
             return request(url, { method: 'DELETE' });
         }

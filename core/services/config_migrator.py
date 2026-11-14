@@ -19,6 +19,11 @@ from uuid import uuid4
 from astrbot.api import logger
 
 from ..domain import config_keys as ck
+from ..domain.prompt_presets import (
+    PRESET_REVISION,
+    PRESET_REVISION_KEY,
+    build_preset_templates,
+)
 from ..domain.prompt_templates import (
     DEFAULT_TEMPLATE_KEY,
     DEFAULT_TEMPLATE_WEIGHT,
@@ -553,61 +558,65 @@ def _is_legacy_present(friend: Any, group: Any) -> bool:
     return False
 
 
-# 新装默认模板：必须与 _conf_schema.json 的 templates.default 逐字保持一致。
-# 清洗后若一条模板都不剩，用它兜底，避免会话完全没有「说什么」的输入。
-# 两条分别只对私聊 / 群聊生效，因此不存在「群聊拿到私聊文案」的回退风险。
-FRESH_DEFAULT_TEMPLATES: list[dict[str, Any]] = [
-    {
-        "id": "friend_default",
-        # AstrBot 管理面板按 __template_key 匹配模板定义，缺失会显示「未指定模板」。
-        TEMPLATE_KEY_FIELD: DEFAULT_TEMPLATE_KEY,
-        "name": "默认私聊模板",
-        "text": (
-            "[行动指南]\n"
-            "1. 回顾聊天记录，看看你们最后在聊什么。\n"
-            "2. 如果上次的话题已经聊完了，可以关心一下对方现在在做什么。\n"
-            "3. 也可以提出一个你一直很好奇的问题。\n"
-            "4. 如果实在不知道该说什么，直接表达你想他的心情也可以。\n\n"
-            "[最终指令]\n"
-            "请综合以上所有信息，用最像你自己的、最自然的方式，"
-            "生成一句主动聊天的开场白。"
-        ),
-        "enabled": True,
-        "weight": DEFAULT_TEMPLATE_WEIGHT,
-        "scope": SCOPE_FRIEND,
-    },
-    {
-        "id": "group_default",
-        TEMPLATE_KEY_FIELD: DEFAULT_TEMPLATE_KEY,
-        "name": "默认群聊模板",
-        "text": (
-            "[行动指南]\n"
-            "1. 回顾群聊记录，看看大家最后在讨论什么有趣的话题，"
-            "如果没有聊完，尝试延续它。\n"
-            "2. 向群里的所有人，提出一个开放性的、大家都能参与进来的问题。\n\n"
-            "[最终指令]\n"
-            "请综合以上所有信息，用最像你自己的、最自然的方式，"
-            "生成一句能在群聊中打破僵局、活跃气氛的开场白。"
-        ),
-        "enabled": True,
-        "weight": DEFAULT_TEMPLATE_WEIGHT,
-        "scope": SCOPE_GROUP,
-    },
-]
+# 出厂模板由 prompt_presets 统一维护，这里只做别名导出：
+# schema 的 default、迁移器与前端预设预览必须共用同一份内容，否则必然漂移。
+FRESH_DEFAULT_TEMPLATES: list[dict[str, Any]] = build_preset_templates()
+
+
+def needs_preset_refresh(container: dict[str, Any]) -> bool:
+    """判断该层配置是否需要刷新为最新出厂预设。
+
+    判定只看版本号，不看模板内容：预设是产品语义（强推），
+    即使模板被用户改过也应当整组替换，用户内容由迁移前快照兜底。
+
+    schema 里绝不能给 preset_revision 声明 default，
+    否则启动期的默认值补齐会预先填上版本号，绕过强推逻辑。
+    """
+    settings = container.get(ck.PROMPT_SETTINGS_KEY)
+    if not isinstance(settings, dict):
+        return True
+    stored = settings.get(PRESET_REVISION_KEY)
+    # 版本号缺失或非法（含 schema 补齐写入的字符串/零值）一律视为需要刷新。
+    if isinstance(stored, bool) or not isinstance(stored, int):
+        return True
+    if stored <= 0:
+        return True
+    return stored < PRESET_REVISION
+
+
+def apply_preset_templates(container: dict[str, Any]) -> bool:
+    """把该层配置的模板整组替换为当前出厂预设，返回是否发生变更。
+
+    强推语义：不比较内容、不保留用户改动，只依赖迁移前的
+    user_config_snapshot.json 与 prompts_collection.md 两份留档。
+    版本号一致时直接跳过，保证幂等、不会每次启动都重写配置。
+    """
+    if not needs_preset_refresh(container):
+        return False
+
+    settings = container.get(ck.PROMPT_SETTINGS_KEY)
+    if not isinstance(settings, dict):
+        settings = {}
+        container[ck.PROMPT_SETTINGS_KEY] = settings
+
+    settings["templates"] = copy.deepcopy(FRESH_DEFAULT_TEMPLATES)
+    settings[PRESET_REVISION_KEY] = PRESET_REVISION
+    return True
 
 
 def sanitize_templates(container: dict[str, Any]) -> bool:
-    """清洗一层配置里的模板列表，返回是否发生变更。
+    """规范化一层配置里的模板列表，返回是否发生变更。
 
-    幂等：可以反复执行，只处理确实需要处理的内容。
-    处理四件事：
-    1. 丢弃逐字等于旧版出厂默认的模板（它们的职责已由契约层接管）；
+    本函数只负责「格式收敛」，不负责预设刷新：
+    1. 丢弃非法项与空正文项；
     2. 丢弃含流水载荷的模板（那是包裹聊天记录的外壳，不是正文）；
-    3. 补齐 __template_key 与空 id，保证 AstrBot 面板能识别、会话页不串位；
-    4. 清洗后为空则补回新默认模板。
+    3. 丢弃逐字等于旧版出厂默认的模板；
+    4. 补齐 __template_key 与空 id，保证 AstrBot 面板能识别、会话页不串位；
+    5. 清洗后为空则补回出厂预设。
 
     与 migrate_config 分开的原因：结构迁移只在存在旧分组时执行一次，
-    而旧默认模板可能已经在上一次迁移里被写进新结构，需要独立清洗。
+    而模板内容可能在之后被单独写坏（例如面板只保存了部分字段），
+    需要独立清洗。预设刷新由 apply_preset_templates 单独负责。
     """
     changed = False
     settings = container.get(ck.PROMPT_SETTINGS_KEY)
@@ -653,13 +662,23 @@ def migrate_config(config: Any) -> bool:
     if not isinstance(config, dict):
         return False
 
+    defaults_section = config.get(ck.SESSION_DEFAULTS_KEY)
+    if not isinstance(defaults_section, dict):
+        defaults_section = {}
+        config[ck.SESSION_DEFAULTS_KEY] = defaults_section
+
+    # 预设强推必须在结构合并之后执行。
+    # 这里只负责合并前的模板清洗，强推统一放在函数末尾。
+    changed = False
     # 模板清洗独立于结构迁移：旧默认模板可能已在上一轮迁移里写进新结构。
-    changed = sanitize_templates(config.get(ck.SESSION_DEFAULTS_KEY) or {})
+    if sanitize_templates(defaults_section):
+        changed = True
 
     friend = config.get(ck.LEGACY_FRIEND_SETTINGS_KEY)
     group = config.get(ck.LEGACY_GROUP_SETTINGS_KEY)
     if not _is_legacy_present(friend, group):
-        return changed
+        # 无旧分组时不需要合并，直接在当前结构上强推即可。
+        return apply_preset_templates(defaults_section) or changed
 
     friend_dict = copy.deepcopy(friend) if isinstance(friend, dict) else {}
     group_dict = copy.deepcopy(group) if isinstance(group, dict) else {}
@@ -700,6 +719,10 @@ def migrate_config(config: Any) -> bool:
     # 同时保证下次启动不会重复迁移。
     config[ck.LEGACY_FRIEND_SETTINGS_KEY] = None
     config[ck.LEGACY_GROUP_SETTINGS_KEY] = None
+
+    # 合并已完成，此时强推才能覆盖旧分组带进来的模板。
+    if apply_preset_templates(merged_defaults):
+        changed = True
 
     logger.info(
         "[主动消息] 已将 friend_settings / group_settings 合并为 "
@@ -829,6 +852,16 @@ def _migrate_override(override: Any, session_id: str) -> dict[str, Any] | None:
         prompt_settings["templates"] = templates
     else:
         prompt_settings.pop("templates", None)
+
+    # 强推语义同样作用于覆写层：会话级自定义模板整组作废旧出厂预设，
+    # 与全局保持同一份出厂体验。版本号一致时跳过，保证幂等——
+    # 用户在本次预设版本上新建或修改的会话模板不会被下次启动覆盖。
+    if needs_preset_refresh(patched):
+        if templates:
+            prompt_settings["templates"] = copy.deepcopy(FRESH_DEFAULT_TEMPLATES)
+        prompt_settings[PRESET_REVISION_KEY] = PRESET_REVISION
+        if prompt_settings:
+            patched[ck.PROMPT_SETTINGS_KEY] = prompt_settings
 
     if style_text:
         prompt_settings[ck.OUTPUT_FORMAT_KEY] = OUTPUT_FORMAT_CUSTOM

@@ -17,7 +17,10 @@
 
 from __future__ import annotations
 
+import random
 from typing import Any
+
+from astrbot.api import logger
 
 from ....utils.time_utils import format_current_time
 from ...domain.domain_enums import HookPoint, StageResult
@@ -84,9 +87,26 @@ class PromptStage(BaseStage):
             )
 
         # ---- 用户层：主动消息正文 + 输出格式预设 ----
+        # 一轮只建一个 Random 实例：同轮内若有多个抽取点，共用同一序列
+        # 才能保证日志里记录的顺序与实际抽样顺序一致，便于复现排查。
+        rng = random.Random()
         main_template = (
-            resolve_active_template(session_config, session_type=session_type) or {}
+            resolve_active_template(session_config, session_type=session_type, rng=rng)
+            or {}
         )
+        if main_template:
+            # 抽取结果必须落日志：用户反馈「这轮效果怪」时，
+            # 只有知道抽中了哪套模板才能判断是模板问题还是模型波动。
+            logger.info(
+                f"[主动消息] 本轮抽中提示词模板："
+                f"{main_template.get('name') or '(未命名)'}"
+                f"（权重为 {main_template.get('weight')}）喵。"
+            )
+            ctx.trace.append(f"prompt_template:{main_template.get('id') or '-'}")
+        else:
+            logger.warning(
+                "[主动消息] 没有可用的提示词模板，本轮将只使用内置场景层与约束层喵。"
+            )
         # 只有模式为「自定义」时才采用用户正文，否则切回插件默认后
         # 残留的自定义内容会继续生效，违反该字段的配置契约。
         format_mode, custom_style = get_output_format(session_config)
