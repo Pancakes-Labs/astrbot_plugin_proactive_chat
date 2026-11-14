@@ -328,6 +328,8 @@ class ApiRoutes:
                 unanswered_count=max(0, unanswered_count),
                 source_mode=str(payload.get("source_mode") or "conversation_history"),
                 template_id=str(payload.get("template_id") or ""),
+                # 前端可附带未保存的草稿，保证预览与概率面板同源。
+                draft_templates=payload.get("templates"),
             )
 
         # 抽样预演：真实跑 N 次加权抽取并返回分布。
@@ -356,7 +358,10 @@ class ApiRoutes:
                     seed = None
 
             return prompt_admin.simulate(
-                session_type=session_type, rounds=rounds, seed=seed
+                session_type=session_type,
+                rounds=rounds,
+                seed=seed,
+                draft_templates=payload.get("templates"),
             )
 
         # 导出模板包。
