@@ -23,10 +23,12 @@ from ..domain.config_keys import (
     PROMPT_SETTINGS_KEY,
     SESSION_DEFAULTS_KEY,
 )
-from ..domain.prompt_contract import build_prompt_layers
+from ..domain.prompt_contract import build_instruction_text, build_prompt_layers
 from ..domain.prompt_placeholders import (
+    CAP_PLATFORM_HISTORY,
     PLACEHOLDER_CONVERSATION_TYPE,
     PLACEHOLDER_CURRENT_TIME,
+    PLACEHOLDER_PLATFORM_HISTORY_LAST_TIME,
     PLACEHOLDER_SPECS,
     PLACEHOLDER_UNANSWERED_COUNT,
     build_capabilities,
@@ -82,7 +84,7 @@ class PromptAdminService:
     def _prompt_settings(self, *, create: bool = False) -> dict[str, Any]:
         """取 session_defaults.prompt_settings（必要时就地创建）。"""
         section = self._defaults_section(create=create)
-        if not section:
+        if not create and not section:
             return {}
         settings = section.get(PROMPT_SETTINGS_KEY)
         if isinstance(settings, dict):
@@ -140,22 +142,22 @@ class PromptAdminService:
     # ------------------------------------------------------------------
     # 写入
     # ------------------------------------------------------------------
-    def save_templates(self, raw_templates: Any) -> list[str]:
-        """整表保存模板，返回发生的结构性问题（供前端提示）。
+    def normalize_for_save(
+        self, raw_templates: Any
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """只做规范化与校验，不触碰配置。
 
-        保存即代表用户主动确认当前内容：顺带把 preset_revision 写成当前版本，
-        防止下次启动的强推把这些改动覆盖掉。
+        导入流程要先验证、后提交：先把结果算出来，确认可用再写入，
+        这样一次性拷入错误内容时不会先把现有模板清空。
         """
         warnings: list[str] = []
-        normalized = (
-            normalize_templates(raw_templates)
-            if isinstance(raw_templates, list)
-            else []
-        )
-
         if not isinstance(raw_templates, list):
-            warnings.append("模板列表必须是数组，已忽略本次提交。")
-            return warnings
+            return [], ["模板列表必须是数组，已忽略本次提交。"]
+
+        normalized = normalize_templates(raw_templates)
+        if len(normalized) != len(raw_templates):
+            skipped = len(raw_templates) - len(normalized)
+            warnings.append(f"有 {skipped} 条不是合法模板对象，已忽略。")
 
         kept: list[dict[str, Any]] = []
         for index, item in enumerate(normalized, start=1):
@@ -171,6 +173,17 @@ class PromptAdminService:
                         f"实际注入时可能出现重复标题。建议改为以 {HEADER_INTENT} 开头。"
                     )
             kept.append(item)
+        return kept, warnings
+
+    def save_templates(self, raw_templates: Any) -> list[str]:
+        """整表保存模板，返回发生的结构性问题（供前端提示）。
+
+        保存即代表用户主动确认当前内容：顺带把 preset_revision 写成当前版本，
+        防止下次启动的强推把这些改动覆盖掉。
+        """
+        kept, warnings = self.normalize_for_save(raw_templates)
+        if not isinstance(raw_templates, list):
+            return warnings
 
         settings = self._prompt_settings(create=True)
         settings["templates"] = kept
@@ -203,6 +216,9 @@ class PromptAdminService:
 
         只接受本插件导出的结构，或裸模板数组；其余形态直接拒绝，
         避免把任意 JSON 写进配置。
+
+        必须先规范化并确认至少留下一条模板，再写入配置：
+        校验失败时原模板必须原样保留，否则一次误粘贴就清空了全部提示词。
         """
         warnings: list[str] = []
         templates: Any = None
@@ -212,14 +228,23 @@ class PromptAdminService:
             templates = payload.get("templates")
         if not isinstance(templates, list):
             return 0, ["导入内容里没有找到 templates 数组。"]
+        if not templates:
+            return 0, ["导入内容里的模板是空数组，已保留现有模板。"]
 
-        count = len(templates)
-        warnings.extend(self.save_templates(templates))
+        # 先验证：拿到真正会被保存的条目，避免"校验前先清空"。
+        kept, warnings = self.normalize_for_save(templates)
+        if not kept:
+            warnings.append("导入内容里没有可用模板，已保留现有模板。")
+            return 0, warnings
+
+        settings = self._prompt_settings(create=True)
+        settings["templates"] = kept
+        settings[PRESET_REVISION_KEY] = PRESET_REVISION
+        count = len(kept)
 
         if isinstance(payload, dict):
             mode = str(payload.get("output_format") or "")
             custom = payload.get("output_format_custom")
-            settings = self._prompt_settings(create=True)
             if mode in {"default", "custom"}:
                 settings[OUTPUT_FORMAT_KEY] = mode
             if isinstance(custom, str):
@@ -235,18 +260,38 @@ class PromptAdminService:
     # ------------------------------------------------------------------
     # 预览
     # ------------------------------------------------------------------
+    def _resolve_settings(
+        self, draft_templates: Any = None
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """取用于预览/预演的 settings 与模板列表。
+
+        draft_templates 非空时优先使用它：前端把未保存的草稿传上来，
+        预览与预演才能和左侧概率面板显示的是同一份数据。
+        """
+        settings = self._prompt_settings()
+        if not isinstance(draft_templates, list):
+            return settings, self.read_templates()
+        kept, _ = self.normalize_for_save(draft_templates)
+        merged = copy.deepcopy(settings)
+        merged["templates"] = kept
+        return merged, kept
+
     def resolve_template_for_preview(
-        self, session_type: str, template_id: str = ""
+        self,
+        session_type: str,
+        template_id: str = "",
+        *,
+        draft_templates: Any = None,
     ) -> dict[str, Any] | None:
         """取用于预览的模板。
 
         指定 template_id 时按 id 精确命中；否则按真实抽样逻辑抽一条，
         这样预览看到的就是模型本轮真正会收到的那份提示词。
         """
-        settings = self._prompt_settings()
+        settings, templates = self._resolve_settings(draft_templates)
         section = {PROMPT_SETTINGS_KEY: settings}
         if template_id:
-            for item in self.read_templates():
+            for item in templates:
                 if str(item.get("id") or "") == template_id:
                     return item
             return None
@@ -260,19 +305,22 @@ class PromptAdminService:
         source_mode: str = "conversation_history",
         template_id: str = "",
         platform_history_count: int = PREVIEW_DEFAULT_HISTORY_COUNT,
+        draft_templates: Any = None,
     ) -> dict[str, Any]:
         """服务端跑一遍真实装配逻辑，返回完整提示词与分段结构。
 
         复用 build_prompt_layers + resolve_placeholders，保证预览内容与
         运行期送给模型的提示词完全同源，不做任何前端近似模拟。
         """
-        settings = self._prompt_settings()
+        settings, _ = self._resolve_settings(draft_templates)
         section = {PROMPT_SETTINGS_KEY: settings}
 
         # sampled=True 表示本轮是现场抽签（未指定 template_id），
         # 每次调用都可能抽到不同模板。前端据此提示用户，避免误认为结果不稳定。
         sampled = not template_id
-        template = self.resolve_template_for_preview(session_type, template_id)
+        template = self.resolve_template_for_preview(
+            session_type, template_id, draft_templates=draft_templates
+        )
         template = template or {}
 
         mode, custom_style = get_output_format(section)
@@ -294,6 +342,9 @@ class PromptAdminService:
             PLACEHOLDER_UNANSWERED_COUNT: str(unanswered_count),
             PLACEHOLDER_CONVERSATION_TYPE: conversation_type_label(session_type),
         }
+        # 流水能力已判定可用时必须给出时间取值。
+        if capabilities.get(CAP_PLATFORM_HISTORY):
+            values[PLACEHOLDER_PLATFORM_HISTORY_LAST_TIME] = "未知"
 
         head_layers, tail_layers = build_prompt_layers(
             session_type, source_mode, custom_style=custom_style
@@ -328,6 +379,9 @@ class PromptAdminService:
             if raw_text
             else ""
         )
+        # 运行期会用 build_instruction_text 补 [最终指令] 标题，
+        # 预览必须同源处理，否则裸文本模板的预览与真实输入不一致。
+        rendered = build_instruction_text(rendered)
         if rendered:
             sections.append(
                 {
@@ -350,6 +404,27 @@ class PromptAdminService:
                     "label": "安全约束",
                     "source": layer.get("source", ""),
                     "text": str(layer.get("text") or ""),
+                }
+            )
+
+        # 运行期会在用户消息之后追加动态上下文块（模板未含对应占位符时），
+        # 预览必须一并展示，否则"完整提示词"的说法与实际输入不符。
+        llm_service = getattr(self.plugin, "llm_service", None)
+        dynamic_text = ""
+        if llm_service is not None:
+            dynamic_text = llm_service.build_dynamic_context_text(
+                unanswered_count,
+                {"_session_type": session_type},
+                include_time=PLACEHOLDER_CURRENT_TIME not in raw_text,
+                include_unanswered=PLACEHOLDER_UNANSWERED_COUNT not in raw_text,
+            )
+        if dynamic_text:
+            sections.append(
+                {
+                    "kind": "extra",
+                    "label": "动态上下文（随消息追加）",
+                    "source": "llm_service",
+                    "text": dynamic_text,
                 }
             )
 
@@ -382,6 +457,7 @@ class PromptAdminService:
         session_type: str = "friend",
         rounds: int = SIMULATE_DEFAULT_ROUNDS,
         seed: int | None = None,
+        draft_templates: Any = None,
     ) -> dict[str, Any]:
         """真实跑 N 次抽样，返回分布与偏差提示。
 
@@ -391,7 +467,7 @@ class PromptAdminService:
         rounds = max(
             1, min(int(rounds or SIMULATE_DEFAULT_ROUNDS), SIMULATE_MAX_ROUNDS)
         )
-        settings = self._prompt_settings()
+        settings, _ = self._resolve_settings(draft_templates)
         pool = build_candidate_pool(
             {PROMPT_SETTINGS_KEY: settings}, session_type=session_type
         )
@@ -404,7 +480,11 @@ class PromptAdminService:
             }
 
         rng = random.Random(seed)
-        counts: dict[str, int] = {str(item.get("id") or ""): 0 for item in pool}
+        # 归一化允许 id 为空或重复，按 id 聚合会让同名条目互相覆盖，
+        # 因此统计与期望值都按池内索引对齐，id 只作为展示字段。
+        # 映射用对象身份而非 id：pick_template 返回的是池内同一引用。
+        counts: list[int] = [0] * len(pool)
+        index_of = {id(item): index for index, item in enumerate(pool)}
         for _ in range(rounds):
             picked = resolve_active_template(
                 {PROMPT_SETTINGS_KEY: settings},
@@ -414,24 +494,22 @@ class PromptAdminService:
             )
             if not picked:
                 continue
-            key = str(picked.get("id") or "")
-            counts[key] = counts.get(key, 0) + 1
+            index = index_of.get(id(picked))
+            if index is not None:
+                counts[index] += 1
 
-        expected = {
-            item["id"]: item["probability"] for item in compute_probabilities(pool)
-        }
+        probabilities = compute_probabilities(pool)
         results = []
-        for item in pool:
-            key = str(item.get("id") or "")
-            actual = counts.get(key, 0) / rounds if rounds else 0.0
+        for index, item in enumerate(pool):
+            actual = counts[index] / rounds if rounds else 0.0
             results.append(
                 {
-                    "id": key,
+                    "id": str(item.get("id") or ""),
                     "name": item.get("name", ""),
                     "weight": int(item.get("weight") or 0),
-                    "expected": expected.get(key, 0.0),
+                    "expected": probabilities[index]["probability"],
                     "actual": actual,
-                    "count": counts.get(key, 0),
+                    "count": counts[index],
                 }
             )
         results.sort(key=lambda entry: entry["actual"], reverse=True)
