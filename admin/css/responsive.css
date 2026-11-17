@@ -521,8 +521,58 @@
     .config-card,
     .config-header,
     .notifications-inline-meta-item,
-    .markdown-docs-file-item {
+    .markdown-docs-file-item,
+    /* 提示词页：卡牌从盒口起飞 / 收回、模态放大、页头与舞台的 card-fade-up 入场。
+     * .pv-hero 与 .pv-stage 现在挂的是 card-fade-up（带 translateY + scale），
+     * 关闭动画后必须补静态落位态，否则会停在 opacity:0 的起始帧。 */
+    .pv-stage,
+    .pv-page,
+    .pv-hero,
+    .pv-card,
+    .pv-modal,
+    .pv-modal-mask {
         animation: none !important;
+    }
+
+    /* 关掉动画后必须补上静态可见状态，否则卡片会停在 opacity:0。
+       注意排除 .is-leaving：退场卡必须保持不可见，否则会「收了又冒出来」。
+       .pv-hero / .pv-stage 的 card-fade-up 也带 transform，
+       同样要清掉，不然会留下 10px 上移与 0.985 的缩放。 */
+    .pv-stage,
+    .pv-page,
+    .pv-hero,
+    .pv-card:not(.is-leaving),
+    .pv-modal,
+    .pv-modal-mask {
+        opacity: 1;
+        transform: none;
+    }
+
+    .pv-card.is-leaving {
+        opacity: 0 !important;
+    }
+
+    /* 卡盒与迷你卡的悬停/沉浮位移靠 transition，同样要按下暂停。
+       迷你卡隐去后必须保持不可见，否则会「收进盒子又冒出来」。
+       挂钩没有 transition（它是墙上的固定件），列在这里只为明确它不受影响。 */
+    .pv-box-stage,
+    .pv-box-face,
+    .pv-peek {
+        transition: none !important;
+    }
+
+    /* 卡片投影靠动画淡入，关掉动画后必须给到位，否则 hover 阴影永远不可见。 */
+    .pv-card-slot::before {
+        animation: none !important;
+        opacity: 1;
+    }
+
+    .pv-peek.is-away {
+        opacity: 0 !important;
+    }
+
+    .pv-pool-drawer {
+        transition: none !important;
     }
 
     /* 提示条靠动画淡入，关掉动画后必须补上静态可见状态。 */
