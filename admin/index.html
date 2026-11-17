@@ -21,6 +21,7 @@
     <link rel="stylesheet" href="css/timer-card.css">
     <link rel="stylesheet" href="css/status.css">
     <link rel="stylesheet" href="css/content.css">
+    <link rel="stylesheet" href="css/prompts.css">
     <link rel="stylesheet" href="css/theme-dark.css">
     <link rel="stylesheet" href="css/responsive.css">
 
@@ -62,13 +63,36 @@
             '/mermaid@11.4.1/dist/mermaid.min.js'
         ];
 
+        // 前 6 项是应用运行的地基，任一缺失整个前端都起不来。
+        // 后 3 项只服务 Markdown 文档页，失败可降级。
+        var CRITICAL_LIB_COUNT = 6;
+        // 单库最多尝试次数与递增间隔。长时间离开浏览器后回来，网络栈往往要
+        // 几百毫秒才真正可用，首次请求失败几乎都是瞬时的，必须重试而不是直接报错。
+        var LIB_MAX_ATTEMPTS = 3;
+        var LIB_RETRY_DELAYS = [600, 2000];
+        // 单个 JSX / JS 文件的拉取重试间隔。
+        var SCRIPT_RETRY_DELAYS = [400, 1200];
+
         // 命名空间收拢，避免污染 window 全局变量并方便调试
         window.ProactiveLoader = {
             libsCount: libs.length,
             libsLoaded: 0,
             pendingScripts: [],
             scriptRunning: false,
-            
+            // 致命错误一旦置位，后续 JSX 队列全部停止。
+            fatalError: '',
+            // 前端模块失败计数：少量失败可能只是个别页面，大面积失败才算致命。
+            failedScripts: 0,
+
+            // 启动页状态提示：橙色表示"正在等待/进行中"，不当作错误展示。
+            showStatus: function(msg) {
+                var text = document.getElementById('boot-text');
+                if (text) {
+                    text.textContent = msg;
+                    text.style.color = '#D05F00';
+                }
+            },
+
             // 弹出全局 UI 错误信息并停止加载
             showError: function(msg) {
                 console.error("[ProactiveLoader] " + msg);
@@ -79,15 +103,109 @@
                 }
             },
 
+            // 把错误转交底部面板。
+            report: function(label, detail) {
+                if (typeof window.__proactiveReportError === 'function') {
+                    window.__proactiveReportError(label, detail);
+                }
+            },
+
             // 资源版本号取自 index.html 的最后修改时间，变更后自动失效旧缓存。
             assetVersion: String(document.lastModified || Date.now()),
 
+            // 给静态资源追加版本号。已在 query 中时用 & 续接。
+            versioned: function(src) {
+                return src + (src.indexOf('?') === -1 ? '?' : '&') + 'v=' + encodeURIComponent(this.assetVersion);
+            },
+
+            // 关键库彻底失败：给出唯一一条清晰提示，并终止后续 JSX 队列。
+            handleLibFailure: function(path, isCritical) {
+                if (!isCritical) {
+                    console.warn('[ProactiveLoader] 可选依赖加载失败，已降级: ' + path);
+                    return;
+                }
+                if (!this.fatalError) {
+                    this.fatalError = '前端依赖库加载失败，请检查网络后刷新页面';
+                    this.showError(this.fatalError);
+                }
+                this.report('依赖库加载失败', path + '（网络不可用或被拦截）');
+            },
+
+            // 单个前端模块失败：累计到阈值才升级为致命错误，避免逐个刷屏。
+            failScript: function(label, detail) {
+                this.failedScripts++;
+                console.error('[ProactiveLoader] ' + label + '｜' + detail);
+                if (this.failedScripts === 3) {
+                    this.showError('多个前端模块加载失败，请刷新页面重试');
+                }
+                if (this.failedScripts >= 3 && !this.fatalError) {
+                    this.fatalError = '前端模块加载失败，请刷新页面重试';
+                }
+                this.report('前端模块加载失败', label + '｜' + detail);
+            },
+
+            // 带重试的文本拉取（用于运行时 Babel 编译 JSX）。
+            // 首次强制校验新鲜度，重试时允许命中缓存：网络抖动或短暂离线时
+            // 仍有机会用本地缓存把页面跑起来，而不是直接白屏。
+            fetchText: function(src, attempt) {
+                var self = this;
+                var tries = typeof attempt === 'number' ? attempt : 0;
+                var cacheMode = tries === 0 ? 'no-cache' : 'force-cache';
+                return fetch(self.versioned(src), { cache: cacheMode })
+                    .then(function(res) {
+                        if (!res.ok) {
+                            throw new Error('HTTP error ' + res.status);
+                        }
+                        return res.text();
+                    })
+                    .catch(function(err) {
+                        if (tries + 1 >= LIB_MAX_ATTEMPTS) throw err;
+                        var delay = SCRIPT_RETRY_DELAYS[tries] || 1200;
+                        return new Promise(function(resolve) {
+                            setTimeout(resolve, delay);
+                        }).then(function() {
+                            return self.fetchText(src, tries + 1);
+                        });
+                    });
+            },
+
+            // 普通脚本加载：失败同样重试，彻底失败才记一次错误。
+            loadPlainScript: function(src, attempt) {
+                var self = this;
+                var tries = typeof attempt === 'number' ? attempt : 0;
+                var script = document.createElement('script');
+                script.src = self.versioned(src) + (tries > 0 ? '&r=' + tries : '');
+                script.onload = function() {
+                    self.scriptRunning = false;
+                    self.triggerPendingScripts();
+                };
+                script.onerror = function() {
+                    if (script.parentNode) script.parentNode.removeChild(script);
+                    if (tries + 1 < LIB_MAX_ATTEMPTS) {
+                        var delay = SCRIPT_RETRY_DELAYS[tries] || 1200;
+                        setTimeout(function() {
+                            self.loadPlainScript(src, tries + 1);
+                        }, delay);
+                        return;
+                    }
+                    self.failScript('无法加载 ' + src, '网络不可用或被拦截');
+                    // 关键：加载失败也要放行队列，否则整站会卡在白屏。
+                    self.scriptRunning = false;
+                    self.triggerPendingScripts();
+                };
+                document.body.appendChild(script);
+            },
+
             // 触发并调度脚本队列的执行状态机
             triggerPendingScripts: function() {
+                // 致命错误后不再执行任何后续模块：继续跑只会产生成片的二次报错。
+                if (this.fatalError) {
+                    return;
+                }
                 if (this.libsLoaded < this.libsCount) {
                     return;
                 }
-                
+
                 // 如果当前已有脚本正在执行加载/编译，则暂停触发，等待其加载/编译完毕回调
                 if (this.scriptRunning) {
                     return;
@@ -105,17 +223,11 @@
                 var self = this;
                 this.pendingScripts.push(function() {
                     if (isBabel) {
-                        // 强制走网络，避免浏览器缓存旧版 JSX 导致引用已删除的组件。
-                        fetch(src, { cache: 'no-store' })
-                            .then(function(res) {
-                                if (!res.ok) {
-                                    throw new Error("HTTP error " + res.status);
-                                }
-                                return res.text();
-                            })
+                        // 拉取失败会重试；仍失败才报错，避免瞬时网络问题刷屏。
+                        self.fetchText(src)
                             .then(function(code) {
                                 if (typeof Babel === 'undefined') {
-                                    self.showError("Babel is not loaded, failed to compile: " + src);
+                                    self.failScript('缺少 Babel 编译环境', src);
                                     // 编译环境缺失也必须释放队列锁，否则后续脚本会永久卡住。
                                     self.scriptRunning = false;
                                     self.triggerPendingScripts();
@@ -135,33 +247,20 @@
                                     self.scriptRunning = false;
                                     self.triggerPendingScripts();
                                 } catch (e) {
-                                    self.showError("Failed to compile JSX file " + src + ": " + e.message);
+                                    self.failScript('编译 JSX 失败 ' + src, e.message);
                                     // 单个文件编译失败不应阻断整条加载链。
                                     self.scriptRunning = false;
                                     self.triggerPendingScripts();
                                 }
                             })
                             .catch(function(err) {
-                                self.showError("Failed to fetch JSX script " + src + ": " + err.message);
+                                self.failScript('拉取 JSX 失败 ' + src, err.message);
                                 // 拉取失败同样要放行队列，界面才能继续加载其余模块。
                                 self.scriptRunning = false;
                                 self.triggerPendingScripts();
                             });
                     } else {
-                        var s = document.createElement('script');
-                        // 普通脚本同样拼接版本号，防止旧 .js 被长期缓存。
-                        s.src = src + (src.indexOf('?') === -1 ? '?' : '&') + 'v=' + encodeURIComponent(self.assetVersion);
-                        s.onload = function() {
-                            self.scriptRunning = false;
-                            self.triggerPendingScripts();
-                        };
-                        s.onerror = function() {
-                            self.showError("Failed to load script: " + src);
-                            // 关键：加载失败也要放行队列，否则整站会卡在白屏。
-                            self.scriptRunning = false;
-                            self.triggerPendingScripts();
-                        };
-                        document.body.appendChild(s);
+                        self.loadPlainScript(src);
                     }
                 });
                 this.triggerPendingScripts();
@@ -176,7 +275,7 @@
                         self.scriptRunning = false;
                         self.triggerPendingScripts();
                     } catch (e) {
-                        self.showError("Inline task failed: " + e.message);
+                        self.failScript('内联任务执行失败', e.message);
                         // 任务抛错时也必须释放队列锁，否则后续 JSX 模块永远不会加载。
                         self.scriptRunning = false;
                         self.triggerPendingScripts();
@@ -186,18 +285,58 @@
             }
         };
 
+        var loader = window.ProactiveLoader;
         // 通过 DOM API 创建 script 元素，兼容 CSP 且比 document.write 更可靠。
         var head = document.head || document.getElementsByTagName('head')[0];
-        for (var i = 0; i < libs.length; i++) {
-            var s = document.createElement('script');
-            s.src = base + libs[i];
-            s.async = false; // 强迫动态脚本按数组中的逻辑顺序同步下载并执行
-            if (i < 2) s.crossOrigin = 'anonymous';
-            s.onload = s.onerror = function() {
-                window.ProactiveLoader.libsLoaded++;
-                window.ProactiveLoader.triggerPendingScripts();
+
+        // 串行加载依赖库。
+        function loadLibAt(index, attempt) {
+            if (index >= libs.length) {
+                return;
+            }
+
+            var script = document.createElement('script');
+            // 重试时追加 r 参数，避免浏览器复用上一次失败的请求结果。
+            script.src = base + libs[index] + (attempt > 0 ? '?r=' + attempt : '');
+            script.async = false;
+            if (index < 2) script.crossOrigin = 'anonymous';
+
+            script.onload = function() {
+                loader.libsLoaded++;
+                loader.triggerPendingScripts();
+                loadLibAt(index + 1, 0);
             };
-            head.appendChild(s);
+
+            script.onerror = function() {
+                if (script.parentNode) script.parentNode.removeChild(script);
+                if (attempt + 1 < LIB_MAX_ATTEMPTS) {
+                    var delay = LIB_RETRY_DELAYS[attempt] || 2000;
+                    setTimeout(function() {
+                        loadLibAt(index, attempt + 1);
+                    }, delay);
+                    return;
+                }
+                // 重试全败：推进计数，让队列有机会给出统一的失败提示。
+                loader.libsLoaded++;
+                loader.handleLibFailure(libs[index], index < CRITICAL_LIB_COUNT);
+                loader.triggerPendingScripts();
+                loadLibAt(index + 1, 0);
+            };
+
+            head.appendChild(script);
+        }
+
+        // 离线状态下先等网络恢复再开始加载，避免一回来就满屏红色错误。
+        if (navigator.onLine === false) {
+            loader.showStatus('网络未连接，正在等待网络恢复...');
+            var startWhenOnline = function() {
+                window.removeEventListener('online', startWhenOnline);
+                loader.showStatus('网络已恢复，正在加载前端依赖...');
+                loadLibAt(0, 0);
+            };
+            window.addEventListener('online', startWhenOnline);
+        } else {
+            loadLibAt(0, 0);
         }
     })();
     </script>
@@ -226,15 +365,59 @@
     <!-- React 根节点；所有前端界面最终都会挂到这里。 -->
     <div id="root"></div>
     <!-- 全局异常面板：任何未捕获错误都会显示在这里，避免出现无提示白屏。 -->
-    <div id="boot-error-panel" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:9999;max-height:45vh;overflow:auto;padding:14px 18px;background:#2B1B1B;color:#FFD6D6;font:12px/1.6 Consolas,Menlo,monospace;border-top:2px solid #B3261E;white-space:pre-wrap;"></div>
+    <div id="boot-error-panel" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:9999;max-height:45vh;overflow:auto;padding:14px 18px;background:#2B1B1B;color:#FFD6D6;font:12px/1.6 Consolas,Menlo,monospace;border-top:2px solid #B3261E;white-space:pre-wrap;">
+        <div style="display:flex;align-items:flex-start;gap:12px;">
+            <div id="boot-error-body" style="flex:1;min-width:0;"></div>
+            <button id="boot-error-close" type="button" style="flex-shrink:0;padding:3px 10px;border:1px solid #B3261E;border-radius:6px;background:transparent;color:#FFD6D6;font:12px/1.6 Consolas,Menlo,monospace;cursor:pointer;">
+                关闭
+            </button>
+        </div>
+    </div>
     <script>
         (function () {
             var panel = document.getElementById('boot-error-panel');
-            function report(label, detail) {
-                if (!panel) return;
-                panel.style.display = 'block';
-                panel.textContent += '[' + label + '] ' + detail + '\n';
+            var bodyNode = document.getElementById('boot-error-body');
+            var closeButton = document.getElementById('boot-error-close');
+            // 去重表：资源重试会重复触发 onerror，逐条追加会把面板刷满一屏。
+            var seen = Object.create(null);
+            // 展示上限：长时间离开后回来的错误通常是同一批原因，超出部分折叠成一行。
+            var MAX_LINES = 12;
+            var shown = 0;
+
+            function close() {
+                if (panel) panel.style.display = 'none';
             }
+            if (closeButton) closeButton.addEventListener('click', close);
+
+            function report(label, detail) {
+                if (!panel || !bodyNode) return;
+                var text = String(detail === null || detail === undefined ? '' : detail);
+                var key = label + '\u0000' + text;
+                if (seen[key]) return;
+                seen[key] = true;
+
+                if (shown >= MAX_LINES) {
+                    if (!document.getElementById('boot-error-more')) {
+                        var more = document.createElement('div');
+                        more.id = 'boot-error-more';
+                        more.textContent = '（还有更多错误已省略，建议刷新页面）';
+                        more.style.opacity = '0.75';
+                        bodyNode.appendChild(more);
+                    }
+                    return;
+                }
+
+                shown++;
+                var line = document.createElement('div');
+                line.style.whiteSpace = 'pre-wrap';
+                line.textContent = '[' + label + '] ' + text;
+                bodyNode.appendChild(line);
+                panel.style.display = 'block';
+            }
+
+            // 暴露给加载器：head 阶段的依赖失败也要走同一条去重通道。
+            window.__proactiveReportError = report;
+
             // 捕获脚本执行期错误，附带文件与行号，便于快速定位。
             window.addEventListener('error', function (event) {
                 var target = event && event.target;
@@ -256,6 +439,20 @@
             window.addEventListener('unhandledrejection', function (event) {
                 var reason = event && event.reason;
                 report('未处理的 Promise 拒绝', (reason && reason.stack) || String(reason));
+            });
+
+            // 网络恢复时如果页面卡在依赖失败状态，自动重新加载一次。
+            window.addEventListener('online', function () {
+                var loader = window.ProactiveLoader;
+                if (!loader || !loader.fatalError) return;
+                var KEY = 'proactive_auto_reload_once';
+                try {
+                    if (sessionStorage.getItem(KEY) === '1') return;
+                    sessionStorage.setItem(KEY, '1');
+                } catch (e) {
+                    return;
+                }
+                window.location.reload();
             });
         })();
     </script>
@@ -289,6 +486,8 @@
                 var bootLoginEventsBound = false;
 
                 function proceed() {
+                    // 成功进入应用后清掉自动重试闸门，下次离线恢复仍可自动修复。
+                    try { sessionStorage.removeItem('proactive_auto_reload_once'); } catch (e) {}
                     // 告知其余脚本：鉴权检查已完成，可以开始渲染业务界面。
                     window.__PROACTIVE_AUTH_PENDING = false;
                     window.dispatchEvent(new Event('auth-ready'));
@@ -445,6 +644,15 @@
         window.ProactiveLoader.queueScript("js/components/config/useConfigDraft.js", false);
         window.ProactiveLoader.queueScript("js/components/config/ConfigEditor.jsx", true);
         window.ProactiveLoader.queueScript("js/views/ConfigView.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/prompts/promptUtils.js", false);
+        window.ProactiveLoader.queueScript("js/components/prompts/CardStack.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/prompts/DeckBox.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/prompts/PromptCard.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/prompts/PromptEditor.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/prompts/PreviewLayers.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/prompts/PoolDrawer.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/prompts/DeckSection.jsx", true);
+        window.ProactiveLoader.queueScript("js/components/prompts/PromptDrawer.jsx", true);
         window.ProactiveLoader.queueScript("js/views/PromptsView.jsx", true);
         window.ProactiveLoader.queueScript("js/views/TasksView.jsx", true);
         window.ProactiveLoader.queueScript("js/views/NotificationsView.jsx", true);
