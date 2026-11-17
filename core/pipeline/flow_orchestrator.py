@@ -237,6 +237,8 @@ class FlowOrchestrator:
             plugin.session_data.setdefault(normalized_session_id, {})[
                 "unanswered_count"
             ] = new_unanswered_count
+            # 记录本轮实际发出的模板，供下一轮判重。
+            self._remember_used_template(normalized_session_id, ctx)
             logger.info(
                 f"[主动消息] {plugin.session_service.get_session_log_str(normalized_session_id)} 的第 {new_unanswered_count} 次主动消息已发送完成，当前未回复次数: {new_unanswered_count} 次喵。"
             )
@@ -270,6 +272,7 @@ class FlowOrchestrator:
                 )
                 scheduled_job_payload = {
                     "run_date": run_date,
+                    "scheduled_at": scheduled_at,
                     "session_config": session_config,
                 }
 
@@ -277,7 +280,9 @@ class FlowOrchestrator:
 
         if scheduled_job_payload is not None:
             plugin.scheduler_service.add_chat_job(
-                normalized_session_id, scheduled_job_payload["run_date"]
+                normalized_session_id,
+                scheduled_job_payload["run_date"],
+                scheduled_at=scheduled_job_payload["scheduled_at"],
             )
             logger.info(
                 f"[主动消息] 已为 {plugin.session_service.get_session_log_str(normalized_session_id, scheduled_job_payload['session_config'])} 安排下一次主动消息喵，时间：{scheduled_job_payload['run_date'].strftime('%Y-%m-%d %H:%M:%S')} 喵。"
@@ -285,6 +290,38 @@ class FlowOrchestrator:
 
         # 群聊由沉默倒计时驱动，不依赖持久化调度字段，故在成功发送后清理残留状态。
         await self._cleanup_group_schedule_state(normalized_session_id)
+
+    def _remember_used_template(self, session_id: str, ctx: ProactiveContext) -> None:
+        """记录本轮实际发出的提示词模板，供下一轮回避判重。
+
+        元数据取自 PROMPT 阶段写入的 PromptBlock：template_id 可能为空，
+        因此同时带上 name 与 raw_text，让指纹函数能退化为内容摘要。
+        """
+        plugin = self.plugin
+        service = getattr(plugin, "prompt_preset_service", None)
+        if service is None:
+            return
+        template = self._used_template_of(ctx)
+        if not template:
+            return
+        try:
+            service.remember_template(session_id, template)
+        except Exception as e:  # noqa: BLE001 - 记录失败不应影响收尾
+            logger.warning(f"[主动消息] 记录本轮提示词模板失败喵: {e}")
+
+    @staticmethod
+    def _used_template_of(ctx: ProactiveContext) -> dict[str, Any]:
+        """从提示词块里取出本轮用户模板的身份信息；未找到时返回空字典。"""
+        for block in ctx.prompts.blocks:
+            metadata = block.metadata or {}
+            if metadata.get("layer") != "user":
+                continue
+            return {
+                "id": str(metadata.get("template_id") or ""),
+                "name": str(metadata.get("template_name") or ""),
+                "text": str(metadata.get("raw_text") or ""),
+            }
+        return {}
 
     async def clear_manual_trigger_state(self, session_id: str) -> None:
         """释放指定会话的手动触发占用状态，并向管理端广播任务刷新。"""
