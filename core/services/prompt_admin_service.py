@@ -49,7 +49,7 @@ from ..domain.prompt_templates import (
     get_output_format,
     get_templates,
     normalize_templates,
-    pick_template,
+    pick_template_index,
     resolve_active_template,
 )
 
@@ -483,16 +483,11 @@ class PromptAdminService:
         rng = random.Random(seed)
         # 归一化允许 id 为空或重复，按 id 聚合会让同名条目互相覆盖，
         # 因此统计与期望值都按池内索引对齐，id 只作展示字段。
-        # 必须直接在 pool 上抽样：resolve_active_template 每轮都会重新
-        # 归一化并造出新字典，返回对象与 pool 里的元素不同一，身份映射必然落空。
+        # 抽签直接用 pick_template_index 返回的下标计数。
         counts: list[int] = [0] * len(pool)
-        position_of = {id(item): index for index, item in enumerate(pool)}
         for _ in range(rounds):
-            picked = pick_template(pool, weighted=True, rng=rng)
-            if not picked:
-                continue
-            index = position_of.get(id(picked))
-            if index is not None:
+            index = pick_template_index(pool, rng=rng)
+            if index >= 0:
                 counts[index] += 1
 
         probabilities = compute_probabilities(pool)
