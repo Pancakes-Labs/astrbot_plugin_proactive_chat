@@ -1,0 +1,3324 @@
+/* 文件职责：提示词管理页（控制台 / 卡盒架 / 卡牌 / 放大模态 / 抽池透视）的视觉层。
+ * 类名统一 pv- 前缀；主题色由 --pv-accent 驱动，暗色覆盖写在 theme-dark.css。
+ * 动画时长的事实源在 promptUtils，由 PromptsView 注入 --pv-launch-* / --pv-retract-*。
+ */
+
+/* ===== 页面骨架 ===== */
+/* 容器自身不挂动画，入场交给内部两块面板各自播放。 */
+.pv-page {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-bottom: 32px;
+}
+
+/* 页面底景：一层极淡的台面渐变，让墙面与卡盒有落脚的依据。 */
+.pv-backdrop {
+    position: absolute;
+    inset: -18px -24px 0;
+    z-index: -1;
+    pointer-events: none;
+    border-radius: 24px;
+    background:
+        radial-gradient(ellipse 70% 46% at 50% 4%, rgb(var(--md-primary-rgb) / 0.05), transparent 62%),
+        radial-gradient(ellipse 52% 30% at 50% 46%, rgba(214, 178, 132, 0.1), transparent 70%),
+        linear-gradient(180deg, rgba(255, 252, 247, 0.5), rgba(255, 250, 243, 0) 46%);
+}
+
+
+/* ===== 页头控制台 =====
+ * 两行：上行是身份（标题 + 读数）与常驻控件，下行是动作组。 */
+.pv-hero {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px 18px 13px;
+    background:
+        linear-gradient(135deg, rgb(var(--md-primary-rgb) / 0.07), rgb(var(--md-primary-rgb) / 0.02) 46%, rgba(255, 255, 255, 0.5) 100%),
+        var(--md-sys-color-surface);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--glass-shadow);
+    /* 与其它页面的页头卡（.notifications-hero-card / .config-header）
+       共用同一条 card-fade-up 曲线和同一个 0.02s 延迟档位。
+       页头内没有 fixed 后代，这里的 transform 不会改变任何定位基准。 */
+    animation: card-fade-up 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    animation-delay: 0.02s;
+}
+
+.pv-hero-main {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.pv-hero-text {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    min-width: 0;
+}
+
+.pv-hero-title {
+    margin: 0 !important;
+    font-size: 17px !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.4px;
+}
+
+.pv-hero-pills {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+/* 右侧一整条：动作组 + 常驻控件同处一行。 */
+.pv-hero-bar {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+/* 动作组：只放真正改变数据的操作。与常驻控件同高、同圆角、同描边。 */
+.pv-hero-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* 竖分隔：粗细 1px，高度与按钮同高，作为两组控件的分界而不占一行。
+ * 用伪元素而不是 border-left，避免影响 flex 尺寸计算。 */
+.pv-hero-tools::after {
+    content: '';
+    align-self: center;
+    width: 1px;
+    height: 20px;
+    margin: 0 2px;
+    background: rgb(var(--md-primary-rgb) / 0.16);
+}
+
+/* 常驻控件组：搜索 + 数据工具 + 保存状态，三者同尺寸同描边。 */
+.pv-hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.pv-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.14);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
+    white-space: nowrap;
+    cursor: help;
+}
+
+.pv-pill strong {
+    font-size: 12px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    color: var(--md-sys-color-on-surface);
+}
+
+.pv-pill.is-accent {
+    color: var(--md-sys-color-primary);
+    background: rgb(var(--md-primary-rgb) / 0.1);
+    border-color: rgb(var(--md-primary-rgb) / 0.22);
+}
+
+.pv-pill.is-accent strong {
+    color: var(--md-sys-color-primary);
+}
+
+/* ---- 页头按钮：统一药丸 ----
+ * 描边极细、底色近乎透明，悬停才填充。
+ * 同一行里所有按钮共用同一组尺寸（32px / 999px / 12px 700），
+ * 差异只剩「主操作 / 生效中 / 常态 / 禁用」四种状态色。 */
+.pv-hero-btn.MuiButton-root {
+    height: 32px;
+    min-width: 0;
+    padding: 0 14px 0 11px;
+    border-radius: 999px;
+    border-color: rgb(var(--md-primary-rgb) / 0.2);
+    background: rgba(255, 255, 255, 0.55);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.1px;
+    line-height: 1;
+    color: var(--md-sys-color-on-surface-variant);
+    text-transform: none;
+    white-space: nowrap;
+    box-shadow: none;
+    gap: 5px;
+    transition:
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        color var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+/* 前置图标槽：固定 14px 宽、居中，保证三个按钮的文字起点垂直对齐。
+ * 用 emoji 字形时宽度天然不等，靠这个固定宽度的槽把差异吃掉。 */
+.pv-hero-btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    font-size: 12px;
+    line-height: 1;
+    font-weight: 900;
+    opacity: 0.72;
+    pointer-events: none;
+}
+
+.pv-hero-btn.is-primary .pv-hero-btn-icon,
+.pv-hero-btn.is-on .pv-hero-btn-icon {
+    opacity: 1;
+}
+
+.pv-hero-btn.MuiButton-root:hover {
+    border-color: rgb(var(--md-primary-rgb) / 0.4);
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--md-sys-color-primary);
+}
+
+.pv-hero-btn.MuiButton-root:hover .pv-hero-btn-icon {
+    opacity: 1;
+}
+
+/* 主操作：整行里唯一带主色的按钮，用低压强的方式强调（描边 + 淡底 + 主色字）。 */
+.pv-hero-btn.is-primary.MuiButton-root {
+    border-color: rgb(var(--md-primary-rgb) / 0.42);
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    color: var(--md-sys-color-primary);
+    font-weight: 800;
+}
+
+.pv-hero-btn.is-primary.MuiButton-root:hover {
+    border-color: rgb(var(--md-primary-rgb) / 0.6);
+    background: rgb(var(--md-primary-rgb) / 0.15);
+}
+
+/* 正在生效的控件（卡池透视打开时）用主色填充表达状态，不用 disabled 灰。 */
+.pv-hero-btn.is-on.MuiButton-root {
+    border-color: transparent;
+    background: rgb(var(--md-primary-rgb) / 0.14);
+    color: var(--md-sys-color-primary);
+    font-weight: 800;
+}
+
+.pv-hero-btn.is-on.MuiButton-root:hover {
+    background: rgb(var(--md-primary-rgb) / 0.2);
+}
+
+.pv-hero-btn.MuiButton-root.Mui-disabled {
+    border-color: rgb(var(--md-primary-rgb) / 0.1);
+    background: rgba(255, 255, 255, 0.3);
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.42;
+}
+
+/* 键盘焦点：整行控件共用同一种可见焦点环，之前完全没有。 */
+.pv-hero-btn.MuiButton-root:focus-visible,
+.pv-hero-icon-btn.MuiButtonBase-root:focus-visible,
+.pv-save-btn.MuiButton-root:focus-visible,
+.pv-search-btn:focus-visible,
+.pv-search-clear:focus-visible {
+    outline: 2px solid rgb(var(--md-primary-rgb) / 0.55);
+    outline-offset: 2px;
+}
+
+/* 图标按钮与药丸同高：宽度 32px 保证是正圆，混排时基线不歪。 */
+.pv-hero-icon-btn.MuiIconButton-root {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    font-size: 14px;
+    color: var(--md-sys-color-on-surface-variant);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.18);
+    background: rgba(255, 255, 255, 0.55);
+    transition:
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        color var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.pv-hero-icon-btn.MuiIconButton-root:hover {
+    background: rgba(255, 255, 255, 0.92);
+    border-color: rgb(var(--md-primary-rgb) / 0.36);
+    color: var(--md-sys-color-primary);
+}
+
+/* ---- 搜索：常驻胶囊，展开只改宽度，不插入新节点 ---- */
+.pv-search {
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    width: 32px;
+    padding: 0;
+    border-radius: 999px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.18);
+    background: rgba(255, 255, 255, 0.55);
+    overflow: hidden;
+    transition:
+        width 0.26s var(--theme-transition-easing),
+        border-color var(--interactive-transition-duration) var(--theme-transition-easing),
+        background-color var(--interactive-transition-duration) var(--theme-transition-easing);
+}
+
+.pv-search.is-open {
+    width: 188px;
+    border-color: rgb(var(--md-primary-rgb) / 0.36);
+    background: rgba(255, 255, 255, 0.94);
+}
+
+.pv-search-btn {
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    background: none;
+    cursor: pointer;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+/* 放大镜用纯 CSS 画：一个圆环 + 一根斜柄，不依赖 emoji 字形。 */
+.pv-search-btn i {
+    position: relative;
+    width: 11px;
+    height: 11px;
+    border: 1.6px solid currentColor;
+    border-radius: 50%;
+}
+
+.pv-search-btn i::after {
+    content: '';
+    position: absolute;
+    right: -4px;
+    bottom: -3px;
+    width: 5px;
+    height: 1.6px;
+    border-radius: 2px;
+    background: currentColor;
+    transform: rotate(45deg);
+    transform-origin: left center;
+}
+
+.pv-search.is-open .pv-search-btn {
+    color: var(--md-sys-color-primary);
+}
+
+.pv-search-input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    outline: none;
+    background: none;
+    font: inherit;
+    font-size: 12px;
+    color: var(--md-sys-color-on-surface);
+    /* 收起时宽度为 0，输入框也必须一起消失，否则文字会被裁在按钮旁。 */
+    opacity: 0;
+    transition: opacity 0.18s ease;
+}
+
+.pv-search.is-open .pv-search-input {
+    opacity: 1;
+    padding-right: 4px;
+}
+
+.pv-search-clear {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    margin-right: 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    font-size: 10px;
+    color: var(--md-sys-color-on-surface-variant);
+    cursor: pointer;
+}
+
+.pv-search-clear:hover {
+    background: rgb(var(--md-primary-rgb) / 0.16);
+    color: var(--md-sys-color-primary);
+}
+
+/* ---- 保存区 ----
+ * 洁净态只有一枚对勾徽章（hover 出时间），脏了才长出按钮。 */
+.pv-save {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.pv-save-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.16);
+    background: rgb(var(--md-primary-rgb) / 0.05);
+    font-size: 12px;
+    font-weight: 800;
+    color: var(--md-sys-color-primary);
+    cursor: default;
+    user-select: none;
+}
+
+.pv-save.is-dirty .pv-save-mark {
+    border-color: rgb(var(--md-warning-rgb) / 0.4);
+    background: rgb(var(--md-warning-rgb) / 0.12);
+    color: var(--md-sys-color-warning);
+}
+
+.pv-save.is-saving .pv-save-mark {
+    color: var(--md-sys-color-on-surface-variant);
+    letter-spacing: 1px;
+}
+
+.pv-save-btn.MuiButton-root {
+    height: 32px;
+    min-width: 0;
+    padding: 0 15px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: none;
+    box-shadow: 0 4px 12px -6px rgb(var(--md-primary-rgb) / 0.6);
+    animation: pv-save-pop 0.26s cubic-bezier(0.22, 1.2, 0.4, 1) both;
+}
+
+@keyframes pv-save-pop {
+    0% {
+        opacity: 0;
+        transform: scale(0.88);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* ---- 下拉菜单项：主文案 + 一句副文案 ---- */
+.pv-menu-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 2px 0;
+    line-height: 1.35;
+}
+
+.pv-menu-item small {
+    font-size: 10.5px;
+    font-weight: 500;
+    opacity: 0.6;
+}
+
+/* ===== 舞台：洞洞板墙面 + 货架 + 卡牌飞行区 =====
+ * 墙面是常驻的：收起态就在，展开后卡片落在同一面墙上，背景不会凭空出现。 */
+.pv-stage {
+    /* 动画时长由 PromptsView 覆盖注入，此处只给兜底值。 */
+    --pv-launch-dur: 560ms;
+    --pv-launch-step: 62ms;
+    --pv-retract-dur: 420ms;
+    --pv-retract-step: 40ms;
+
+    /* 木架与舞台顶边的呼吸空隙。 */
+    --pv-headroom: 28px;
+
+    /* 卡盒几何：盒口段高 / 盒面高。吊链长度按这两个值推导。 */
+    --pv-lip-h: 46px;
+    --pv-face-h: 150px;
+
+    /* 卡盒与卡牌区的共同坐标系：锚点测量依赖它作为 offsetParent 起点。 */
+    position: relative;
+    padding-top: var(--pv-headroom);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    /* 挂钩层是绝对定位、按 STAGE_MAX_ROWS 行铺开的。 */
+    overflow: hidden;
+    /* 与页头同一条入场曲线，延迟推到 0.06s 形成先后。
+     * 锚点走 offsetLeft/offsetTop/offsetParent，卡片飞行位移同理，全都不受 transform 影响。 */
+    animation: card-fade-up 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    animation-delay: 0.06s;
+}
+
+/* 洞洞板：板面 + 24px 节距的打孔阵 + 板缝 + 四角固定暗角。 */
+.pv-wall {
+    position: absolute;
+    /* 必须与 .pv-stage 完全重合。 */
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    /* 圆角收到 12px。 */
+    border-radius: 12px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.07);
+    background-color: rgba(252, 249, 244, 0.52);
+    background-image:
+        /* 孔内暗 */
+        radial-gradient(circle at 50% 50%, rgba(118, 92, 60, 0.26) 1.7px, transparent 2.3px),
+        /* 孔下缘翻边高光 */
+        radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.85) 1.7px, transparent 2.3px),
+        /* 板与板的拼接缝：每 240px 一条极淡竖线 */
+        repeating-linear-gradient(90deg, transparent 0 239px, rgba(120, 92, 60, 0.06) 239px 240px),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0) 14%),
+        linear-gradient(180deg, rgba(214, 178, 132, 0.16), rgba(214, 178, 132, 0) 22%);
+    background-size: 24px 24px, 24px 24px, 100% 100%, 100% 100%, 100% 100%;
+    background-position: 0 0, 0 1px, 0 0, 0 0, 0 0;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.6),
+        inset 0 0 60px -28px rgba(120, 92, 60, 0.2);
+}
+
+/* ===== 货架：层板（台面 + 前立面）+ 左右两块斜撑 ===== */
+.pv-shelf {
+    /* 几何唯一事实源。层板两段、吊链、卡盒落座高度全部由这几个值推导。 */
+    --pv-plank-shadow: 9px;   /* 前立面向下的落地投影区 */
+    --pv-plank-lip: 13px;     /* 前立面高度（垂直面） */
+    --pv-plank-top: 32px;     /* 台面进深（水平面在 2D 上的投影高度） */
+    --pv-plank-skew: 46px;    /* 台面远边比近边各内收多少 —— 透视消失量 */
+
+    --pv-chain-w: 3px;
+    --pv-chain-inset: 46px;
+    --pv-chain-len: calc((var(--pv-lip-h) + var(--pv-face-h)) * 2 / 3);
+    --pv-chain-skew: 3.33deg;
+
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px;
+    align-items: end;
+    /* padding-bottom = 台面顶面；格子里的卡盒底边落在台面中线（见 cell）。 */
+    padding: 0 10px
+        calc(var(--pv-plank-shadow) + var(--pv-plank-lip) + var(--pv-plank-top));
+}
+
+/* 台面：朝上的水平面，梯形（远边内收、近边满宽）。 */
+.pv-shelf::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(var(--pv-plank-shadow) + var(--pv-plank-lip));
+    height: var(--pv-plank-top);
+    z-index: 1;
+    clip-path: polygon(
+        var(--pv-plank-skew) 0,
+        calc(100% - var(--pv-plank-skew)) 0,
+        100% 100%,
+        0 100%
+    );
+    background-image:
+        /* 远端收暗：贴着后沿的暗带，随进深衰减。 */
+        linear-gradient(180deg,
+            rgba(52, 31, 11, 0.56) 0,
+            rgba(52, 31, 11, 0.18) 34%,
+            rgba(52, 31, 11, 0) 76%),
+        /* 左右端面：宽度跟随内收量。 */
+        linear-gradient(90deg,
+            rgba(44, 26, 10, 0.5) 0,
+            rgba(44, 26, 10, 0) calc(var(--pv-plank-skew) * 0.9),
+            rgba(44, 26, 10, 0) calc(100% - var(--pv-plank-skew) * 0.9),
+            rgba(44, 26, 10, 0.5) 100%),
+        /* 近棱受光：靠近观者的一条高光。 */
+        linear-gradient(180deg, transparent calc(100% - 5px), rgba(255, 238, 208, 0.26) 100%),
+        /* 木料整体色差：宽幅、极低对比的斜向色带。 */
+        repeating-linear-gradient(179.4deg,
+            rgba(255, 208, 152, 0.045) 0 34px,
+            rgba(28, 14, 4, 0.05) 34px 71px,
+            transparent 71px 96px),
+        /* 主纹：细密直丝，两种周期错开叠加。 */
+        repeating-linear-gradient(180.5deg, rgba(34, 20, 6, 0.14) 0 1.2px, transparent 1.2px 9px),
+        repeating-linear-gradient(179.3deg, rgba(146, 104, 62, 0.11) 0 1px, transparent 1px 14px),
+        /* 高光丝：更疏，让木面有光泽起伏。 */
+        repeating-linear-gradient(180.9deg, rgba(255, 232, 194, 0.08) 0 1.3px, transparent 1.3px 23px),
+        /* 台面本体：朝上的面受光最多，但整体是深胡桃木，比卡盒暗两档 */
+        linear-gradient(180deg, #A97C4D 0%, #96693E 44%, #855B33 100%);
+    pointer-events: none;
+}
+
+/* 前立面：垂直的正面 + 前棱高光 + 落地投影。 */
+.pv-shelf::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: var(--pv-plank-shadow);
+    /* +2px 与台面重叠：接缝处在整数倍、非整数倍缩放下都不会漏出底色。 */
+    height: calc(var(--pv-plank-lip) + 2px);
+    z-index: 1;
+    border-radius: 0 0 4px 4px;
+    background-image:
+        /* 前棱高光：台面与前立面交界的转折线 */
+        linear-gradient(180deg, rgba(255, 248, 232, 0.74) 0, rgba(255, 248, 232, 0) 2.5px),
+        /* 同料纹理：与台面同一套丝距，只是整体压暗 */
+        repeating-linear-gradient(180.5deg, rgba(24, 13, 4, 0.2) 0 1.2px, transparent 1.2px 9px),
+        repeating-linear-gradient(179.3deg, rgba(168, 126, 82, 0.1) 0 1px, transparent 1px 14px),
+        repeating-linear-gradient(180.9deg, rgba(255, 232, 194, 0.06) 0 1.3px, transparent 1.3px 23px),
+        /* 立面本体：垂直面背光，比台面再暗一档 */
+        linear-gradient(180deg,
+            #8E6238 0,
+            #7E562F 3px,
+            #6E4A27 7px,
+            #5F3F20 11px,
+            #52361A 100%);
+    box-shadow:
+        inset 0 -2px 0 rgba(58, 34, 12, 0.3),
+        inset 0 -6px 10px -6px rgba(58, 34, 12, 0.38);
+    /* 落地投影走 filter。 */
+    filter: drop-shadow(0 5px 6px rgba(84, 54, 22, 0.2));
+    pointer-events: none;
+}
+
+/* ---- 吊链：把层板吊在墙上的两条细金属链 ---- */
+.pv-shelf-chain {
+    position: absolute;
+    /* 长度固定：不再从舞台顶一路垂到底，只垂到盒高的 2/3 处。 */
+    height: var(--pv-chain-len);
+    /* 底端沉到台面中线：链尾钻进木板，交界由台面上的压片收口。 */
+    bottom: calc(var(--pv-plank-shadow) + var(--pv-plank-lip) + var(--pv-plank-top) / 2);
+    width: var(--pv-chain-w);
+    /* 链身压在木板之上：链底要能接住台面压片，不被台面盖住。 */
+    z-index: 2;
+    pointer-events: none;
+    filter: drop-shadow(0 1.5px 1.5px rgba(60, 38, 14, 0.28));
+}
+
+/* 链身：独立一层，从吊环下方起画，纹理不会从环口穿出去。 */
+.pv-shelf-chain-body {
+    position: absolute;
+    left: 0;
+    right: 0;
+    /* 吊环下沿起画，纹理不会从环口穿出去。 */
+    top: 7px;
+    bottom: 0;
+    display: block;
+    background-image:
+        /* 侧转链环的受光亮斑：与环缝错半周期 */
+        repeating-linear-gradient(180deg,
+            transparent 0 2.4px,
+            rgba(255, 244, 218, 0.26) 2.4px 3.2px,
+            transparent 3.2px 6.6px),
+        /* 环缝：周期 6.6px = 环体 5.2px + 缝 1.4px */
+        repeating-linear-gradient(180deg,
+            transparent 0 4.6px,
+            rgba(38, 24, 8, 0.72) 4.6px 5.3px,
+            rgba(38, 24, 8, 0.22) 5.3px 5.8px,
+            transparent 5.8px 6.6px),
+        /* 金属圆柱的横向明暗 */
+        linear-gradient(90deg,
+            #57401C 0%,
+            #A9863F 26%,
+            #E9D3A6 52%,
+            #B99B5C 74%,
+            #6E5325 100%);
+}
+
+/* 左链：底端固定，链顶向内侧收，与台面远边内收同向。 */
+.pv-shelf-chain.is-left {
+    left: var(--pv-chain-inset);
+    transform-origin: 50% 100%;
+    transform: skewX(calc(-1 * var(--pv-chain-skew)));
+}
+
+/* 右链：镜像同角度。 */
+.pv-shelf-chain.is-right {
+    right: var(--pv-chain-inset);
+    transform-origin: 50% 100%;
+    transform: skewX(var(--pv-chain-skew));
+}
+
+/* 顶端固定座：钉在洞洞板上的一枚小圆片（画在吊环后面）。 */
+.pv-shelf-chain::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    /* 与吊环同心：圆心同为 y=4.5px。 */
+    top: 1px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: linear-gradient(180deg, #7A5B28 0%, #4A3414 100%);
+    box-shadow:
+        0 0 0 1px rgba(255, 244, 220, 0.2),
+        0 1px 2px rgba(50, 32, 12, 0.5);
+}
+
+/* 顶端吊环：链子从环里垂出来。镂空环心透出墙面与钉座。 */
+.pv-shelf-chain::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 50%,
+        rgba(0, 0, 0, 0) 0 2.3px,
+        #7A5B2A 2.3px 3.2px,
+        #E2C68E 3.2px 4px,
+        #A9834A 4px 4.6px,
+        rgba(0, 0, 0, 0) 4.6px 100%);
+    filter: drop-shadow(0 1px 1.5px rgba(60, 38, 14, 0.4));
+}
+
+/* 反向斜切抵消链身透视：钉座与吊环保持正圆。 */
+.pv-shelf-chain.is-left::before,
+.pv-shelf-chain.is-left::after {
+    transform: translateX(-50%) skewX(var(--pv-chain-skew));
+}
+
+.pv-shelf-chain.is-right::before,
+.pv-shelf-chain.is-right::after {
+    transform: translateX(-50%) skewX(calc(-1 * var(--pv-chain-skew)));
+}
+
+/* ---- 端头压片：链底在台面顶面上的固定件 ----
+ * 台面是朝上的面，看到的是被压扁的椭圆，所以这里用横向椭圆而不是正圆。
+ * 中心一颗螺帽，链身从压片后方穿进木板。 */
+.pv-shelf-anchor {
+    position: absolute;
+    /* 骑在台面中线上：一半在台面里，一半露在近边上。 */
+    bottom: calc(var(--pv-plank-shadow) + var(--pv-plank-lip) + var(--pv-plank-top) / 2 - 3.5px);
+    width: 11px;
+    height: 7px;
+    z-index: 2;
+    pointer-events: none;
+    border-radius: 50%;
+    background: radial-gradient(ellipse at 50% 32%,
+        #F4E2BE 0 20%,
+        #D2B074 46%,
+        #A27F46 74%,
+        #6A4E22 100%);
+    box-shadow:
+        inset 0 -1px 1px rgba(58, 38, 14, 0.5),
+        0 1px 2px rgba(58, 38, 14, 0.4);
+}
+
+/* 螺帽：压片中心的十字槽被压成一条暗痕，不画完整螺纹。 */
+.pv-shelf-anchor::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 4px;
+    height: 2.6px;
+    /* 用 translate 居中，宽度/高度改动后无需重算 margin。 */
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: radial-gradient(ellipse at 50% 28%, #C9A465 0 34%, #6B4E20 100%);
+    box-shadow:
+        inset 0 0.6px 0.8px rgba(255, 240, 214, 0.5),
+        0 0.4px 0.6px rgba(40, 24, 8, 0.45);
+}
+
+/* 定位到链底：链身绕底端中点旋转，交点就在链宽的居中处。 */
+.pv-shelf-anchor.is-left {
+    left: calc(var(--pv-chain-inset) + var(--pv-chain-w) / 2 - 5.5px);
+}
+
+.pv-shelf-anchor.is-right {
+    right: calc(var(--pv-chain-inset) + var(--pv-chain-w) / 2 - 5.5px);
+}
+
+/* 卡盒立在台面中线：盒底前缘正好是台面的前后分界。 */
+.pv-shelf-cell {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    justify-content: center;
+    min-width: 0;
+    margin-bottom: calc(var(--pv-plank-top) / -2);
+}
+
+/* ===== 卡盒：静态实木收纳盒 =====
+ * 盒口段（上半）自下而上五层：
+ *   lip         包边实木底板（闭合整圈框）
+ *   inner       盒内腔体（唯一深色区域）
+ *   peek-stack  迷你卡扇
+ *   rim         盒口前框（U 形，近端）
+ *   mouth       前框内侧接触影
+ *   face        木纹正面
+ */
+.pv-box {
+    --pv-accent: var(--md-sys-color-primary);
+    --pv-accent-rgb: var(--md-primary-rgb);
+    position: relative;
+    display: block;
+    width: 100%;
+    max-width: 300px;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    /* 盒体本身不接事件：可点区域只保留盒面，盒口留给迷你卡。 */
+    cursor: default;
+    pointer-events: none;
+}
+
+.pv-box.accent-friend { --pv-accent: #EC4899; --pv-accent-rgb: 236 72 153; }
+.pv-box.accent-group { --pv-accent: #8B5CF6; --pv-accent-rgb: 139 92 246; }
+.pv-box.accent-any { --pv-accent: #0F766E; --pv-accent-rgb: 15 118 110; }
+
+/* 悬停描边：盒口段。几何与 .pv-box-jamb 完全重合，只把 z 抬到侧壁之上。
+ * top: 0 即盒体顶边（绝对定位基准是 stage 的 padding box 外沿）。 */
+.pv-box-halo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: calc(var(--pv-lip-h) + 2px);
+    /* 与侧壁同层但 DOM 在后，压住侧壁；低于卡扇（3），描边不压卡面。 */
+    z-index: 2;
+    border-radius: var(--pv-shell-radius) var(--pv-shell-radius) 0 0;
+    box-shadow:
+        inset 0 0 0 1px rgb(var(--pv-accent-rgb) / 0.5),
+        inset 0 0 14px -6px rgb(var(--pv-accent-rgb) / 0.4);
+    opacity: 0;
+    transition: opacity 0.24s ease;
+    /* 与木框同栈，边缘才不会差出 1px。 */
+    transform-origin: bottom center;
+    transform: rotateX(2deg) translateZ(3px);
+    pointer-events: none;
+}
+
+/* 悬停描边：盒面段。画在盒面内部，跟随盒面自身的变换。 */
+.pv-box-face::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-radius: 0 0 var(--pv-shell-radius) var(--pv-shell-radius);
+    box-shadow:
+        inset 0 0 0 1px rgb(var(--pv-accent-rgb) / 0.5),
+        inset 0 0 14px -6px rgb(var(--pv-accent-rgb) / 0.4);
+    opacity: 0;
+    transition: opacity 0.24s ease;
+    pointer-events: none;
+}
+
+/* 只在盒面被悬停时点亮：悬停迷你卡不该带出盒体的描边。 */
+@media (hover: hover) {
+    .pv-box:not(.is-closing):has(.pv-box-face:hover) .pv-box-halo,
+    .pv-box:not(.is-closing):has(.pv-box-face:hover) .pv-box-face::after {
+        opacity: 1;
+    }
+}
+
+.pv-box-stage {
+    /* 整块盒体的外轮廓圆角：盒口前框、前壁下沿、轮廓环三处只许读这一个值。 */
+    --pv-shell-radius: 12px;
+    /* 包边厚度（后框顶面高 / 左右侧壁宽）与前框厚度。 */
+    --pv-band: 9px;
+    --pv-flap: 12px;
+    /* 开口可视高：包边高减两条框厚，再补前框压进盒面的 2px。 */
+    --pv-mouth-h: calc(var(--pv-lip-h) - var(--pv-band) - var(--pv-flap) + 2px);
+    position: relative;
+    padding-top: var(--pv-lip-h);
+    perspective: 1000px;
+}
+
+/* 退场期：卡牌正在缩回盒口，盒子保持点亮但不再响应点击。 */
+.pv-box.is-closing {
+    pointer-events: none;
+}
+
+.pv-box.is-closing .pv-box-face {
+    cursor: default;
+    pointer-events: none;
+}
+
+/* 外轮廓环：整块盒体共用一个圆角与一圈极淡描边。
+ *
+ * 前两条盖住整圈描边的左右两段：侧壁与挡板各内缩 1px 让出的缝里，
+ * 可见的就是这一层。铺侧壁木色，侧壁才会一路延伸到盒顶，
+ * 缺口处不会出现第二种颜色。box-shadow 越靠前越在上，故排在整圈描边之前。 */
+.pv-box-stage::after {
+    content: '';
+    position: absolute;
+    /* 与 stage 完全重合，不做半像素补偿。 */
+    inset: 0;
+    /* 低于迷你卡（3）：外圈细线不横穿探出的卡顶。 */
+    z-index: 1;
+    border-radius: var(--pv-shell-radius);
+    pointer-events: none;
+    box-shadow:
+        inset 1px 0 0 #C6975F,
+        inset -1px 0 0 #BE8F57,
+        inset 0 0 0 1px rgba(104, 68, 32, 0.24),
+        inset 0 1px 0 rgba(255, 246, 230, 0.42);
+}
+
+/* 盒体正面：木纹。三层叠加出长纹、抛光高光与结疤，再加一层噪点。 */
+.pv-box-face {
+    position: relative;
+    /* 盒面在最上层（z:6）：压住接触影(5)、前框(4)、卡扇(3)、侧壁(2)、腔体(1)与包边底(0)。 */
+    z-index: 6;
+    /* 盒面是唯一可点区域。 */
+    cursor: pointer;
+    pointer-events: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    height: var(--pv-face-h);
+    padding: 14px 16px 12px;
+    /* 顶角必须是直角：它要与上方盒口段严丝合缝地拼成一块木头。 */
+    border-radius: 0 0 var(--pv-shell-radius) var(--pv-shell-radius);
+    background-image:
+        url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/><feComponentTransfer><feFuncA type='linear' slope='0.085'/></feComponentTransfer></filter><rect width='120' height='120' filter='url(%23n)'/></svg>"),
+        /* 左右侧壁转折。 */
+        linear-gradient(90deg, rgba(72, 44, 20, 0.2) 0, transparent 14px, transparent calc(100% - 14px), rgba(72, 44, 20, 0.24) 100%),
+        radial-gradient(ellipse 46% 20% at 26% 30%, rgba(74, 44, 18, 0.15), transparent 72%),
+        repeating-linear-gradient(90.4deg, transparent 0 6px, rgba(84, 52, 24, 0.075) 6px 7px, transparent 7px 15px),
+        repeating-linear-gradient(89.6deg, transparent 0 21px, rgba(255, 240, 214, 0.14) 21px 23px),
+        linear-gradient(167deg, #DCAC75 0%, #C7935D 54%, #B07D46 100%);
+    box-shadow:
+        /* 盒面自绘下半圈描边：轮廓环只覆盖盒口段。 */
+        inset 0 0 0 1px rgba(104, 68, 32, 0.24),
+        0 18px 30px -20px rgba(78, 48, 20, 0.4),
+        /* 唇口下方那一小段接触影。 */
+        inset 0 3px 5px -3px rgba(56, 33, 12, 0.18),
+        inset 0 1px 0 rgba(255, 244, 226, 0.3),
+        0 -2px 0 rgba(66, 40, 16, 0.2) inset,
+        inset 0 -18px 24px rgba(84, 52, 24, 0.12);
+    /* 统一变换栈层次，不喧宾夺主。*/
+    transform-origin: 50% 0;
+    transform: rotateX(2deg) translateZ(3px);
+}
+
+/* 盒面阴影恒定：悬停与打开都不再加阴影/描边。 */
+
+/* ===== 盒口段包边底：整圈木框的实木底板 =====
+ *
+ * 满宽满高，与盒面同变换栈。开口由 .pv-box-inner 覆盖挖出，
+ * 未被覆盖的部分就是后框顶面与左右侧壁 —— 包边因此是闭合的一圈，
+ * 不会在顶部露出背景。 */
+.pv-box-lip {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    /* 多 1px 压进盒面：两者不在同一子像素栅格上，留缝会读成一条亮线。 */
+    height: calc(var(--pv-lip-h) + 1px);
+    z-index: 0;
+    border-radius: var(--pv-shell-radius) var(--pv-shell-radius) 0 0;
+    /* 转角柔化单独成层：有卡时由 .has-cards 关掉。 */
+    --pv-lip-corner:
+        radial-gradient(circle 13px at 0 0, rgba(78, 48, 20, 0.26), transparent 100%),
+        radial-gradient(circle 13px at 100% 0, rgba(78, 48, 20, 0.26), transparent 100%);
+    background-image:
+        var(--pv-lip-corner),
+        /* 后框顶面：靠后窗更浓，向内一道高光收边 */
+        linear-gradient(180deg,
+            rgba(120, 76, 34, 0.34) 0,
+            rgba(255, 244, 222, 0.34) 1px,
+            rgba(255, 244, 222, 0.1) calc(var(--pv-band) - 2px),
+            transparent var(--pv-band)),
+        /* 左右侧壁：两侧同一档暗度 */
+        linear-gradient(90deg,
+            rgba(84, 52, 24, 0.24) 0,
+            transparent var(--pv-band),
+            transparent calc(100% - var(--pv-band)),
+            rgba(84, 52, 24, 0.24) 100%),
+        /* 竖向木纹：与盒面同一套方向与尺度 */
+        repeating-linear-gradient(90.4deg, transparent 0 6px, rgba(84, 52, 24, 0.075) 6px 7px, transparent 7px 15px),
+        repeating-linear-gradient(89.6deg, transparent 0 21px, rgba(255, 240, 214, 0.11) 21px 23px),
+        /* 后缘木色比侧壁浓一档：远端受光少，本来就该更深 */
+        linear-gradient(180deg, #B98A52 0%, #AE7F48 44%, #C29360 100%);
+    box-shadow:
+        inset 0 -1px 0 rgba(70, 42, 16, 0.26),
+        /* 上沿一道极淡的受光，压住顶边与墙面之间的硬切 */
+        inset 0 1px 0 rgba(255, 246, 228, 0.3);
+    transform-origin: bottom center;
+    /* 与盒面同栈：z 值不一致会因透视缩放不同而差出 1px。 */
+    transform: rotateX(2deg) translateZ(3px);
+    pointer-events: none;
+}
+
+/* ===== 盒内腔体：开口里面那块暗面 =====
+ *
+ * 整只盒子唯一的深色区域。渐变从上到下连续加深，中间没有断点。
+ * 下沿由前唇覆盖，不做遮罩：遮罩会透出下方更亮的包边。 */
+.pv-box-inner {
+    position: absolute;
+    left: var(--pv-band);
+    right: var(--pv-band);
+    top: var(--pv-band);
+    height: var(--pv-mouth-h);
+    z-index: 1;
+    /* 上角比下角更圆：远端木条与侧壁的过渡靠这个圆角柔化。 */
+    border-radius: 6px 6px 2px 2px;
+    background-image:
+        linear-gradient(180deg,
+            #A37441 0,
+            #96683A 30%,
+            #875C32 62%,
+            #78522C 100%);
+    /* 上两角暗角单独成层：有卡时由 .has-cards 关掉。 */
+    --pv-inner-corner:
+        inset 8px 6px 8px -6px rgba(40, 22, 6, 0.34),
+        inset -8px 6px 8px -6px rgba(40, 22, 6, 0.34);
+    box-shadow:
+        /* 左右内壁：卡扇盖住中间之后，两侧仍读得出是盒壁 */
+        inset calc(var(--pv-band) + 4px) 0 16px -12px rgba(48, 28, 10, 0.3),
+        inset calc(-1 * (var(--pv-band) + 4px)) 0 16px -12px rgba(48, 28, 10, 0.3),
+        var(--pv-inner-corner),
+        /* 顶沿内侧暗边：后框压在开口上，交界处往里收暗 */
+        inset 0 3px 5px -3px rgba(40, 22, 6, 0.4);
+    transform-origin: bottom center;
+    transform: rotateX(2deg) translateZ(3px);
+    pointer-events: none;
+}
+
+/* ===== 盒口侧壁：旧前框的左右两条边，压到迷你卡之下 =====
+ * 画法与配色沿用原 U 形前框，只把层级降到卡扇之下。 */
+.pv-box-jamb {
+    position: absolute;
+    /* 左右各让出 1px：侧壁是实色 border，贴边铺开会把最外那 1px 整段盖掉。
+       让出的缝由外轮廓环铺侧壁木色，因此读作侧壁的延续。
+       border-width 同步减 1px，内沿仍停在 --pv-band 处与腔体咬合。 */
+    left: 1px;
+    right: 1px;
+    top: 0;
+    height: calc(var(--pv-lip-h) + 2px);
+    z-index: 2;
+    box-sizing: border-box;
+    border-style: solid;
+    /* 只留左右：侧壁厚度与 .pv-box-inner 的内缩量严格咬合。 */
+    border-width: 0 calc(var(--pv-band) - 1px);
+    /* 四值 = 上 / 右 / 下 / 左：上下透明，左右同色，两侧受光一致。 */
+    border-color: transparent #BE8F57 transparent #C6975F;
+    border-radius: var(--pv-shell-radius) var(--pv-shell-radius) 0 0;
+    box-shadow:
+        /* 侧板内壁：开口两侧的框壁向内收暗 */
+        inset 10px 0 8px -7px rgba(58, 34, 12, 0.3),
+        inset -10px 0 8px -7px rgba(58, 34, 12, 0.3);
+    transform-origin: bottom center;
+    /* 与包边、盒面同栈，避免侧壁边缘错位。 */
+    transform: rotateX(2deg) translateZ(3px);
+    pointer-events: none;
+}
+
+/* ===== 盒口前框：旧 U 形前框的底边，压在迷你卡之上 ===== */
+.pv-box-rim {
+    position: absolute;
+    /* 左右各让出 1px，同侧壁：挡板这 12px 实色底边正是缺口的高度来源。
+       让出的缝由外轮廓环铺侧壁木色，描边因此连贯。 */
+    left: 1px;
+    right: 1px;
+    top: 0;
+    /* 与盒口段同高再压进盒面 2px：接缝不露底。 */
+    height: calc(var(--pv-lip-h) + 2px);
+    z-index: 4;
+    box-sizing: border-box;
+    border-style: solid;
+    /* 只留底边：挡板厚度与 .pv-box-inner 的内缩量严格咬合。 */
+    border-width: 0 0 var(--pv-flap);
+    border-color: transparent transparent #9C6E39;
+    border-radius: var(--pv-shell-radius) var(--pv-shell-radius) 0 0;
+    /* 前框投进腔体的影（向下偏移，与全页光源一致） */
+    box-shadow: 0 3px 6px -3px rgba(40, 22, 6, 0.4);
+    transform-origin: bottom center;
+    transform: rotateX(2deg) translateZ(3px);
+    pointer-events: none;
+}
+
+/* 挡板与侧壁的斜接面。 */
+.pv-box-rim::before,
+.pv-box-rim::after {
+    content: '';
+    position: absolute;
+    bottom: calc(-1 * var(--pv-flap));
+    width: calc(var(--pv-band) - 1px);
+    height: var(--pv-flap);
+    pointer-events: none;
+}
+
+/* 左斜接面：顶端满宽，底端收成外侧一点。 */
+.pv-box-rim::before {
+    left: 0;
+    background-image:
+        /* 斜边压暗：转折处一道深痕，读作"两块木料相接"而不是一条亮线 */
+        linear-gradient(to bottom right,
+            rgba(255, 246, 228, 0) 0 82%,
+            rgba(94, 60, 26, 0.5) 88% 100%),
+        /* 斜接面本体：与挡板同料，比侧壁略深一档 */
+        linear-gradient(170deg, #C99A62 0%, #BE8F57 50%, #AE7C45 100%);
+    clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+/* 右斜接面：镜像。 */
+.pv-box-rim::after {
+    right: 0;
+    background-image:
+        linear-gradient(to bottom left,
+            rgba(255, 246, 228, 0) 0 82%,
+            rgba(94, 60, 26, 0.45) 88% 100%),
+        linear-gradient(190deg, #C2935C 0%, #BE8F57 50%, #AA7841 100%);
+    clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+/* 盒口前唇：前框内沿的一段接触影，压住卡扇的下半截。 */
+.pv-box-mouth {
+    position: absolute;
+    /* 与前框侧板对齐：不覆盖框身，只在开口范围内。 */
+    left: var(--pv-band);
+    right: var(--pv-band);
+    /* 底边贴住腔体下沿。 */
+    top: calc(var(--pv-band) + var(--pv-mouth-h) - 8px);
+    height: 8px;
+    /* 压在卡扇之上：挡板内侧的接触影要落在卡面上。 */
+    z-index: 5;
+    background: linear-gradient(180deg,
+        rgba(30, 16, 4, 0.04) 0%,
+        rgba(30, 16, 4, 0.3) 100%);
+    /* 两端渐隐：接触影不该有可数的左右边界。 */
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
+    mask-image: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
+    transform-origin: bottom center;
+    transform: rotateX(2deg) translateZ(4px);
+    pointer-events: none;
+}
+
+/* 盒口里有卡时：关掉转角柔化，卡片压在暗角上会显脏。 */
+.pv-box.has-cards .pv-box-lip {
+    --pv-lip-corner: none;
+}
+
+.pv-box.has-cards .pv-box-inner {
+    --pv-inner-corner: 0 0 0 transparent, 0 0 0 transparent;
+}
+
+/* ===== 迷你卡扇：盒口里摊开的一叠卡（桌面摊牌式扇形） ===== */
+.pv-peek-stack {
+    /* 左右各外扩一点：卡扇盖过侧壁，而不是被侧壁框住。 */
+    --pv-peek-outset: 4px;
+    /* 相邻两张的时间差：入场从左到右用 gap，离场从右到左用 gap-out。 */
+    --pv-peek-gap: 62ms;
+    --pv-peek-gap-out: 44ms;
+    position: absolute;
+    left: calc(var(--pv-band) - var(--pv-peek-outset));
+    right: calc(var(--pv-band) - var(--pv-peek-outset));
+    /* 负偏移让卡顶探出盒沿，读作从盒口插出来而不是闷在洞里。 */
+    top: -12px;
+    height: 58px;
+    /* 高于侧壁（2）：摊开的卡压在侧壁之上。 */
+    z-index: 3;
+    transform: rotateX(2deg);
+    /* 顶边固定：探出的那截不吃倾斜的影响。 */
+    transform-origin: top center;
+    /* 容器不拦截：只有真正的迷你卡接住悬停。 */
+    pointer-events: none;
+}
+
+/* 迷你卡：面包机式进出场。
+ * 落位态保留摊开的扇形（卡盒只做背景，不参与裁剪卡的形态）；
+ * 进出场只做垂直升降，横向位置一点不动。 */
+.pv-peek {
+    --k: 0;  /* 槽位序号：只用来排进出场的先后 */
+    --p: 0;  /* 横向位置序号 */
+    position: absolute;
+    left: 50%;
+    bottom: 0;
+    /* 卡宽与步进都由 CardStack 按张数反解后注入，此处只给兜底值。 */
+    width: var(--pv-peek-card-w, 19%);
+    height: 100%;
+    padding: 0;
+    border-radius: 5px 5px 0 0;
+    /* 纸面：顶部近白高光边 + 极轻的竖向渐变。 */
+    background:
+        linear-gradient(180deg, #FFFFFF 0%, #FFFEFB 18%, #FEFBF4 66%, #FBF6EB 100%);
+    /* 描边与摊开的卡同源：用花色而不是固定棕，迷你卡才有归属感。 */
+    border: 1px solid rgb(var(--pv-accent-rgb) / 0.42);
+    border-bottom: 0;
+    /* 只画纸厚边：不写整块偏移阴影，否则底边会露出一条矩形暗带。 */
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.96),
+        inset 0 -1px 0 rgba(168, 140, 100, 0.18),
+        inset 1px 0 0 rgba(255, 255, 255, 0.5),
+        inset -1px 0 0 rgba(168, 140, 100, 0.22);
+    z-index: calc(10 + var(--p));
+    /* 摊开的牌阵：横移与旋转同号，卡顶向外撒开。 */
+    transform:
+        translateX(calc(-50% + (var(--p) - var(--pv-peek-half)) * var(--pv-peek-step, 0.6) * 100%))
+        translateY(0)
+        rotate(calc((var(--p) - var(--pv-peek-half)) * 1.1deg))
+        scale(1);
+    /* 支点在卡底中心：卡底原地转，卡顶错开 —— 桌面摊牌的几何。 */
+    transform-origin: 50% 100%;
+    /* 第一段位移单独占一层：离场要靠它和 transform 叠出先顶起再坠回的折返，
+     * 一条 transition 曲线做不出两次转向。入场时恒为 0，不参与过渡。 */
+    translate: 0 0;
+    /* 越靠左越被压、越暗：明暗与叠放顺序一致，一叠纸才有厚度。 */
+    filter: brightness(calc(1 - (var(--pv-peek-count) - 1 - var(--p)) * 0.008));
+    /* 面包机弹出：先冲高再回落，延迟从左到右逐张错开。
+     * translate 这一层时长 0：入场不用折返，保持原来纯粹的一条超调曲线，
+     * 折返只属于离场。只有 transform / opacity 吃延迟，上浮与阴影必须即时响应。 */
+    transition:
+        translate 0s linear,
+        transform 0.44s cubic-bezier(0.2, 1.22, 0.34, 1),
+        bottom 0.18s ease,
+        box-shadow 0.22s ease,
+        opacity 0.26s ease;
+    transition-delay:
+        0s,
+        calc(var(--k) * var(--pv-peek-gap, 62ms)),
+        0s,
+        0s,
+        calc(var(--k) * var(--pv-peek-gap, 62ms));
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* 悬停：只上浮几点，并压到同扇其它卡之上。 */
+@media (hover: hover) {
+    .pv-peek:not(.is-away):hover {
+        bottom: 3px;
+        box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.96),
+            inset 0 -1px 0 rgba(168, 140, 100, 0.18),
+            inset 1px 0 0 rgba(255, 255, 255, 0.5),
+            inset -1px 0 0 rgba(168, 140, 100, 0.22),
+            /* 悬停才给一层柔和外影。 */
+            0 3px 7px -2px rgba(70, 42, 18, 0.2);
+        z-index: calc(40 + var(--p));
+    }
+}
+
+/* 回盒：镜像入场的同一条面包机路径，全程只做垂直位移，横向位置一点不动。 */
+.pv-peek.is-away {
+    /* 本张的离场起点：反序位次 × 离场专用步长。 */
+    --pv-peek-out-delay: calc(max(0, var(--pv-peek-count) - 1 - var(--p)) * var(--pv-peek-gap-out, 44ms));
+    opacity: 0;
+    pointer-events: none;
+    translate: 0 -6px;
+    transform:
+        translateX(calc(-50% + (var(--p) - var(--pv-peek-half)) * var(--pv-peek-step, 0.6) * 100%))
+        translateY(30px)
+        rotate(calc((var(--p) - var(--pv-peek-half)) * 1.1deg))
+        scale(0.88);
+    /* 三段串成一条：淡出与下沉同时结束，总时长卡在卡片飞出窗口内。 */
+    transition:
+        translate 0.15s cubic-bezier(0.25, 0.9, 0.3, 1),
+        transform 0.3s cubic-bezier(0.45, 0, 0.75, 0.15),
+        opacity 0.16s ease,
+        bottom 0.18s ease,
+        box-shadow 0.22s ease;
+    transition-delay:
+        var(--pv-peek-out-delay),
+        calc(var(--pv-peek-out-delay) + 0.08s),
+        calc(var(--pv-peek-out-delay) + 0.22s),
+        0s,
+        0s;
+}
+
+/* 穿透孔：与大卡同一个模型，只是小一号。
+ * 两层表达：外圈近白描边是纸的厚度高光，内芯深色径向是打穿的孔。 */
+.pv-peek-hole {
+    position: absolute;
+    left: 50%;
+    top: 5.5px;
+    width: 5.5px;
+    height: 5.5px;
+    margin-left: -2.75px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 36%, #6E4B27 0 40%, #A67C4C 72%, #C79A66 100%);
+    box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.9),
+        inset 0 1px 1.4px rgba(28, 14, 3, 0.6);
+}
+
+/* 迷你卡内部纵向排布。 */
+/* 序号：描边小方框，实色条在这个尺寸下会糊成色块。 */
+.pv-peek-no {
+    position: absolute;
+    left: 4px;
+    top: 16px;
+    width: 10px;
+    height: 4.5px;
+    border-radius: 2px;
+    border: 1px solid rgb(var(--pv-accent-rgb) / 0.5);
+    background: rgb(var(--pv-accent-rgb) / 0.09);
+}
+
+/* 状态点：对应大卡右上角的 .pv-card-dot。 */
+.pv-peek-dot {
+    position: absolute;
+    right: 4px;
+    top: 16.5px;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--pv-accent);
+    opacity: 0.85;
+    box-shadow: 0 0 0 1.5px rgb(var(--pv-accent-rgb) / 0.14);
+}
+
+/* 两段正文：对应 .pv-sec 与 .pv-sec.is-final 的底色块。 */
+.pv-peek-sec {
+    position: absolute;
+    left: 3.5px;
+    height: 6px;
+    border-radius: 2px;
+}
+
+.pv-peek-sec.is-intent {
+    top: 25px;
+    right: 7px;
+    background: rgb(var(--md-primary-rgb) / 0.17);
+}
+
+.pv-peek-sec.is-final {
+    top: 34px;
+    right: 11px;
+    background: rgba(5, 150, 105, 0.21);
+}
+
+/* 脚注点线：对应大卡 .pv-card-foot 的虚分隔线。 */
+.pv-peek-foot {
+    position: absolute;
+    left: 3.5px;
+    right: 3.5px;
+    top: 46px;
+    height: 1px;
+    background-image: repeating-linear-gradient(
+        90deg,
+        rgba(139, 112, 76, 0.36) 0 2px,
+        transparent 2px 4px
+    );
+}
+
+/* 盒面上的木牌：盒子唯一的标题区，字体压深以对抗木纹。 */
+.pv-box-plate {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    /* 内容不吃事件：点击与悬停一律由盒面接住。 */
+    pointer-events: none;
+}
+
+.pv-box-emoji {
+    flex-shrink: 0;
+    font-size: 16px;
+    line-height: 1;
+    filter: drop-shadow(0 1px 1px rgba(60, 34, 12, 0.45));
+}
+
+.pv-box-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: -0.2px;
+    color: #3C2510;
+    text-shadow: 0 1px 0 rgba(255, 238, 212, 0.5);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pv-box-figure {
+    flex-shrink: 0;
+    font-size: 20px;
+    font-weight: 800;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: #2E1B08;
+    text-shadow: 0 1px 0 rgba(255, 238, 212, 0.45);
+}
+
+/* 启用率进度：比彩虹光谱有信息量，也不会花。 */
+.pv-box-meter {
+    position: relative;
+    z-index: 1;
+    height: 5px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(60, 36, 14, 0.22);
+    box-shadow: inset 0 1px 2px rgba(40, 22, 6, 0.34);
+}
+
+.pv-box-meter-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(255, 246, 230, 0.9), rgba(255, 246, 230, 0.62));
+    box-shadow: 0 0 6px rgba(255, 246, 230, 0.4);
+    transition: width 0.36s var(--theme-transition-easing);
+}
+
+
+/* 空盒：张数读数压淡，进度条自然为空槽，不画任何虚线占位。 */
+.pv-box.is-empty .pv-box-figure {
+    opacity: 0.42;
+}
+
+/* 落座阴影：画在盒底之外，才能压在台面上而不是被盒面盖住。 */
+.pv-box-floor {
+    position: absolute;
+    left: 1%;
+    right: 1%;
+    /* 下沉到盒底之下：上半段被盒面压住，露出的部分就是台面上的接触影。 */
+    bottom: -12px;
+    height: 20px;
+    border-radius: 50%;
+    background: radial-gradient(ellipse at 50% 34%,
+        rgba(58, 36, 14, 0.44) 0,
+        rgba(58, 36, 14, 0.2) 52%,
+        transparent 78%);
+    filter: blur(4px);
+    pointer-events: none;
+}
+
+/* 内圈：盒底与台面贴合的实心接触影。 */
+.pv-box-floor::after {
+    content: '';
+    position: absolute;
+    left: 9%;
+    right: 9%;
+    top: 6%;
+    height: 52%;
+    border-radius: 50%;
+    background: radial-gradient(ellipse at 50% 40%,
+        rgba(40, 24, 8, 0.42) 0,
+        transparent 72%);
+    filter: blur(2.5px);
+}
+
+/* ===== 光谱（仅卡池透视使用） ===== */
+.pv-spectrum {
+    display: flex;
+    height: 7px;
+    border-radius: 999px;
+    overflow: hidden;
+    gap: 1px;
+    background: rgb(var(--md-primary-rgb) / 0.1);
+}
+
+.pv-spectrum.is-tall {
+    height: 12px;
+}
+
+.pv-spectrum-seg {
+    height: 100%;
+    min-width: 2px;
+    background: var(--pv-seg-color, var(--md-sys-color-primary));
+    transition: width 0.28s var(--theme-transition-easing);
+}
+
+.pv-spectrum-empty {
+    display: block;
+    height: 7px;
+    border-radius: 999px;
+    background: rgb(var(--md-primary-rgb) / 0.1);
+}
+
+.pv-spectrum-empty.is-tall {
+    height: 12px;
+}
+
+/* ===== 卡牌飞行区 =====
+ * 自身不加面板：卡片直接挂在舞台的洞洞板墙面上。 */
+.pv-field {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 2px 0 6px;
+}
+
+/* ===== 卡牌网格 =====
+ * 每张卡外面包一层 pv-card-slot，slot 负责画钉子，卡片负责画孔。 */
+.pv-card-grid {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(288px, 1fr));
+    gap: 16px 16px;
+    /* 行高定死，与 .pv-hook-layer 的 grid-auto-rows 完全一致。 */
+    grid-auto-rows: 346px;
+    /* 不加 perspective：卡片动画只有平移与缩放，加透视会让偏移方向畸变。 */
+}
+
+/* 卡片挂在挂钩上：杆身在卡片之下。 */
+.pv-card-slot {
+    /* 退场时投影跟着卡一起退，默认值保证 calc 始终可解。 */
+    --i: 0;
+    --n: 1;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
+    /* 露出挂钩的长度：挂钩在卡片上方可见的部分。 */
+    padding-top: 16px;
+}
+
+/* 卡片投影画在 slot 上。默认不可见。 */
+.pv-card-slot::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 16px;
+    bottom: 0;
+    z-index: 0;
+    border-radius: 14px;
+    box-shadow: 0 2px 5px rgba(64, 44, 20, 0.07);
+    pointer-events: none;
+    opacity: 0;
+    transition: box-shadow 0.26s ease;
+}
+
+/* 入场：延迟与卡片完全同源，只是往后推，影子在飞行尾段浮现。 */
+.pv-card-slot:has(.pv-card.is-ready)::before {
+    animation: pv-slot-shadow-in 0.24s ease both;
+    animation-delay: calc(60ms + var(--i) * var(--pv-launch-step, 44ms) + 140ms);
+}
+
+/* 记忆恢复 / 测位移失败：卡片直接以落位态出现，影子同步给到位。 */
+.pv-card-slot:has(.pv-card.is-instant)::before {
+    animation: none;
+    opacity: 1;
+}
+
+@keyframes pv-slot-shadow-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* 退场：投影跟着各自的卡一起退，延迟与卡的退场延迟完全同源。 */
+.pv-card-grid.is-leaving .pv-card-slot:not(.is-ghost)::before {
+    animation: pv-slot-shadow-out 0.22s ease forwards;
+    animation-delay: calc(
+        var(--pv-retract-lead, 0ms) + (var(--n) - var(--i) - 1) * var(--pv-retract-step, 34ms)
+    );
+}
+
+@keyframes pv-slot-shadow-out {
+    0% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+.pv-card-slot:hover::before {
+    box-shadow: 0 16px 28px -18px rgba(64, 44, 20, 0.5);
+}
+
+/* 新建卡位是虚框，不需要实体投影。 */
+.pv-card-slot.is-ghost::before {
+    box-shadow: none;
+}
+
+/* 新建卡位同样不该有悬停投影。 */
+.pv-card-slot.is-ghost:hover::before {
+    box-shadow: none;
+}
+
+/* 卡片在挂钩墙（z:0）之上，挂钩从卡片孔里透出来。 */
+.pv-card { z-index: 1; }
+
+/* ===== 洞洞板挂钩 ===== */
+.pv-hook-layer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(288px, 1fr));
+    column-gap: 16px;
+    row-gap: 16px;
+    /* 单行层：高度取一整格，多出来的格子由 .pv-stage 裁掉。 */
+    grid-auto-rows: 346px;
+    pointer-events: none;
+}
+
+/* 杆身层：在卡片之下。卡片 z-index: 1，这里必须 < 1。 */
+.pv-hook-layer.is-under {
+    z-index: 0;
+}
+
+/* 钩尖层：在卡片之上，但低于弹窗与抽屉。 */
+.pv-hook-layer.is-over {
+    z-index: 3;
+}
+
+/* 单个挂钩格子：与 .pv-card-slot 同尺寸同位置，只负责给挂钩一个坐标系。 */
+.pv-hook-cell {
+    position: relative;
+    min-width: 0;
+}
+
+/* ---- 杆身：一根细黄铜杆 ---- */
+.pv-hook-shank {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 3px;
+    height: 28px;
+    margin-left: -1.5px;
+    background:
+        linear-gradient(
+            90deg,
+            #7A5329 0%,
+            #A97C46 18%,
+            #F2DDB8 44%,
+            #D9B383 58%,
+            #9A6E3C 82%,
+            #6B4723 100%
+        );
+    box-shadow:
+        /* 杆身投在墙上的细影：方向与卡盒的投影一致（右下） */
+        1px 1px 2px -0.5px rgba(70, 44, 18, 0.5),
+        0 0 1px rgba(255, 246, 228, 0.3);
+    pointer-events: none;
+}
+
+/* 洞洞板孔口：钩子顶上的头。*/
+.pv-hook-shank::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: -3px;
+    width: 8px;
+    height: 6px;
+    /* 交给 translateX(-50%)，由渲染层按实际像素对齐。 */
+    transform: translateX(-50%);
+    border-radius: 50%;
+    background:
+        radial-gradient(ellipse at 50% 34%,
+            #6F5030 0 26%,
+            #7E5C39 50%,
+            #916C45 70%,
+            #A3815A 86%,
+            #B08E66 100%);
+    box-shadow:
+        0 1px 0 rgba(255, 252, 244, 0.62),
+        /* 内阴影：孔往里凹的深度 */
+        inset 0 1.2px 1.4px rgba(46, 28, 10, 0.4);
+}
+
+/* ---- 弯头：从卡片孔里翘出来的那一小段 ---- */
+.pv-hook-tip {
+    position: absolute;
+    /* 肘头圆心正落在杆身底端中心。 */
+    top: 26.5px;
+    right: 50%;
+    width: 10px;
+    height: 3px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #F7E6C6 0%, #E2C295 44%, #B98E59 100%);
+    box-shadow:
+        /* 管口的下缘暗边：圆管的厚度 */
+        0 1px 0 rgba(112, 76, 38, 0.46),
+        /* 翘起的左端头受光最强，所以高光往左上偏 */
+        -1px -1px 2px -0.5px rgba(255, 248, 232, 0.55);
+    /* 正角 = 屏幕顺时针 = 绕右端逆时针 → 左端抬起。向上勾靠的就是这个。 */
+    transform: rotate(24deg);
+    transform-origin: right center;
+    pointer-events: none;
+}
+
+/* 肘头：杆身与弯头的连接处。 */
+.pv-hook-tip::before {
+    content: '';
+    position: absolute;
+    right: -2px;
+    top: 50%;
+    width: 4px;
+    height: 4px;
+    margin-top: -2px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 34% 28%, #FDF1DA 0 26%, #E4C69A 56%, #B0864F 100%);
+    box-shadow:
+        /* 球体下缘的接触暗边 */
+        0 0.6px 1px rgba(96, 64, 28, 0.45),
+        /* 内侧一圈极淡的反射光，把球与管口的分界压柔 */
+        0 0 0 0.5px rgba(255, 246, 228, 0.5);
+}
+
+/* 弯头投在卡面上的接触影。 */
+.pv-hook-tip::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 2px;
+    width: 10px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(78, 54, 26, 0.24);
+    filter: blur(2px);
+    transform: translate(1px, 1px);
+}
+
+/* ===== 卡牌：三段式（身份行 / 主体 / 脚注） ===== */
+.pv-card {
+    --pv-accent: var(--md-sys-color-primary);
+    --pv-accent-rgb: var(--md-primary-rgb);
+    --fly-x: 0px;
+    --fly-y: 0px;
+    --i: 0;
+    --n: 1;
+
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    width: 100%;
+    flex: 0 0 auto;
+    height: 330px;
+    padding: 16px 15px 11px;
+    border-radius: 14px;
+    border: 1px solid rgb(var(--pv-accent-rgb) / 0.3);
+    /* 实色卡面：不透明，洞洞板与挂钩不从卡身透出来。 */
+    background-color: #FDFAF5;
+    background-image: linear-gradient(180deg, #FFFFFF 0%, #FDFAF5 46%, #F8F3EA 100%);
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    overflow: hidden;
+    isolation: isolate;
+    transition:
+        box-shadow 0.26s ease,
+        border-color 0.26s ease;
+
+    /* 在距顶 11.5px、水平居中处打一个直径 9px 的真孔。 */
+    -webkit-mask-image: radial-gradient(circle 4.5px at 50% 11.5px, transparent 0 4.5px, #000 5.1px);
+    mask-image: radial-gradient(circle 4.5px at 50% 11.5px, transparent 0 4.5px, #000 5.1px);
+
+    /* 起点由 --fly-x / --fly-y 指向卡盒盒口；is-ready 才播放。 */
+}
+
+.pv-card.is-ready {
+    animation: pv-card-launch var(--pv-launch-dur, 460ms) cubic-bezier(0.25, 0.9, 0.3, 1) both;
+    animation-delay: calc(60ms + var(--i) * var(--pv-launch-step, 44ms));
+}
+
+/* 记忆恢复（刷新后第一次渲染）：直接以落位态出现，不播放任何动画。 */
+.pv-card.is-instant {
+    opacity: 1;
+    transform: none;
+}
+
+/* 尚未测到位移：必须完全不可见。*/
+.pv-card.is-measuring {
+    opacity: 0;
+    transform: none;
+}
+
+/* 孔口：只负责画孔沿的一圈暗边与外侧高光。 */
+.pv-card-hole {
+    position: absolute;
+    top: 5px;
+    left: 50%;
+    width: 13px;
+    height: 13px;
+    margin-left: -6.5px;
+    border-radius: 50%;
+    background: none;
+    box-shadow:
+        inset 0 0 0 1.5px rgba(72, 46, 20, 0.36),
+        0 1px 0 rgba(255, 255, 255, 0.55);
+    pointer-events: none;
+    z-index: 2;
+}
+
+.pv-card.accent-friend { --pv-accent: #EC4899; --pv-accent-rgb: 236 72 153; }
+.pv-card.accent-group { --pv-accent: #8B5CF6; --pv-accent-rgb: 139 92 246; }
+.pv-card.accent-any { --pv-accent: #0F766E; --pv-accent-rgb: 15 118 110; }
+
+.pv-card:hover {
+    border-color: rgb(var(--pv-accent-rgb) / 0.62);
+}
+
+/* 停用态：改用虚线描边 + 降饱和底。 */
+.pv-card.is-disabled {
+    border-style: dashed;
+    border-color: rgba(120, 96, 64, 0.3);
+    background: var(--md-sys-color-surface-variant);
+    box-shadow: none;
+}
+
+.pv-card.is-disabled .pv-card-name {
+    opacity: 0.66;
+}
+
+/* 退场：严格镜像入场，终点回到盒口。
+ * 延迟反向 —— 最后飞出的第一张先收回，像被一张张塞回盒子。 */
+.pv-card.is-leaving {
+    animation: pv-card-retract var(--pv-retract-dur, 400ms) cubic-bezier(0.45, 0, 0.75, 0.15) both;
+    animation-delay: calc(
+        var(--pv-retract-lead, 0ms) + (var(--n) - var(--i) - 1) * var(--pv-retract-step, 34ms)
+    );
+    pointer-events: none;
+}
+
+/* 卡头：序号 + 卡名 + 适用范围 + 状态灯。
+ * 序号与卡名放大成视觉重心，范围标签靠右，与左侧数字拉开层级。 */
+.pv-card-head {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+}
+
+/* 序号：描边式钢印。 */
+.pv-card-no {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 29px;
+    height: 25px;
+    border-radius: 7px;
+    border: 1.5px solid rgb(var(--pv-accent-rgb) / 0.45);
+    background: rgb(var(--pv-accent-rgb) / 0.06);
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    font-size: 12.5px;
+    font-weight: 800;
+    letter-spacing: 0.2px;
+    color: var(--pv-accent);
+}
+
+.pv-card-title-wrap {
+    flex: 1;
+    min-width: 0;
+}
+
+.pv-card-name {
+    margin: 0 !important;
+    font-size: 17px !important;
+    font-weight: 800 !important;
+    line-height: 1.28 !important;
+    letter-spacing: -0.45px;
+    color: var(--md-sys-color-on-surface);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+}
+
+/* 状态灯：生效 / 停用只靠这个小圆点表达，卡面不放开关。 */
+.pv-card-dot {
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--pv-accent);
+    box-shadow: 0 0 0 3px rgb(var(--pv-accent-rgb) / 0.14);
+}
+
+.pv-card.is-disabled .pv-card-dot {
+    background: rgba(120, 104, 84, 0.5);
+    box-shadow: 0 0 0 3px rgba(120, 104, 84, 0.1);
+}
+
+.pv-card.is-invalid .pv-card-dot {
+    background: var(--md-sys-color-warning);
+    box-shadow: 0 0 0 3px rgb(var(--md-warning-rgb) / 0.16);
+}
+
+/* 卡身：预览区。 */
+.pv-card-body {
+    position: relative;
+    z-index: 1;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 14px), transparent 100%);
+    mask-image: linear-gradient(180deg, #000 calc(100% - 14px), transparent 100%);
+}
+
+/* 适用范围标签：在卡头右侧，不再挤占卡身第一行。 */
+.pv-card-scope {
+    flex-shrink: 0;
+    padding: 1.5px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 800;
+    white-space: nowrap;
+    color: rgb(var(--pv-accent-rgb) / 0.94);
+    background: rgb(var(--pv-accent-rgb) / 0.09);
+    border: 1px solid rgb(var(--pv-accent-rgb) / 0.2);
+}
+
+/* 两段式正文：标签 + 内容，与模态里的编辑区同款质感。 */
+.pv-card-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+}
+
+/* 正文气泡：四边同款描边，不用左侧色条区分段型。 */
+.pv-sec {
+    padding: 7px 10px 8px;
+    border-radius: 9px;
+    background: rgb(var(--md-primary-rgb) / 0.055);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.16);
+    font-size: 11.5px;
+    line-height: 1.62;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+/* 这次我想：主色系，比默认淡底再明确一档。 */
+.pv-sec.is-intent {
+    background: rgb(var(--md-primary-rgb) / 0.065);
+    border-color: rgb(var(--md-primary-rgb) / 0.18);
+}
+
+/* 最终指令：绿色系，与约束 / 收口的语义一致。 */
+.pv-sec.is-final {
+    background: rgba(5, 150, 105, 0.075);
+    border-color: rgba(5, 150, 105, 0.26);
+}
+
+.pv-sec.is-empty-text {
+    font-style: italic;
+    opacity: 0.6;
+}
+
+/* 段标签改成小胶囊：色点 + 文字，两段各自同色。 */
+.pv-sec-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 3px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgb(var(--md-primary-rgb) / 0.1);
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.3px;
+    line-height: 1.5;
+    color: rgb(var(--md-primary-rgb) / 0.9);
+}
+
+/* 色点：把这一段是哪种色再固化成可扫读的视觉锚点。 */
+.pv-sec-label::before {
+    content: '';
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.pv-sec.is-final .pv-sec-label {
+    background: rgba(5, 150, 105, 0.12);
+    color: rgba(5, 120, 85, 0.85);
+}
+
+/* 整行裁切：clamp 放在内层文本上，父级的 padding 不会参与计算。
+   两段各放宽到 4 行 —— 常见模板的「这次我想」都能完整读完，
+   只有明显超长的才会在第四行后渐隐。 */
+.pv-sec-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    overflow: hidden;
+    word-break: break-word;
+}
+
+.pv-card-idle-reason {
+    align-self: flex-start;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--md-sys-color-warning);
+    background: rgb(var(--md-warning-rgb) / 0.12);
+}
+
+/* 卡脚：抽中率 + 打开提示。 */
+.pv-card-foot {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: auto;
+    /* 数字放大后需要多一点上边距，否则读数会贴住虚分隔线。 */
+    padding-top: 12px;
+}
+
+.pv-card-foot::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 1px;
+    background-image: repeating-linear-gradient(
+        90deg,
+        rgb(var(--md-primary-rgb) / 0.42) 0 6px,
+        transparent 6px 11px
+    );
+}
+
+.pv-card-rate {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    min-width: 0;
+}
+
+/* 卡脚主读数：整张卡左下角的视觉锚点，放大到 18px。 */
+.pv-card-rate-main {
+    font-size: 18px;
+    font-weight: 800;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.5px;
+    color: var(--pv-accent);
+}
+
+.pv-card-rate-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.6;
+}
+
+.pv-card-rate-share {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1.5px 7px;
+    border-radius: 999px;
+    color: var(--md-sys-color-on-surface-variant);
+    background: rgb(var(--md-primary-rgb) / 0.07);
+    white-space: nowrap;
+}
+
+/* 通用卡同时进两个池：并排两个值，避免只取最大值造成高估。 */
+.pv-card-dual {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+}
+
+.pv-card-dual-item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 3px;
+    font-size: 15.5px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.3px;
+    color: var(--pv-accent);
+}
+
+.pv-card-dual-item small {
+    font-size: 10px;
+    font-weight: 700;
+    opacity: 0.6;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.pv-card-open {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 800;
+    color: rgb(var(--pv-accent-rgb) / 0.8);
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.pv-card:hover .pv-card-open {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+/* ---- 新建卡位：与卡片同规格的虚线格 ---- */
+.pv-card-slot .pv-card-ghost {
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border: 1.5px dashed rgb(var(--md-primary-rgb) / 0.34);
+    background:
+        radial-gradient(ellipse 62% 44% at 50% 46%, rgb(var(--md-primary-rgb) / 0.07), transparent 72%),
+        linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.055), rgb(var(--md-primary-rgb) / 0.03));
+    box-shadow: none;
+    color: rgb(var(--md-primary-rgb) / 0.78);
+    animation: none;
+    opacity: 1;
+    transition: border-color 0.22s ease, background 0.22s ease, color 0.22s ease;
+}
+
+.pv-card-slot .pv-card-ghost:hover {
+    border-color: rgb(var(--md-primary-rgb) / 0.62);
+    background:
+        radial-gradient(ellipse 62% 44% at 50% 46%, rgb(var(--md-primary-rgb) / 0.14), transparent 72%),
+        linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.1), rgb(var(--md-primary-rgb) / 0.06));
+    color: var(--md-sys-color-primary);
+    box-shadow: none;
+}
+
+/* 空位是虚线框，既不该有穿透孔，也不该显示孔沿。 */
+.pv-card-ghost,
+.pv-card-ghost .pv-card-hole {
+    -webkit-mask-image: none;
+    mask-image: none;
+}
+
+.pv-card-ghost .pv-card-hole {
+    display: none;
+}
+
+.pv-card-ghost-plus {
+    font-size: 24px;
+    font-weight: 300;
+    line-height: 1;
+}
+
+.pv-card-ghost-text {
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: -0.2px;
+}
+
+/* 副文案用 currentColor + 透明度。 */
+.pv-card-ghost-scope {
+    font-size: 10.5px;
+    font-weight: 700;
+    opacity: 0.72;
+}
+
+/* 入场：从盒口飞出来，越过落点后回落，最后挂在挂钩上。 */
+@keyframes pv-card-launch {
+    0% {
+        opacity: 0;
+        transform: translate3d(var(--fly-x), var(--fly-y), 0) scale(0.16);
+    }
+    18% {
+        opacity: 1;
+    }
+    56% {
+        opacity: 1;
+        transform: translate3d(0, -6px, 0) scale(1.03);
+    }
+    78% {
+        transform: translate3d(0, 1px, 0) scale(0.995);
+    }
+    100% {
+        opacity: 1;
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+}
+
+/* 退场：先把卡从挂钩上抬离，再原路缩回盒口。 */
+@keyframes pv-card-retract {
+    0% {
+        opacity: 1;
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    12% {
+        opacity: 1;
+        transform: translate3d(0, -7px, 0) scale(1.02);
+    }
+    100% {
+        opacity: 0;
+        transform: translate3d(var(--fly-x), var(--fly-y), 0) scale(0.16);
+    }
+}
+
+
+/* ===== 空态 ===== */
+.pv-empty {
+    padding: 38px 20px;
+    text-align: center;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.pv-empty-icon {
+    font-size: 28px;
+    margin-bottom: 8px;
+    opacity: 0.7;
+}
+
+.pv-empty-action {
+    display: inline-flex;
+    align-items: center;
+    margin-top: 12px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.3);
+    background: rgb(var(--md-primary-rgb) / 0.06);
+    font-size: 12px;
+    font-weight: 800;
+    color: var(--md-sys-color-primary);
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.pv-empty-action:hover {
+    background: rgb(var(--md-primary-rgb) / 0.12);
+    border-color: rgb(var(--md-primary-rgb) / 0.46);
+}
+
+/* ===== 卡池透视：右侧档案抽屉 =====
+ * 覆盖式，不推挤布局。 */
+.pv-pool-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 1250;
+    pointer-events: none;
+    /* 关闭时必须 visibility:hidden，否则抽屉里的按钮仍能被 Tab 聚焦。 */
+    visibility: hidden;
+    transition: visibility 0s linear 0.32s;
+}
+
+.pv-pool-layer.is-open {
+    pointer-events: auto;
+    visibility: visible;
+    transition: visibility 0s linear 0s;
+}
+
+.pv-pool-mask {
+    position: absolute;
+    inset: 0;
+    background: rgba(28, 24, 20, 0.16);
+    opacity: 0;
+    transition: opacity 0.28s ease;
+}
+
+.pv-pool-layer.is-open .pv-pool-mask {
+    opacity: 1;
+}
+
+.pv-pool-drawer {
+    position: absolute;
+    top: var(--top-bar-height);
+    right: 0;
+    bottom: 0;
+    width: min(424px, 92vw);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--md-sys-color-surface);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-left: 1px solid var(--glass-border);
+    box-shadow: -18px 0 48px -24px rgba(48, 32, 14, 0.42);
+    transform: translateX(100%);
+    transition: transform 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.pv-pool-layer.is-open .pv-pool-drawer {
+    transform: translateX(0);
+}
+
+/* 档案标签：当前池的标签前移照亮，切换不关抽屉。 */
+.pv-pool-tabs {
+    flex-shrink: 0;
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    padding: 12px 14px 0;
+}
+
+.pv-pool-tab {
+    height: 29px;
+    padding: 0 13px;
+    border: 1px solid var(--glass-border);
+    border-bottom: 0;
+    border-radius: 9px 9px 0 0;
+    background: rgb(var(--md-primary-rgb) / 0.04);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 800;
+    color: var(--md-sys-color-on-surface-variant);
+    cursor: pointer;
+    opacity: 0.62;
+    transform: translateY(3px);
+    transition: transform 0.24s ease, opacity 0.24s ease, color 0.24s ease, background 0.24s ease;
+}
+
+.pv-pool-tab:hover {
+    opacity: 0.9;
+}
+
+.pv-pool-tab.is-active {
+    opacity: 1;
+    transform: translateY(0);
+    background: var(--md-sys-color-surface);
+    color: var(--md-sys-color-primary);
+    box-shadow: 0 -3px 10px -4px rgba(60, 40, 20, 0.2);
+}
+
+.pv-pool-head {
+    flex-shrink: 0;
+    padding: 12px 18px 10px;
+    border-bottom: 1px solid rgb(var(--md-primary-rgb) / 0.1);
+}
+
+.pv-pool-title {
+    margin: 0 !important;
+    font-size: 15px !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.3px;
+}
+
+.pv-pool-sub {
+    margin-top: 3px !important;
+    font-size: 11.5px !important;
+    opacity: 0.7;
+}
+
+.pv-pool-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 16px 18px 24px;
+}
+
+/* 三池对比：未开盒时的抽屉默认视图。 */
+.pv-pool-compare {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.pv-pool-compare-row {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 12px 13px;
+    border-radius: 12px;
+    background: rgb(var(--md-primary-rgb) / 0.04);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.09);
+}
+
+.pv-pool-compare-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+}
+
+.pv-pool-compare-head:hover .pv-pool-compare-name {
+    color: var(--md-sys-color-primary);
+}
+
+.pv-pool-compare-name {
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: -0.2px;
+}
+
+.pv-pool-compare-meta {
+    flex-shrink: 0;
+    font-size: 10.5px;
+    font-weight: 700;
+    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+}
+
+.pv-pool-compare-top {
+    font-size: 10.5px;
+    font-weight: 700;
+    opacity: 0.68;
+}
+
+/* 概览 KPI：四格等分，数字压低噪音、标签小字。 */
+.pv-pool-kpi {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.pv-pool-kpi-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 9px 10px;
+    border-radius: 10px;
+    background: rgb(var(--md-primary-rgb) / 0.05);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.08);
+    min-width: 0;
+}
+
+.pv-pool-kpi-value {
+    font-size: 16px;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.4px;
+    font-variant-numeric: tabular-nums;
+    color: var(--md-sys-color-primary);
+}
+
+.pv-pool-kpi-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    opacity: 0.6;
+    white-space: nowrap;
+}
+
+.pv-pool-block {
+    min-width: 0;
+}
+
+.pv-pool-block + .pv-pool-block {
+    padding-top: 16px;
+    border-top: 1px dashed rgb(var(--md-primary-rgb) / 0.14);
+}
+
+.pv-pool-block-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pv-pool-block-title {
+    margin: 0 0 10px !important;
+    font-size: 12px !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.2px;
+}
+
+.pv-pool-block-head .pv-pool-block-title {
+    flex: 1;
+    margin-bottom: 0 !important;
+}
+
+.pv-pool-block-head + * {
+    margin-top: 10px;
+}
+
+.pv-pool-hint {
+    display: block;
+    margin-top: 8px !important;
+    font-size: 10.5px !important;
+    line-height: 1.5;
+    opacity: 0.62;
+}
+
+/* 图例：小色块 + 名称 + 占比。 */
+.pv-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 10px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.pv-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11.5px;
+}
+
+.pv-legend-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 2px;
+    background: var(--pv-seg-color, var(--md-sys-color-primary));
+}
+
+.pv-legend-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.pv-legend-pct {
+    flex-shrink: 0;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 抽样对照：理论 / 实际叠在同一条轨道上，偏差一眼可见。 */
+.pv-dual {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.pv-dual-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+}
+
+.pv-dual-name {
+    width: 78px;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.pv-dual-track {
+    position: relative;
+    flex: 1;
+    height: 5px;
+    border-radius: 3px;
+    background: rgb(var(--md-primary-rgb) / 0.08);
+    overflow: hidden;
+}
+
+.pv-dual-theory {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 3px;
+    background: rgb(var(--md-primary-rgb) / 0.26);
+}
+
+.pv-dual-actual {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 3px;
+    background: var(--pv-accent, var(--md-sys-color-primary));
+    opacity: 0.92;
+}
+
+.pv-dual-num {
+    /* 期望值文案变长后（「期望 22.0% · 偏差 0.3pt」），固定 56px 会换行挤成三行。 */
+    width: 96px;
+    flex-shrink: 0;
+    text-align: right;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 实测与期望偏差超过 2pt：数字标黄，一眼能定位到跑偏的卡。 */
+.pv-dual-num.is-warn {
+    color: var(--md-sys-color-warning);
+}
+
+.pv-dual-num small {
+    display: block;
+    font-size: 9px;
+    font-weight: 600;
+    opacity: 0.55;
+}
+
+/* 诊断结论：结论式条目，不是数据堆。没有条目时整块不渲染。 */
+.pv-pool-notes {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 16px;
+    border-top: 1px dashed rgb(var(--md-primary-rgb) / 0.14);
+}
+
+.pv-pool-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 9px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    background: rgb(var(--md-primary-rgb) / 0.05);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.08);
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.pv-pool-note-dot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    margin-top: 5px;
+    border-radius: 50%;
+    background: var(--md-sys-color-primary);
+}
+
+.pv-pool-note.is-warn {
+    background: rgb(var(--md-warning-rgb) / 0.09);
+    border-color: rgb(var(--md-warning-rgb) / 0.22);
+}
+
+.pv-pool-note.is-warn .pv-pool-note-dot {
+    background: var(--md-sys-color-warning);
+}
+
+.pv-pool-note.is-info {
+    background: rgba(37, 99, 235, 0.07);
+    border-color: rgba(37, 99, 235, 0.2);
+}
+
+.pv-pool-note.is-info .pv-pool-note-dot {
+    background: #2563EB;
+}
+
+/* ===== 卡片放大模态 =====
+ * 从被点击的卡片位置与尺寸长出来，视觉与卡片同源。 */
+.pv-modal-root {
+    position: fixed;
+    inset: 0;
+    z-index: 1300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+}
+
+/* 遮罩：轻压暗 + 克制的模糊。 */
+.pv-modal-mask {
+    position: absolute;
+    inset: 0;
+    background: rgba(26, 20, 14, 0.26);
+    backdrop-filter: blur(9px) saturate(1.04);
+    -webkit-backdrop-filter: blur(9px) saturate(1.04);
+    animation: pv-fade-in 0.24s ease both;
+}
+
+.pv-modal-mask.is-closing {
+    animation: pv-fade-out 0.26s ease both;
+}
+
+/* 模态本体：尺寸固定在居中位置，用 --dx/--dy/--k 把动画起点还原到卡片。 */
+.pv-modal {
+    --pv-accent: var(--md-sys-color-primary);
+    --pv-accent-rgb: var(--md-primary-rgb);
+    --dx: 0px;
+    --dy: 0px;
+    --k: 0.2;
+
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: min(1080px, 96vw);
+    height: min(760px, 92vh);
+    border-radius: 20px;
+    border: 1px solid rgb(var(--pv-accent-rgb) / 0.24);
+    /* 纯色打底再叠花色渐变。 */
+    background-color: #FFFFFF;
+    background-image: linear-gradient(180deg, rgb(var(--pv-accent-rgb) / 0.05), rgba(255, 255, 255, 0) 28%);
+    box-shadow:
+        0 2px 6px rgba(64, 44, 20, 0.1),
+        0 32px 64px -24px rgba(48, 32, 14, 0.45);
+    overflow: hidden;
+    transform-origin: center center;
+    animation: pv-modal-in 420ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+.pv-modal.is-closing {
+    animation: pv-modal-out 320ms cubic-bezier(0.4, 0, 0.72, 0.2) both;
+}
+
+.pv-modal.accent-friend { --pv-accent: #EC4899; --pv-accent-rgb: 236 72 153; }
+.pv-modal.accent-group { --pv-accent: #8B5CF6; --pv-accent-rgb: 139 92 246; }
+.pv-modal.accent-any { --pv-accent: #0F766E; --pv-accent-rgb: 15 118 110; }
+
+.pv-modal-head {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px 22px 13px;
+    border-bottom: 1px solid rgb(var(--md-primary-rgb) / 0.1);
+    background: linear-gradient(180deg, rgb(var(--pv-accent-rgb) / 0.045), rgba(255, 255, 255, 0));
+}
+
+/* 模态序号：与卡片钢印同一套描边语言，去掉实色色块与顶部色条。 */
+.pv-modal-no {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 29px;
+    height: 25px;
+    border-radius: 7px;
+    border: 1.5px solid rgb(var(--pv-accent-rgb) / 0.45);
+    background: rgb(var(--pv-accent-rgb) / 0.06);
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    font-size: 12px;
+    font-weight: 800;
+    color: var(--pv-accent);
+}
+
+/* 新建态：序号位置显示新，且用虚线描边。 */
+.pv-modal-no.is-draft {
+    border-style: dashed;
+    border-color: rgb(var(--pv-accent-rgb) / 0.34);
+    background: transparent;
+    font-family: inherit;
+    font-size: 11px;
+}
+
+/* 尚未保存提示：紧跟在适用范围与状态之后，只在新卡上出现。 */
+.pv-modal-draft-hint {
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 800;
+    white-space: nowrap;
+    color: var(--md-sys-color-warning);
+    background: rgb(var(--md-warning-rgb) / 0.12);
+    border: 1px solid rgb(var(--md-warning-rgb) / 0.26);
+}
+
+/* 标题区：名称在上、范围与状态在下。 */
+.pv-modal-title-wrap {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.pv-modal-title {
+    margin: 0 !important;
+    min-width: 0;
+    font-size: 17px !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.35px;
+    color: var(--md-sys-color-on-surface);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pv-modal-head-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* 启用状态：小圆点 + 文字。 */
+.pv-modal-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.7;
+}
+
+.pv-modal-state::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+}
+
+.pv-modal-state.is-on {
+    color: var(--pv-accent);
+    opacity: 1;
+}
+
+.pv-modal-body {
+    flex: 1;
+    min-height: 0;
+    /* 定高容器：内部两栏各自滚动，body 本身不滚。 */
+    overflow: hidden;
+    padding: 18px 22px;
+}
+
+/* 脚注：删除压到最左，主操作靠右，中间留空防误触。 */
+.pv-modal-foot {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 13px 22px;
+    border-top: 1px solid rgb(var(--md-primary-rgb) / 0.1);
+    background: rgba(255, 255, 255, 0.75);
+}
+
+@keyframes pv-modal-in {
+    0% {
+        opacity: 0;
+        transform: translate(var(--dx), var(--dy)) scale(var(--k));
+        border-radius: 26px;
+    }
+    100% {
+        opacity: 1;
+        transform: translate(0, 0) scale(1);
+        border-radius: 18px;
+    }
+}
+
+@keyframes pv-modal-out {
+    0% {
+        opacity: 1;
+        transform: translate(0, 0) scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: translate(var(--dx), var(--dy)) scale(var(--k));
+    }
+}
+
+@keyframes pv-fade-in {
+    0% { opacity: 0; }
+    100% { opacity: 1; }
+}
+
+@keyframes pv-fade-out {
+    0% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* ===== 放大态里的编辑区 =====
+ * 两栏都做成「定高 + 内部滚动」。 */
+.pv-modal-grid {
+    display: grid;
+    /* 两栏等宽，中间一道极淡竖线，视线分界清楚但不抢注意力。 */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 22px;
+    align-items: stretch;
+    /* 撑满 modal-body 的可视高度（body 自带 padding 已扣除）。 */
+    height: 100%;
+    min-height: 0;
+}
+
+
+/* 左栏：基础信息卡 + 正文卡 + 工具带，纵向 flex。 */
+.pv-editor-pane {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* 右栏：预览，同样纵向 flex，层列表吃掉剩余高度。 */
+.pv-editor-preview {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    /* 左栏分界线：只在两栏并排时出现（窄屏单列时由响应式关掉）。 */
+    padding-left: 22px;
+    border-left: 1px solid rgb(var(--md-primary-rgb) / 0.09);
+}
+
+/* 编辑区小卡：一张浅底 + 细描边的小面板，把相邻控件归组。 */
+.pv-editor-card {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    padding: 11px 12px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.1);
+    background: rgb(var(--md-primary-rgb) / 0.025);
+}
+
+/* 正文卡要吃掉左栏剩余高度。 */
+.pv-editor-card.is-grow {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.pv-editor-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.72;
+}
+
+.pv-editor-count {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
+    opacity: 0.75;
+}
+
+.pv-editor-fields {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: 10px;
+}
+
+.pv-editor-stats {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+/* 概率读数做成小 KPI：主色数字 + 小字标签，不再是裸文本拼接。 */
+.pv-editor-kpi {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: rgb(var(--md-primary-rgb) / 0.07);
+    border: 1px solid rgb(var(--md-primary-rgb) / 0.12);
+    white-space: nowrap;
+}
+
+.pv-editor-kpi em {
+    font-style: normal;
+    font-size: 13px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.3px;
+    color: var(--pv-accent, var(--md-sys-color-primary));
+}
+
+.pv-editor-kpi small {
+    font-size: 9.5px;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.7;
+}
+
+.pv-editor-kpi.is-muted {
+    background: transparent;
+    border-color: transparent;
+    padding-left: 0;
+}
+
+.pv-editor-kpi.is-muted em {
+    color: var(--md-sys-color-on-surface-variant);
+    font-size: 12px;
+}
+
+/* 正文输入：撑满正文卡，内部滚动；去掉 resize 手柄避免破坏 flex 高度。 */
+.pv-editor-textarea {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.pv-editor-textarea .MuiInputBase-root {
+    flex: 1 1 auto;
+    align-items: flex-start;
+    height: 100%;
+    min-height: 0;
+    background: var(--md-sys-color-surface);
+    font-size: 0.82rem;
+    line-height: 1.7;
+}
+
+.pv-editor-textarea .MuiInputBase-root textarea {
+    height: 100% !important;
+    overflow-y: auto;
+    resize: none;
+}
+
+/* 工具带：占位符与段头合并成一行，省掉两行小标题。 */
+.pv-editor-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+.pv-editor-toolbar-label {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.6;
+    margin-right: 2px;
+}
+
+/* 竖分隔：把「插入占位符」与「补齐段头」两组分开。 */
+.pv-editor-toolbar-sep {
+    width: 1px;
+    height: 14px;
+    margin: 0 3px;
+    background: rgb(var(--md-primary-rgb) / 0.16);
+}
+
+.pv-preview-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+/* 预览区标题：右栏唯一的区块标题，压小压粗，让下方的层列表成为主角。 */
+.pv-inspect-title {
+    flex: 1;
+    min-width: 0;
+    margin: 0 !important;
+    font-size: 12px !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.2px;
+    color: var(--md-sys-color-on-surface);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pv-token.MuiChip-root {
+    height: 22px;
+    font-size: 0.68rem;
+    cursor: pointer;
+}
+
+.pv-token.is-header.MuiChip-root {
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    font-weight: 700;
+}
+
+/* 正文问题提示：内联条，不用 Alert。左侧 3px 橙边 + 淡橙底，
+ * 与正文同处一栏也不抢注意力。 */
+.pv-editor-issues {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border-left: 3px solid var(--md-sys-color-warning);
+    background: rgb(var(--md-warning-rgb) / 0.09);
+}
+
+.pv-issue {
+    display: block;
+    font-size: 11px;
+    line-height: 1.55;
+    color: var(--md-sys-color-warning);
+}
+
+/* ===== 预览积木层 ===== */
+.pv-layers {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.pv-layers-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.pv-layers-hit.MuiChip-root {
+    font-weight: 800;
+    letter-spacing: -0.1px;
+    max-width: 100%;
+}
+
+.pv-layers-sub {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.8;
+}
+
+/* 层列表：吃掉右栏剩余高度。 */
+.pv-layers-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.pv-layer {
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--glass-border);
+    background: rgb(var(--md-primary-rgb) / 0.03);
+    overflow: hidden;
+}
+
+.pv-layer.is-hit {
+    border-color: rgb(var(--md-primary-rgb) / 0.34);
+    background: rgb(var(--md-primary-rgb) / 0.07);
+}
+
+.pv-layer-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    padding: 7px 10px;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+}
+
+.pv-layer.is-hit .pv-layer-head {
+    cursor: default;
+}
+
+.pv-layer-caret {
+    width: 10px;
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.75;
+}
+
+.pv-layer-label {
+    flex: 1;
+    min-width: 0;
+    font-size: 11.5px;
+    font-weight: 800;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pv-layer.is-hit .pv-layer-label {
+    color: var(--md-sys-color-primary);
+}
+
+.pv-layer-words {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 700;
+    opacity: 0.55;
+}
+
+.pv-layer-body {
+    padding: 0 10px 10px 27px;
+    font-size: 0.71rem;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ===== 响应式 ===== */
+@media (max-width: 1100px) {
+    /* 编辑区回退单列：正文与预览改为上下排，两者都不再需要定高吃满。 */
+    .pv-modal-grid {
+        grid-template-columns: minmax(0, 1fr);
+        height: auto;
+    }
+
+    /* 单列时取消左栏分界线，否则会变成一条莫名其妙的横线源头。 */
+    .pv-editor-preview {
+        padding-left: 0;
+        border-left: 0;
+        padding-top: 14px;
+        border-top: 1px solid rgb(var(--md-primary-rgb) / 0.09);
+    }
+
+    .pv-editor-card.is-grow {
+        flex: 0 0 auto;
+    }
+
+    .pv-editor-textarea .MuiInputBase-root textarea {
+        height: auto !important;
+        min-height: 240px;
+    }
+
+    /* 单列时 modal-body 交回滚动权，否则下方预览会被裁掉。 */
+    .pv-modal-body {
+        overflow-y: auto;
+    }
+
+    .pv-layers-body {
+        max-height: 340px;
+    }
+}
+
+@media (max-width: 900px) {
+    .pv-shelf {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    /* 页头放不下一行时整条右侧控件下移，仍然作为一个整体。 */
+    .pv-hero-main {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .pv-hero-bar {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .pv-hero-tools {
+        justify-content: flex-end;
+    }
+}
+
+@media (max-width: 640px) {
+    .pv-shelf {
+        grid-template-columns: minmax(0, 1fr);
+        /* 单列时只改几块变量。 */
+        --pv-plank-top: 18px;
+        --pv-plank-lip: 11px;
+        --pv-plank-skew: 22px;
+        /* 单列时卡盒更窄，吊链要跟着往里收。 */
+        --pv-chain-w: 2.5px;
+        --pv-chain-inset: 26px;
+    }
+
+    .pv-card-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    /* 挂钩层必须与卡片网格同列：单列时也收成一列，否则挂钩会排到卡盒外。 */
+    .pv-hook-layer {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .pv-hero {
+        padding: 12px 14px;
+    }
+
+    .pv-hero-main {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+
+    /* 窄屏下右侧控件整条占满一行，搜索占满剩余宽度。 */
+    .pv-hero-bar {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .pv-hero-actions {
+        margin-left: 0;
+        justify-content: flex-end;
+    }
+
+    .pv-hero-tools {
+        gap: 6px;
+        flex: 1 1 auto;
+    }
+
+    /* 窄屏下分隔线改为一行满宽，避免它夹在两组折行按钮中间。 */
+    .pv-hero-tools::after {
+        display: none;
+    }
+
+    .pv-hero-btn.MuiButton-root {
+        flex: 1 1 auto;
+        padding: 0 10px 0 8px;
+        justify-content: center;
+    }
+
+    .pv-pool-kpi {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .pv-modal-root {
+        padding: 0;
+    }
+
+    .pv-modal {
+        width: 100vw;
+        height: 100vh;
+        border-radius: 0;
+        border: 0;
+    }
+}
+
+/* 减少动效偏好：保留落位结果，去掉飞行与滑入。 */
+@media (prefers-reduced-motion: reduce) {
+    .pv-card,
+    .pv-card.is-leaving,
+    .pv-modal,
+    .pv-modal.is-closing,
+    .pv-modal-mask {
+        animation-duration: 1ms !important;
+        animation-delay: 0ms !important;
+    }
+
+    /* 投影靠动画淡入，低动态下直接给到位，否则 hover 阴影永远不可见。 */
+    .pv-card-slot::before {
+        animation: none !important;
+        opacity: 1;
+    }
+
+    /* 迷你卡也要一起静止：扇形摊开本身就是一段 0.38s 的旋转。
+     * 保留 transform（落位结果），只把过渡压到 1ms。 */
+    .pv-peek {
+        transition-duration: 1ms !important;
+        transition-delay: 0ms !important;
+    }
+
+    .pv-box-stage,
+    .pv-box-face,
+    .pv-peek,
+    .pv-pool-drawer,
+    .pv-pool-mask {
+        transition-duration: 1ms !important;
+        transition-delay: 0ms !important;
+    }
+}
