@@ -157,6 +157,9 @@ body.dark-theme .top-bar::before {
     overflow-y: auto;
     padding: calc(var(--top-bar-height) + 16px) 24px 24px;
     box-sizing: border-box;
+    /* 常驻预留滚动条槽位：否则内容变高、滚动条出现时会挤掉十几像素宽度，
+       整页会左右抖一下（卡片展开/收起时最明显）。 */
+    scrollbar-gutter: stable;
 }
 
 /* 配置页需要让卡片填满可视高度，这里用 flex 链代替硬编码 calc 高度。 */
