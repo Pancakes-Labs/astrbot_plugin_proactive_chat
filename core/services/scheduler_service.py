@@ -247,6 +247,9 @@ class SchedulerService:
             "last_schedule_min_interval_seconds",
             "last_schedule_max_interval_seconds",
             "last_schedule_random_interval_seconds",
+            # 预选模板属于本轮排期的产物：会话被禁用或任务过期后若不清，
+            # 下次启用会带着一条用户早已忘记的模板进入新一轮。
+            "prompt_preset",
         }
 
         changed = False
@@ -315,11 +318,29 @@ class SchedulerService:
                 except Exception:
                     pass
 
-    def add_chat_job(self, run_session_id: str, run_date: datetime) -> None:
-        """规范化 session_id，清理同目标历史任务，并注册一个新的定时 job。"""
+    def add_chat_job(
+        self,
+        run_session_id: str,
+        run_date: datetime,
+        *,
+        scheduled_at: float | None = None,
+    ) -> None:
+        """规范化 session_id，清理同目标历史任务，预选模板并注册定时 job。"""
         plugin = self.plugin
         normalized = plugin.session_service.normalize_session_id(run_session_id)
         self.purge_related_jobs(normalized)
+
+        if scheduled_at is None:
+            session_info = plugin.session_data.get(normalized, {})
+            if isinstance(session_info, dict):
+                scheduled_at = session_info.get("last_scheduled_at")
+        try:
+            plugin.prompt_preset_service.pick_for_session(
+                normalized, scheduled_at=scheduled_at
+            )
+        except Exception as e:  # noqa: BLE001 - 预选失败不应阻断排期
+            logger.warning(f"[主动消息] 预选提示词模板失败，生成时将现场抽取喵: {e}")
+
         plugin.scheduler.add_job(
             plugin.check_and_chat,
             "date",
@@ -662,11 +683,14 @@ class SchedulerService:
                 next_trigger_time,
             ) = self.compute_next_trigger(schedule_conf)
 
-            self.add_chat_job(normalized_session_id, run_date)
-
+            # 先写会话数据再注册任务：预选需要读取本轮 scheduled_at 作为轮次标识。
             session_payload = plugin.session_data.setdefault(normalized_session_id, {})
             session_payload["next_trigger_time"] = next_trigger_time
             session_payload["last_scheduled_at"] = scheduled_at
+
+            self.add_chat_job(
+                normalized_session_id, run_date, scheduled_at=scheduled_at
+            )
             session_payload["last_schedule_min_interval_seconds"] = min_interval
             session_payload["last_schedule_max_interval_seconds"] = max_interval
             session_payload["last_schedule_random_interval_seconds"] = random_interval
@@ -1053,7 +1077,7 @@ class SchedulerService:
                     random_interval
                 )
 
-                self.add_chat_job(session_id, run_date)
+                self.add_chat_job(session_id, run_date, scheduled_at=scheduled_at)
 
                 logger.info(
                     f"[主动消息] {plugin.session_service.get_session_log_str(session_id, current_config)} 满足条件，自动触发任务已创建喵！执行时间 (非持久化): {run_date.strftime('%Y-%m-%d %H:%M:%S')} 喵"
