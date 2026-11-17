@@ -27,6 +27,7 @@ from .core.services.config_service import ConfigService
 from .core.services.context_service import ContextService
 from .core.services.lifecycle_service import LifecycleService
 from .core.services.llm_service import LlmService
+from .core.services.prompt_preset_service import PromptPresetService
 from .core.services.scheduler_service import SchedulerService
 from .core.services.sender_service import SenderService
 from .core.services.session_service import SessionService
@@ -68,6 +69,8 @@ class ProactiveChatPlugin(star.Star):
         # 配置装配：汇总 Feature 自带配置声明并执行一次性数据迁移。
         self.config_assembly_service = ConfigAssemblyService(self)
         self.scheduler_service = SchedulerService(self)
+        # 提示词预选：排期时抽好模板，生成时按 id 复用，与调度解耦。
+        self.prompt_preset_service = PromptPresetService(self)
         self.context_service = ContextService(self)
         self.llm_service = LlmService(self)
         self.sender_service = SenderService(self)
