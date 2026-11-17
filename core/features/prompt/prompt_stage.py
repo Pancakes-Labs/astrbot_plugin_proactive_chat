@@ -87,22 +87,21 @@ class PromptStage(BaseStage):
             )
 
         # ---- 用户层：主动消息正文 + 输出格式预设 ----
-        # 一轮只建一个 Random 实例：同轮内若有多个抽取点，共用同一序列
-        # 才能保证日志里记录的顺序与实际抽样顺序一致，便于复现排查。
-        rng = random.Random()
-        main_template = (
-            resolve_active_template(session_config, session_type=session_type, rng=rng)
-            or {}
+        # 优先消费排期阶段抽好的预选，命中失败时才现场重抽。
+        main_template, from_preset = self._resolve_template(
+            ctx, session_config, session_type
         )
         if main_template:
-            # 抽取结果必须落日志：用户反馈「这轮效果怪」时，
-            # 只有知道抽中了哪套模板才能判断是模板问题还是模型波动。
             logger.info(
-                f"[主动消息] 本轮抽中提示词模板："
+                f"[主动消息] 本轮实际使用提示词模板："
                 f"{main_template.get('name') or '(未命名)'}"
-                f"（权重为 {main_template.get('weight')}）喵。"
+                f"（权重为 {main_template.get('weight')}，"
+                f"来源为{'预选' if from_preset else '现场抽取'}）喵。"
             )
-            ctx.trace.append(f"prompt_template:{main_template.get('id') or '-'}")
+            ctx.trace.append(
+                f"prompt_template:{main_template.get('id') or '-'}:"
+                f"{'preset' if from_preset else 'resample'}"
+            )
         else:
             logger.warning(
                 "[主动消息] 没有可用的提示词模板，本轮将只使用内置场景层与约束层喵。"
@@ -158,6 +157,61 @@ class PromptStage(BaseStage):
             ctx.prompts.add_extra(part, source=self.name)
 
         return StageResult.CONTINUE
+
+    def _resolve_template(
+        self,
+        ctx,
+        session_config: dict[str, Any],
+        session_type: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """取本轮使用的用户模板，返回 (模板, 是否来自预选)。
+
+        预选只提供 id，正文与占位符仍由本阶段处理，因此提前预选不影响
+        时间、未回复次数这类生成时刻取值。
+        """
+        preset_service = getattr(
+            self.orchestrator.plugin, "prompt_preset_service", None
+        )
+        if preset_service is not None:
+            try:
+                template, from_preset = preset_service.consume_for_generation(
+                    ctx.session_id
+                )
+            except Exception as e:  # noqa: BLE001 - 预选异常不应中断生成
+                logger.warning(f"[主动消息] 读取提示词预选失败，改为现场抽取喵: {e}")
+                template, from_preset = None, False
+            if template is not None:
+                return template, from_preset
+
+        # 没有预选（手动触发、预选缺失或服务不可用）：现场按权重抽一次。
+        # 回避参数与排期路径保持一致。
+        rng = random.Random()
+        avoid = self._avoid_fingerprints(ctx.session_id, session_config, preset_service)
+        template = (
+            resolve_active_template(
+                session_config,
+                session_type=session_type,
+                rng=rng,
+                avoid=avoid,
+            )
+            or {}
+        )
+        return template, False
+
+    @staticmethod
+    def _avoid_fingerprints(
+        session_id: str,
+        session_config: dict[str, Any],
+        preset_service: Any,
+    ) -> list[str]:
+        """取本轮需要回避的模板指纹；服务缺失或配置关闭时返回空列表。"""
+        if preset_service is None:
+            return []
+        try:
+            return preset_service.avoid_for_session(session_id, session_config)
+        except Exception as e:  # noqa: BLE001 - 回避失败不应中断生成
+            logger.warning(f"[主动消息] 读取提示词回避记录失败，本轮不回避喵: {e}")
+            return []
 
     def _append_template(
         self,
