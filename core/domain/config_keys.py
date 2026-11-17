@@ -36,6 +36,9 @@ PROMPT_SETTINGS_KEY = "prompt_settings"
 # prompt_settings 内部的输出格式设置：预设值 + 自定义正文
 OUTPUT_FORMAT_KEY = "output_format"
 OUTPUT_FORMAT_CUSTOM_KEY = "output_format_custom"
+# prompt_settings 内部的抽签去重设置：开关 + 回避窗口（最近 N 条）
+AVOID_REPEAT_TEMPLATE_KEY = "avoid_repeat_template"
+AVOID_REPEAT_WINDOW_KEY = "avoid_repeat_window"
 # 按场景（proactive / decisions / vision）指定 Provider 与模型，含回退链
 MODEL_SETTINGS_KEY = "model_settings"
 CONTEXT_SETTINGS_KEY = "context_settings"
@@ -107,6 +110,8 @@ LEGACY_ROOT_MAP: dict[str, str] = {
 
 __all__ = [
     "ADMIN_USERS_KEY",
+    "AVOID_REPEAT_TEMPLATE_KEY",
+    "AVOID_REPEAT_WINDOW_KEY",
     "CONTEXT_SETTINGS_KEY",
     "ENABLED_KEY",
     "GROUP_ONLY_SECTIONS",
