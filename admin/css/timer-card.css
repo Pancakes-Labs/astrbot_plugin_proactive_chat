@@ -471,6 +471,11 @@ body.dark-theme .tcard-body {
     gap: 3px;
 }
 
+/* 长文本字段（模型名等）独占一行，避免被两列网格截断成多行。 */
+.tcard-fact.is-full-width {
+    grid-column: 1 / -1;
+}
+
 .tcard-fact dt {
     font-size: 11px;
     font-weight: 600;
@@ -551,15 +556,17 @@ body.dark-theme .tcard-fact dt {
     color: var(--md-sys-color-success);
 }
 
+/* 任务卡最多四个按钮，窄屏下必须允许换行；每行至少留两项宽度。 */
 .tcard-button-row {
     display: flex;
     gap: 8px;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
 }
 
 .tcard-button-row .MuiButton-root {
     min-width: 0;
-    flex: 1 1 0;
+    /* basis 取 calc 让四个按钮在宽屏一行铺满，窄屏自动折成两行。 */
+    flex: 1 1 calc(50% - 4px);
 }
 
 /* 尊重系统“减少动态效果”偏好。 */
