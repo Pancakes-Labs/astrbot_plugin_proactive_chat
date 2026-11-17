@@ -692,6 +692,50 @@ class ApiRoutes:
         async def list_jobs():
             return {"jobs": await state.collect_jobs_async()}
 
+        # 重抽本轮提示词预选。
+        @app.post("/api/jobs/{umo:path}/prompt/resample")
+        async def resample_job_prompt(umo: str):
+            normalized = plugin.session_service.normalize_session_id(umo)
+            preset_service = getattr(plugin, "prompt_preset_service", None)
+            if preset_service is None:
+                return JSONResponse(
+                    {"ok": False, "error": "提示词预选服务不可用"}, status_code=503
+                )
+
+            try:
+                # 预选写在 session_data 上，必须与调度共用同一把锁，避免并发覆盖。
+                async with plugin.data_lock:
+                    result = preset_service.resample(normalized)
+                    if result.get("ok"):
+                        await plugin.storage_service.save_data()
+            except Exception as e:
+                logger.error(f"[主动消息] 重抽提示词预选失败喵: {e}")
+                return JSONResponse(
+                    {"ok": False, "error": "重抽提示词模板失败", "message": str(e)},
+                    status_code=500,
+                )
+
+            if not result.get("ok"):
+                reason = result.get("reason")
+                if reason == "session_data_missing":
+                    error = "该会话没有排期记录，无法重抽提示词模板"
+                elif reason == "no_available_template":
+                    error = "当前没有可用的提示词模板，请先在提示词页添加或启用模板"
+                else:
+                    error = "重抽提示词模板失败"
+                return JSONResponse(
+                    {"ok": False, "session": normalized, "error": error},
+                    status_code=400,
+                )
+
+            await _broadcast_web_update("prompt_preset")
+            return {
+                "ok": True,
+                "session": normalized,
+                "preset": result.get("preset", {}),
+                "message": "已换一条提示词模板",
+            }
+
         # 手动重新调度下一次主动消息（不重置未回复计数）。
         @app.post("/api/jobs/{umo:path}/reschedule")
         async def reschedule_job(umo: str):
@@ -978,6 +1022,10 @@ class ApiRoutes:
             async with plugin.data_lock:
                 if normalized in plugin.session_data:
                     plugin.session_data[normalized].pop("next_trigger_time", None)
+                    # 任务已取消：预选随本轮排期一起失效，避免遗留幽灵预选。
+                    preset_service = getattr(plugin, "prompt_preset_service", None)
+                    if preset_service is not None:
+                        preset_service.clear(normalized)
                     await plugin.storage_service.save_data()
 
             if removed:
