@@ -105,6 +105,18 @@ function App() {
 
     const handleRealtimeData = React.useCallback(
         (data) => {
+            // 广播一次数据变更事件：非全局状态的视图（如提示词页）据此自行重载，
+            // 避免各页面各自轮询或长期停留在过期快照上。
+            // reason 由后端给出（config / prompts / session-config 等）。
+            try {
+                window.dispatchEvent(
+                    new CustomEvent('proactive:data-updated', {
+                        detail: { reason: data.reason || '' },
+                    })
+                );
+            } catch (e) {
+                // 自定义事件不可用时静默忽略：不影响主流程状态更新。
+            }
             // WebSocket 推送只负责把增量/全量快照写回全局状态，不在这里做业务判断。
             if (data.status) dispatch({ type: 'SET_STATUS', payload: data.status });
             if (Array.isArray(data.jobs)) dispatch({ type: 'SET_JOBS', payload: data.jobs });
@@ -190,6 +202,8 @@ function App() {
         switch (state.currentView) {
             case 'status':
                 return <StatusView onRefresh={loadAll} />;
+            case 'prompts':
+                return <PromptsView />;
             case 'config':
                 return <ConfigView onRefresh={loadAll} />;
             case 'tasks':

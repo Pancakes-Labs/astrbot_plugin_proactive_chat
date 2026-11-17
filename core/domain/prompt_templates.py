@@ -11,6 +11,8 @@
 输出格式只保留两个预设：插件默认 / 用户自定义。它是单值设置而不是模板列表，
 因为格式偏好必须稳定：把风格丢进权重抽签会让同一会话的格式随机漂移，而
 「只输出一条」和「带旁白多段」是互斥的长期偏好，不该每轮重掷。
+
+模板采样固定按权重加权随机：每套模板只负责一种开口动机。
 """
 
 from __future__ import annotations
@@ -241,20 +243,20 @@ def _is_usable_template(item: dict[str, Any]) -> bool:
     return "{{platform_history_lines}}" not in text
 
 
-def resolve_active_template(
+def build_candidate_pool(
     section: Any,
     *,
     session_type: str = "",
-    weighted: bool = False,
-    rng: random.Random | None = None,
-) -> dict[str, Any] | None:
-    """解析当前生效的主动消息模板（含 id / name / weight）。
+) -> list[dict[str, Any]]:
+    """构建本轮可抽取的候选池（已按 scope 过滤并排除不可用条目）。
 
-    按 scope → 通用 的顺序挑选：先找仅本会话类型生效的模板，
-    再退回通用模板。这样迁移期保留的旧群聊模板不会污染私聊。
+    按 scope → 通用 的顺序只取一层：先找仅本会话类型生效的模板，
+    有就只用这批；没有再退回通用模板。这样迁移期保留的旧群聊模板
+    不会污染私聊，也保证不同 scope 的权重不会被混在一起归一化——
+    权重按池归一化，前端才能直接把 weight 读成百分比。
     """
     if not isinstance(section, dict):
-        return None
+        return []
 
     candidates = [
         item
@@ -262,7 +264,7 @@ def resolve_active_template(
         if scope_matches(item, session_type) and _is_usable_template(item)
     ]
     if not candidates:
-        return None
+        return []
 
     # 先尝试精确匹配当前会话类型的模板。
     if session_type:
@@ -272,12 +274,29 @@ def resolve_active_template(
             if normalize_scope(item.get("scope")) == session_type
         ]
         if scoped:
-            return pick_template(scoped, weighted=weighted, rng=rng)
+            return scoped
 
-    generic = [
+    return [
         item for item in candidates if normalize_scope(item.get("scope")) == SCOPE_ANY
     ]
-    return pick_template(generic, weighted=weighted, rng=rng)
+
+
+def resolve_active_template(
+    section: Any,
+    *,
+    session_type: str = "",
+    weighted: bool = True,
+    rng: random.Random | None = None,
+) -> dict[str, Any] | None:
+    """解析当前生效的主动消息模板（含 id / name / weight）。
+
+    weighted 默认为 True：多模板机制本身要求按权重抽样，
+    只有显式传 False（如一次性预览或测试）才会固定取第一条。
+    """
+    pool = build_candidate_pool(section, session_type=session_type)
+    if not pool:
+        return None
+    return pick_template(pool, weighted=weighted, rng=rng)
 
 
 def resolve_active_prompt(
@@ -295,6 +314,35 @@ def resolve_active_prompt(
         rng=rng,
     )
     return str(template["text"]) if template else ""
+
+
+def compute_probabilities(pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """计算候选池内每条模板的实际抽中概率。
+
+    返回每项 {id, name, weight, probability, index}，供管理端可视化。
+    权重全为 0 或异常时按均匀分布，与实际抽样行为保持一致。
+    """
+    if not pool:
+        return []
+    weights = [float(item.get("weight") or 0) for item in pool]
+    total = sum(weights)
+    result: list[dict[str, Any]] = []
+    for index, (item, weight) in enumerate(zip(pool, weights)):
+        if total > 0:
+            probability = weight / total
+        else:
+            # 权重全异常时 pick_template 会退化为均匀随机，这里同步。
+            probability = 1.0 / len(pool)
+        result.append(
+            {
+                "id": item.get("id", ""),
+                "name": item.get("name", ""),
+                "weight": int(weight),
+                "probability": probability,
+                "index": index,
+            }
+        )
+    return result
 
 
 def normalize_output_format(value: Any) -> str:
@@ -364,6 +412,8 @@ __all__ = [
     "SCOPE_GROUP",
     "TEMPLATES_KEY",
     "TEMPLATE_KEY_FIELD",
+    "build_candidate_pool",
+    "compute_probabilities",
     "enabled_templates",
     "get_output_format",
     "get_templates",

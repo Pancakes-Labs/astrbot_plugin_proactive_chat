@@ -172,7 +172,7 @@
                         "templates": {
                             "prompt_template": {
                                 "name": "提示词模板",
-                                "hint": "每条模板就是一套完整的主动消息策略：写清这次想怎么开口（行动指南），以及最终要生成什么。启用多条时会先按适用范围筛选，再按权重随机挑一条，适合准备多套不同的话题方向。",
+                                "hint": "每条模板就是一套完整的主动消息策略。启用多条时会先按适用范围筛选，再按权重随机挑一条，适合准备多套不同的话题方向。",
                                 "display_item": "name",
                                 "items": {
                                     "name": {
@@ -226,23 +226,137 @@
                         "default": [
                             {
                                 "__template_key": "prompt_template",
-                                "id": "friend_default",
-                                "name": "默认私聊模板",
-                                "text": "[行动指南]\n1. 回顾聊天记录，看看你们最后在聊什么。\n2. 如果上次的话题已经聊完了，可以关心一下对方现在在做什么。\n3. 也可以提出一个你一直很好奇的问题。\n4. 如果实在不知道该说什么，直接表达你想他的心情也可以。\n\n[最终指令]\n请综合以上所有信息，用最像你自己的、最自然的方式，生成一句主动聊天的开场白。",
+                                "id": "friend_share_moment",
+                                "name": "当下碎片分享",
+                                "text": "[这次我想]\n结合当前时间，跟对方随口分享一件我此刻正在做的事、刚弄完的小事，或者眼前看到的一幕。\n\n[最终指令]\n直接说我自己的事，不需要在结尾反问对方在干嘛。",
                                 "enabled": true,
-                                "weight": 100,
+                                "weight": 22,
                                 "scope": "friend"
                             },
                             {
                                 "__template_key": "prompt_template",
-                                "id": "group_default",
-                                "name": "默认群聊模板",
-                                "text": "[行动指南]\n1. 回顾群聊记录，看看大家最后在讨论什么有趣的话题，如果没有聊完，尝试延续它。\n2. 向群里的所有人，提出一个开放性的、大家都能参与进来的问题。\n\n[最终指令]\n请综合以上所有信息，用最像你自己的、最自然的方式，生成一句能在群聊中打破僵局、活跃气氛的开场白。",
+                                "id": "friend_random_thought",
+                                "name": "突发奇想与脑洞",
+                                "text": "[这次我想]\n说出我刚刚突然冒出来的一个奇怪念头、冷知识、荒诞假设，或者发呆时想到的脑洞。\n\n[最终指令]\n就像脑子里突然闪过这个想法、顺手发给对方一样。如果涉及具体的数据、年份或人名而我不确定，就说成自己的猜想或者“好像听说过”，不要编造确切的数字。",
                                 "enabled": true,
-                                "weight": 100,
+                                "weight": 16,
+                                "scope": "friend"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "friend_self_mood",
+                                "name": "自我状态与轻度吐槽",
+                                "text": "[这次我想]\n结合当前时间，向对方表达我此刻的生理或情绪状态（比如犯困、发呆、嘴馋、无聊，或者对某件小事的轻微吐槽）。\n\n[最终指令]\n重点在于抒发我自己的感受，不要去关心或追问对方。",
+                                "enabled": true,
+                                "weight": 14,
+                                "scope": "friend"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "friend_curious_question",
+                                "name": "真诚好奇的提问",
+                                "text": "[这次我想]\n向对方提出一个我真正好奇的具体问题：关于对方的个人偏好、生活习惯、过往经历，或者对某件事的看法。\n\n[最终指令]\n先简短说说我为什么突然好奇这个，然后直接提问。一次只问一个问题。",
+                                "enabled": true,
+                                "weight": 14,
+                                "scope": "friend"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "friend_poke",
+                                "name": "纯粹刷存在感",
+                                "text": "[这次我想]\n没有什么非说不可的正事，只是突然想戳对方一下、刷个存在感。\n\n[最终指令]\n用简短、符合我性格的方式喊对方一声，发个简短的感叹或无意义的小动静。字数越短越好。",
+                                "enabled": true,
+                                "weight": 12,
+                                "scope": "friend"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "friend_recall_topic",
+                                "name": "突然记起的旧话头",
+                                "text": "[这次我想]\n从我们之前的对话里挑一件让我印象深刻的事，像“事后突然又想起来”一样，补充一句当时没说的新想法，或者追问一下那件事的后续进展。\n\n[最终指令]\n不要复述或总结已经聊过的内容。",
+                                "enabled": true,
+                                "weight": 10,
+                                "scope": "friend"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "friend_casual_checkin",
+                                "name": "随口问候对方当下",
+                                "text": "[这次我想]\n结合当前时间点（如清晨、饭点、工作时段或深夜），自然地猜测一下对方现在在忙什么、状态怎么样，随口问一句。\n\n[最终指令]\n保持轻松随意，不要提及之前的聊天内容。",
+                                "enabled": true,
+                                "weight": 7,
+                                "scope": "friend"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "friend_express_missing",
+                                "name": "直接表达想念",
+                                "text": "[这次我想]\n安静了这么久，我有点想念对方，或者觉得没人说话有点冷清。\n\n[最终指令]\n用完全符合我性格的方式表达一下我想跟对方说话的心情。",
+                                "enabled": true,
+                                "weight": 5,
+                                "scope": "friend"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "group_self_rant",
+                                "name": "个人见闻与吐槽",
+                                "text": "[这次我想]\n像普通群友水群一样，在群里随口丢出一件我刚遇到的小事、刚看到的东西，或者对某件日常小事的吐槽。\n\n[最终指令]\n自顾自地说出来即可，不要点名，也不要像主持人一样强行号召大家讨论。",
+                                "enabled": true,
+                                "weight": 26,
+                                "scope": "group"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "group_time_vibe",
+                                "name": "群体状态共鸣",
+                                "text": "[这次我想]\n结合现在的具体时间段，说一句能引起群友当下状态共鸣的感慨（比如困意、饿意、摸鱼冲动、熬夜或周末状态），\n\n[最终指令]\n顺带试探一下群里这会儿还有没有活人。",
+                                "enabled": true,
+                                "weight": 21,
+                                "scope": "group"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "group_weird_question",
+                                "name": "脑洞怪问题投石问路",
+                                "text": "[这次我想]\n把我突然想不通的一个奇怪问题、冷知识或脑洞抛进群里。\n\n[最终指令]\n真诚或者促狭地问问群里有没有懂行的人，或者跟我想的一样的人。如果涉及具体的数据、年份、人名而我不确定，就说成“我好像记得”或者“我猜”，不要编造确切的数字。",
+                                "enabled": true,
+                                "weight": 17,
+                                "scope": "group"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "group_quick_poll",
+                                "name": "轻量化二选一投票",
+                                "text": "[这次我想]\n开启一个全新的轻松话题。向群里丢出一个生活化的“二选一”或者容易引发不同派别争论的小问题（饮食口味、生活习惯、奇葩假设之类的）。\n\n[最终指令]\n先亮出我自己的鲜明立场，再看群里其他人怎么选。",
+                                "enabled": true,
+                                "weight": 15,
+                                "scope": "group"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "group_revive_topic",
+                                "name": "重拾群内未尽话题",
+                                "text": "[这次我想]\n群里之前聊到一半冷掉的话题，我挑一个最感兴趣的点，说自己的看法、吐槽，或者追问一句。\n\n[最终指令]\n不要总结群聊记录，直接切入观点。",
+                                "enabled": true,
+                                "weight": 12,
+                                "scope": "group"
+                            },
+                            {
+                                "__template_key": "prompt_template",
+                                "id": "group_bubble",
+                                "name": "纯粹冒泡炸鱼",
+                                "text": "[这次我想]\n群里太安静了，我只是想出来冒个泡。\n\n[最终指令]\n用一句简短的话、一声感叹，或者符合我性格的出场方式刷个存在感。不需要开启复杂话题。",
+                                "enabled": true,
+                                "weight": 9,
                                 "scope": "group"
                             }
                         ]
+                    },
+                    "preset_revision": {
+                        "description": "预设版本（内部使用）",
+                        "type": "int",
+                        "invisible": true,
+                        "hint": "出厂预设的版本号，用于判断是否需要整组刷新模板。不要手工修改。"
                     },
                     "output_format": {
                         "description": "主动消息输出格式",

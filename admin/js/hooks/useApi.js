@@ -57,6 +57,15 @@
         triggerJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/trigger`, {}),
         cancelJob: (session) => HttpUtil.del(`/api/jobs/${encodeURIComponent(session)}`),
         rescheduleJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/reschedule`, {}),
+
+        // 提示词管理专用接口：与配置页的模板编辑互不影响，走独立路径。
+        listPrompts: () => HttpUtil.get('/api/prompts'),
+        updatePrompts: (templates) => HttpUtil.put('/api/prompts', { templates }),
+        previewPrompt: (payload) => HttpUtil.post('/api/prompts/preview', payload),
+        simulatePrompts: (payload) => HttpUtil.post('/api/prompts/simulate', payload),
+        exportPrompts: () => HttpUtil.get('/api/prompts/export'),
+        importPrompts: (payload) => HttpUtil.post('/api/prompts/import', payload),
+        resetPrompts: () => HttpUtil.post('/api/prompts/reset', {}),
     });
 
     // 兼容旧调用点：useApi() 直接返回同一个冻结对象，不再创建 Hook 内部状态。
