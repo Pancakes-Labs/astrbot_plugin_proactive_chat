@@ -13,6 +13,8 @@ function TasksView({ onRefresh }) {
     const nowMs = useNow();
     const triggerFeedback = useFeedbackMap(3000);
     const rescheduleFeedback = useFeedbackMap(3000);
+    // 换提示词只改本轮预选，与调度反馈分开记录，避免两条文案互相覆盖。
+    const presetFeedback = useFeedbackMap(3000);
     const displayTimezone = state.config?.displayTimezone || 'Asia/Shanghai';
 
     const jobs = state.jobs || [];
@@ -105,6 +107,25 @@ function TasksView({ onRefresh }) {
         }
     };
 
+    // 换一条本轮预选模板：只改预选，不动排期时间、计时器与未回复计数。
+    const resamplePrompt = async (session) => {
+        presetFeedback.setFeedback(session, { status: 'pending', text: '正在换一条提示词模板…' });
+        try {
+            const result = await api.resampleJobPrompt(session);
+            const preset = (result && result.preset) || {};
+            const name = String(preset.name || '').trim();
+            presetFeedback.setFeedback(session, {
+                status: 'success',
+                text: name ? `已换为「${name}」` : '已换一条提示词模板',
+            });
+            await onRefresh();
+        } catch (e) {
+            const message = e.message || '换提示词模板失败，请稍后重试';
+            presetFeedback.setFeedback(session, { status: 'error', text: message });
+            dispatch({ type: 'SET_ERROR', payload: message });
+        }
+    };
+
     return (
         <Box>
             <Box className="tasks-header-row">
@@ -136,7 +157,10 @@ function TasksView({ onRefresh }) {
                         const isTriggerRunning = Boolean(job.manual_trigger_in_progress);
                         const currentTriggerFeedback = triggerFeedback.feedbackMap[job.id];
                         const currentRescheduleFeedback = rescheduleFeedback.feedbackMap[job.id];
+                        const currentPresetFeedback = presetFeedback.feedbackMap[job.id];
                         const isRescheduling = currentRescheduleFeedback && currentRescheduleFeedback.status === 'pending';
+                        const isResamplingPreset = currentPresetFeedback && currentPresetFeedback.status === 'pending';
+                        const presetFeedbackStatus = currentPresetFeedback ? currentPresetFeedback.status : '';
                         const triggerButtonLabel = isTriggerRunning ? '触发中…' : '立即触发';
                         const triggerHelperText = isTriggerRunning
                             ? ((currentTriggerFeedback && currentTriggerFeedback.text) || '正在触发，等待 LLM 回复完成…')
@@ -190,6 +214,15 @@ function TasksView({ onRefresh }) {
                                             personaState: task.personaState,
                                         },
                                         { label: '上下文来源', value: task.sourceModeLabel },
+                                        {
+                                            label: '本轮使用的提示词模板',
+                                            value: task.promptPresetName,
+                                            sub: task.promptPresetSub,
+                                            title: task.promptPresetPicked
+                                                ? '排期时预先抽好的提示词模板，可在下方换一条'
+                                                : '倒计时结束后才会抽取提示词模板',
+                                            warning: task.promptPresetWarning,
+                                        },
                                         { label: '发送延迟', value: task.intervalText },
                                         { label: '免打扰时段', value: task.quietText },
                                         {
@@ -201,6 +234,15 @@ function TasksView({ onRefresh }) {
                                             title: task.unansweredHintText,
                                             warning: task.unansweredIsWarning,
                                         },
+                                        // 模型名通常最长，放在最后独占整行，不打断前面两列字段的成对阅读节奏。
+                                        {
+                                            label: '使用的模型',
+                                            value: task.modelText,
+                                            sub: task.modelSubText,
+                                            title: task.modelTitle,
+                                            warning: task.modelState === 'warning',
+                                            fullWidth: true,
+                                        },
                                     ]}
                                 />
 
@@ -208,6 +250,10 @@ function TasksView({ onRefresh }) {
                                     feedbacks={[
                                         { text: triggerHelperText, status: triggerFeedbackStatus },
                                         { text: rescheduleHelperText, status: rescheduleFeedbackStatus },
+                                        {
+                                            text: currentPresetFeedback ? currentPresetFeedback.text : '',
+                                            status: presetFeedbackStatus,
+                                        },
                                     ]}
                                     buttons={(
                                         <React.Fragment>
@@ -215,7 +261,7 @@ function TasksView({ onRefresh }) {
                                                 variant="outlined"
                                                 size="small"
                                                 fullWidth
-                                                disabled={isTriggerRunning || isRescheduling}
+                                                disabled={isTriggerRunning || isRescheduling || isResamplingPreset}
                                                 onClick={() => triggerNow(job.id)}
                                                 sx={{ borderRadius: 2.5 }}
                                             >
@@ -225,7 +271,7 @@ function TasksView({ onRefresh }) {
                                                 variant="outlined"
                                                 size="small"
                                                 fullWidth
-                                                disabled={isTriggerRunning || isRescheduling}
+                                                disabled={isTriggerRunning || isRescheduling || isResamplingPreset}
                                                 onClick={() => rescheduleJob(job.id)}
                                                 sx={{ borderRadius: 2.5 }}
                                             >
@@ -233,10 +279,20 @@ function TasksView({ onRefresh }) {
                                             </Button>
                                             <Button
                                                 variant="outlined"
+                                                size="small"
+                                                fullWidth
+                                                disabled={isTriggerRunning || isRescheduling || isResamplingPreset}
+                                                onClick={() => resamplePrompt(job.id)}
+                                                sx={{ borderRadius: 2.5 }}
+                                            >
+                                                {isResamplingPreset ? '换模板中…' : '换提示词'}
+                                            </Button>
+                                            <Button
+                                                variant="outlined"
                                                 color="error"
                                                 size="small"
                                                 fullWidth
-                                                disabled={isRescheduling}
+                                                disabled={isRescheduling || isResamplingPreset}
                                                 onClick={() => cancelJob(job.id)}
                                                 sx={{ borderRadius: 2.5 }}
                                             >
