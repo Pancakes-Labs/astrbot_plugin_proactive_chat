@@ -848,20 +848,22 @@ def _migrate_override(override: Any, session_id: str) -> dict[str, Any] | None:
         prompt_settings = {}
 
     # 覆写侧不补默认模板：为空就摘键，回落到全局模板。
+    # 无模板时版本号一并摘掉：模板既然回落到全局，强推就该由全局那层负责，
+    # 会话层留一个孤立版本号既无意义，又会被误判成「本会话自带模板」。
     if templates:
         prompt_settings["templates"] = templates
     else:
         prompt_settings.pop("templates", None)
+        prompt_settings.pop(PRESET_REVISION_KEY, None)
 
     # 强推语义同样作用于覆写层：会话级自定义模板整组作废旧出厂预设，
     # 与全局保持同一份出厂体验。版本号一致时跳过，保证幂等——
     # 用户在本次预设版本上新建或修改的会话模板不会被下次启动覆盖。
-    if needs_preset_refresh(patched):
-        if templates:
-            prompt_settings["templates"] = copy.deepcopy(FRESH_DEFAULT_TEMPLATES)
+    # 只有本次确实带模板时才打版本标记：无模板的覆写本就回落到全局模板。
+    if templates and needs_preset_refresh(patched):
+        prompt_settings["templates"] = copy.deepcopy(FRESH_DEFAULT_TEMPLATES)
         prompt_settings[PRESET_REVISION_KEY] = PRESET_REVISION
-        if prompt_settings:
-            patched[ck.PROMPT_SETTINGS_KEY] = prompt_settings
+        patched[ck.PROMPT_SETTINGS_KEY] = prompt_settings
 
     if style_text:
         prompt_settings[ck.OUTPUT_FORMAT_KEY] = OUTPUT_FORMAT_CUSTOM
