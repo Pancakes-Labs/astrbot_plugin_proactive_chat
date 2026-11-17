@@ -5,6 +5,18 @@
  
  const { Box, Typography } = MaterialUI;
 
+// 主导航表的唯一事实源：侧边栏据此渲染菜单，顶栏据此取页面标题。
+// 新增视图只改这一处，标题不会再因为漏配而静默退回默认值。
+const SIDEBAR_MENUS = [
+    { key: 'status', label: '运行状态', icon: '📊' },
+    { key: 'tasks', label: '任务管理', icon: '📋' },
+    { key: 'prompts', label: '提示词管理', icon: '❤️' },
+    { key: 'notifications', label: '通知中心', icon: '🔔' },
+    { key: 'docs', label: '文档浏览', icon: '📚' },
+    { key: 'config', label: '配置管理', icon: '⚙️' },
+];
+window.SidebarMenus = SIDEBAR_MENUS;
+
 function SidebarActionButton({ icon, label, onClick, variant }) {
     return (
         <button className="btn sidebar-action-btn" onClick={onClick}>
@@ -47,15 +59,9 @@ function Sidebar({ currentView, onChange }) {
         };
     }, []);
 
-    // 当前管理端开放的主导航项集中定义在这里，便于后续扩展新视图。
-    const menus = [
-        { key: 'status', label: '运行状态', icon: '📊' },
-        { key: 'tasks', label: '任务管理', icon: '📋' },
-        { key: 'prompts', label: '提示词管理', icon: '❤️' },
-        { key: 'notifications', label: '通知中心', icon: '🔔' },
-        { key: 'docs', label: '文档浏览', icon: '📚' },
-        { key: 'config', label: '配置管理', icon: '⚙️' },
-    ];
+    // 导航表挂在 window 上：顶栏标题也读这一份，
+    // 新增视图只需改这里，标题不会漏配后静默退回默认值。
+    const menus = window.SidebarMenus;
 
     const openDirectory = async (path) => {
         const targetLabel = path === 'data' ? '插件数据目录' : '插件文件目录';
