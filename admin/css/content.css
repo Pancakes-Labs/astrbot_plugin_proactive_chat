@@ -416,6 +416,34 @@
 
 /* 任务卡来源模式标记已并入 tcard-facts 事实行，原 .task-source-mode-pill 已移除。 */
 
+/* ===== 配置页三态占位：加载中 / 空态 / 加载失败 ===== */
+.config-state-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 48px 24px;
+    text-align: center;
+}
+
+.config-state-icon {
+    font-size: 36px;
+    line-height: 1.2;
+    margin-bottom: 10px;
+}
+
+/* 失败态用左边框强调：与加载中的中性灰区分，避免看起来像还在加载。 */
+.config-state-panel.is-error {
+    border-left: 3px solid rgb(var(--md-error-rgb) / 0.55);
+    border-radius: 8px;
+    background: rgb(var(--md-error-rgb) / 0.04);
+}
+
+body.dark-theme .config-state-panel.is-error {
+    background: rgb(var(--md-error-rgb) / 0.08);
+}
+
 .task-meta-grid {
     margin-top: 12px;
     display: grid;
