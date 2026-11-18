@@ -123,7 +123,10 @@ function DiagnosisBlock({ deck, rows, dirty }) {
             list.push({ tone: 'info', text: '池内只有 1 张可用卡，抽签结果恒定' });
         }
         if (rows.length === 0) {
-            list.push({ tone: 'warn', text: '池内没有可抽卡，这个会话类型不会主动开口' });
+            list.push({
+                tone: 'warn',
+                text: '池内没有可抽模板，将仅使用内置场景层与约束层',
+            });
         }
         if (dirty) {
             list.push({ tone: 'info', text: '存在未保存改动，以上按草稿计算' });
