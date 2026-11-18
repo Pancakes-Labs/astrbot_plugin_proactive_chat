@@ -124,8 +124,10 @@ function StatusView({ onRefresh }) {
     const previousTimerSnapshotRef = React.useRef({});
     const resetHintTimersRef = React.useRef({});
     // 快捷操作的终态回调定时器：success / error 是临时结果提示，
-    // 不自动回落会让按钮永远停在“已提交”，用户无法判断还能不能再点。
+    // 不自动回落会让按钮永远停在"已提交"，用户无法判断还能不能再点。
     const actionResetTimersRef = React.useRef({});
+    // 每次调度复位都递增代次。
+    const actionResetEpochRef = React.useRef({});
     // 等待新实例上线的看门狗定时器：按操作键存放，超时后解除锁定。
     const actionWatchdogTimersRef = React.useRef({});
     const displayTimezone = state.config?.displayTimezone || 'Asia/Shanghai';
@@ -150,10 +152,23 @@ function StatusView({ onRefresh }) {
     const scheduleActionReset = (key, reset) => {
         const timers = actionResetTimersRef.current;
         if (timers[key]) clearTimeout(timers[key]);
+        const epoch = (actionResetEpochRef.current[key] || 0) + 1;
+        actionResetEpochRef.current[key] = epoch;
         timers[key] = setTimeout(() => {
             delete timers[key];
+            if (actionResetEpochRef.current[key] !== epoch) return;
             reset();
         }, 3500);
+    };
+
+    // 进入 loading 前撤掉上一次的复位定时器。
+    const clearActionReset = (key) => {
+        const timers = actionResetTimersRef.current;
+        if (timers[key]) {
+            clearTimeout(timers[key]);
+            delete timers[key];
+        }
+        actionResetEpochRef.current[key] = (actionResetEpochRef.current[key] || 0) + 1;
     };
 
     // 状态快照的本地到达时刻：后端只给整秒值，需要配合本地时钟继续递增。
@@ -170,14 +185,25 @@ function StatusView({ onRefresh }) {
             ? Math.max(0, Math.floor((nowMs - snapshotAtMs) / 1000))
             : 0
     );
+    // 后端是否提供了精确实例启动时刻：决定用严格比较还是带容差的比较。
+    const hasExactStartedAt = (() => {
+        if (!window.TimeDomain) return false;
+        const ms = window.TimeDomain.toEpochMs(status.plugin_started_at);
+        return Number.isFinite(ms) && ms > 0;
+    })();
     // 插件实例启动时刻：用服务器快照时刻 - 运行时长反推。
     // plugin_start_time 是插件实例的属性，重载或重启后必然回退，
     // 因此这个值后移就等价于"新实例已上线"，比猜测耗时可靠得多。
     const instanceStartedAtMs = React.useMemo(() => {
+        // 后端直接给实例启动时刻时优先用它。
+        const exact = window.TimeDomain
+            ? window.TimeDomain.toEpochMs(status.plugin_started_at)
+            : null;
+        if (Number.isFinite(exact) && exact > 0) return exact;
         if (!Number.isFinite(uptimeSeconds) || snapshotServerMs === null) return null;
-        // 取整到秒：消除快照时间与整秒 uptime 之间的亚秒抖动。
+        // 回退：用整秒 uptime 反推，取整到秒消除亚秒抖动。
         return Math.round((snapshotServerMs - uptimeSeconds * 1000) / 1000) * 1000;
-    }, [uptimeSeconds, snapshotServerMs]);
+    }, [status.plugin_started_at, uptimeSeconds, snapshotServerMs]);
 
     // 操作是否仍在等待新实例：加载中与等待确认都需要禁用按钮。
     const opsBusy = (phase) => phase === 'loading' || phase === 'pending';
@@ -205,10 +231,16 @@ function StatusView({ onRefresh }) {
                 return;
             }
 
-            const baseline = Number(item.state.instanceStartedAtMs);
-            const confirmed = instanceStartedAtMs !== null
-                && Number.isFinite(baseline)
-                && instanceStartedAtMs - baseline > OPS_NEW_INSTANCE_TOLERANCE_MS;
+            // 基线缺失（首个状态快照到达前点击）不当作 0 处理。
+            const baseline = item.state.instanceStartedAtMs;
+            const hasBaseline = typeof baseline === 'number' && Number.isFinite(baseline);
+            // 精确基线用严格更晚比较；反推基线仍保留容差抵消整秒误差。
+            const advanced = hasBaseline
+                && Number.isFinite(instanceStartedAtMs)
+                && (item.state.instanceExact
+                    ? instanceStartedAtMs > baseline
+                    : instanceStartedAtMs - baseline > OPS_NEW_INSTANCE_TOLERANCE_MS);
+            const confirmed = advanced;
 
             if (confirmed) {
                 if (watchdogs[item.key]) {
@@ -369,12 +401,13 @@ function StatusView({ onRefresh }) {
 
     // 重载插件：等价于 /主动消息重启。重载期间控制台会短暂断开，属预期行为。
     const handleReloadPlugin = async () => {
-        if (opsBusy(reloadState.phase)) return;
+        if (opsBusy(reloadState.phase) || opsBusy(restartState.phase)) return;
         const confirmed = window.confirm(
             '确定要重载主动消息插件吗？\n重载期间 Web 管理端会短暂断开连接，稍后自动恢复。'
         );
         if (!confirmed) return;
 
+        clearActionReset('reload');
         setReloadState({ phase: 'loading' });
         try {
             const result = await api.reloadPlugin();
@@ -383,6 +416,7 @@ function StatusView({ onRefresh }) {
             setReloadState({
                 phase: 'pending',
                 instanceStartedAtMs: instanceStartedAtMs,
+                instanceExact: hasExactStartedAt,
             });
             if (window.Toast) {
                 window.Toast.info(
@@ -400,12 +434,13 @@ function StatusView({ onRefresh }) {
 
     // 重启 AstrBot：等价于 /重启AstrBot。进程会在数秒后整体重启。
     const handleRestartAstrbot = async () => {
-        if (opsBusy(restartState.phase)) return;
+        if (opsBusy(restartState.phase) || opsBusy(reloadState.phase)) return;
         const confirmed = window.confirm(
             '确定要重启整个 AstrBot 进程吗？\n所有插件与平台连接都会中断，进程将在数秒后重新启动。'
         );
         if (!confirmed) return;
 
+        clearActionReset('restart');
         setRestartState({ phase: 'loading' });
         try {
             const result = await api.restartAstrbot();
@@ -413,6 +448,7 @@ function StatusView({ onRefresh }) {
             setRestartState({
                 phase: 'pending',
                 instanceStartedAtMs: instanceStartedAtMs,
+                instanceExact: hasExactStartedAt,
             });
             if (window.Toast) {
                 window.Toast.info(
@@ -445,6 +481,7 @@ function StatusView({ onRefresh }) {
 
     const handleManualRefresh = async () => {
         if (manualRefreshState.phase === 'loading') return;
+        clearActionReset('refresh');
         setManualRefreshState((current) => ({ ...current, phase: 'loading' }));
         try {
             // 手动刷新会回到入口层执行一次完整 loadAll，确保状态、会话、配置、任务全部同步。
@@ -600,7 +637,7 @@ function StatusView({ onRefresh }) {
                                 type="button"
                                 className={`btn btn-action${opsBusy(reloadState.phase) ? ' is-busy' : ''}`}
                                 onClick={handleReloadPlugin}
-                                disabled={opsBusy(reloadState.phase)}
+                                disabled={opsBusy(reloadState.phase) || opsBusy(restartState.phase)}
                                 title="等价于聊天指令 /主动消息重启"
                             >
                                 <span className="status-action-icon">
@@ -623,7 +660,7 @@ function StatusView({ onRefresh }) {
                                 type="button"
                                 className={`btn btn-action${opsBusy(restartState.phase) ? ' is-busy' : ''}`}
                                 onClick={handleRestartAstrbot}
-                                disabled={opsBusy(restartState.phase)}
+                                disabled={opsBusy(restartState.phase) || opsBusy(reloadState.phase)}
                                 title="等价于聊天指令 /重启AstrBot"
                             >
                                 <span className="status-action-icon">
