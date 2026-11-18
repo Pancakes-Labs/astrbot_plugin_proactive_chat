@@ -57,6 +57,9 @@ class ProactiveChatPlugin(star.Star):
         self.session_data: dict = {}
         # 记录当前正在执行“立即触发”的会话，防止重复点击导致并发主动消息。
         self.manual_trigger_sessions: set[str] = set()
+        # 已被用户取消、但执行中的触发尚未收尾的会话。
+        # 收尾阶段据此跳过重新排期，避免已取消的任务按新时间复活。
+        self.cancelled_trigger_sessions: set[str] = set()
 
         self.version = get_plugin_version()
 
