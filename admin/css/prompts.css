@@ -3096,6 +3096,7 @@
     border: 1px solid var(--glass-border);
     background: rgb(var(--md-primary-rgb) / 0.03);
     overflow: hidden;
+    flex-shrink: 0;
 }
 
 .pv-layer.is-hit {
