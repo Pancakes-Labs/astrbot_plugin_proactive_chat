@@ -16,7 +16,17 @@
 const {
     Box, Typography, Button, IconButton, Switch, Tooltip,
 } = MaterialUI;
-const { useEffect } = React;
+const { useEffect, useRef } = React;
+
+// 可聚焦元素选择器：用于模态内的焦点循环。
+const FOCUSABLE = [
+    'button:not([disabled])',
+    '[href]',
+    'input:not([disabled])',
+    'textarea:not([disabled])',
+    'select:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])',
+].join(',');
 const { PromptEditor, PreviewLayers } = window.PromptComponents;
 const { scopeLabel } = window.PromptUtils;
 
@@ -25,12 +35,45 @@ function PromptModal({
     origin, onPatch, onPreview, onClose, onRemove, onSave,
 }) {
     const itemId = item ? item.id : '';
+    const rootRef = useRef(null);
+    const saveKeyRef = useRef('');
 
     // 打开就渲染一次，锁定这张卡；之后改正文不会自动重渲染。
     useEffect(() => {
         if (itemId) onPreview(item);
         // 只依赖卡 id：同一张卡内部编辑不触发重新渲染。
     }, [itemId]);
+
+    // 焦点管理：打开时把焦点移进模态，关闭后还给原元素。
+    useEffect(() => {
+        const previous = document.activeElement;
+        const node = rootRef.current;
+        if (node) {
+            const first = node.querySelector(FOCUSABLE);
+            if (first && typeof first.focus === 'function') first.focus();
+        }
+
+        const onKeyDown = (event) => {
+            if (event.key !== 'Tab' || !rootRef.current) return;
+            const nodes = Array.from(rootRef.current.querySelectorAll(FOCUSABLE));
+            if (!nodes.length) return;
+            const first = nodes[0];
+            const last = nodes[nodes.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+
+        document.addEventListener('keydown', onKeyDown, true);
+        return () => {
+            document.removeEventListener('keydown', onKeyDown, true);
+            if (previous && typeof previous.focus === 'function') previous.focus();
+        };
+    }, []);
 
     if (!item) return null;
 
@@ -41,7 +84,7 @@ function PromptModal({
         : {};
 
     return (
-        <Box className="pv-modal-root" role="dialog" aria-modal="true">
+        <Box className="pv-modal-root" role="dialog" aria-modal="true" ref={rootRef}>
             <Box
                 className={`pv-modal-mask${closing ? ' is-closing' : ''}`}
                 onClick={onClose}
@@ -140,9 +183,12 @@ function PromptModal({
                         size="small"
                         variant="contained"
                         onClick={async () => {
-                            // 保存失败时保持打开，否则用户以为改动已经生效了。
+                            // 保存失败时保持打开；记录发起保存的卡。
+                            saveKeyRef.current = item.__ui_key || '';
                             const ok = await onSave();
-                            if (ok) onClose();
+                            if (!ok) return;
+                            if (saveKeyRef.current !== (item.__ui_key || '')) return;
+                            onClose();
                         }}
                         disabled={saving}
                     >
