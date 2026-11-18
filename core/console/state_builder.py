@@ -403,6 +403,8 @@ class StateBuilder:
             or self._metadata_version
             or "未知版本",
             "uptime_seconds": uptime_sec,
+            # 插件实例启动时刻（秒，浮点）。前端据此精确判断重载是否完成。
+            "plugin_started_at": plugin.plugin_start_time,
             "uptime": str(
                 datetime.fromtimestamp(now)
                 - datetime.fromtimestamp(plugin.plugin_start_time)
