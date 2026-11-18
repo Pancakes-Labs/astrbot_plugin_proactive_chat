@@ -116,17 +116,102 @@
      * 重新取数后沿用旧的页面内唯一键。
      *
      * 后端不返回 __ui_key，每次 normalizeItem 都会生成新的。
-     * id 是后端稳定字段，用它做匹配。
+     * id 是后端稳定字段，用它做匹配。按出现顺序逐个消费旧键。
      */
     function adoptUiKeys(prevItems, nextItems) {
-        const byId = new Map();
+        const pendingById = new Map();
         (prevItems || []).forEach((item) => {
-            if (item && item.id) byId.set(item.id, item.__ui_key);
+            if (!item || !item.id) return;
+            const queue = pendingById.get(item.id);
+            if (queue) queue.push(item.__ui_key);
+            else pendingById.set(item.id, [item.__ui_key]);
         });
+
+        const used = new Set();
         return (nextItems || []).map((item) => {
-            const kept = item && item.id ? byId.get(item.id) : null;
-            return kept ? { ...item, __ui_key: kept } : item;
+            if (!item) return item;
+            const queue = item.id ? pendingById.get(item.id) : null;
+            const kept = queue && queue.length ? queue.shift() : '';
+            if (kept && !used.has(kept)) {
+                used.add(kept);
+                return { ...item, __ui_key: kept };
+            }
+            // 旧键已被占或不存在：给一个新键，保证同级唯一。
+            let fresh = item.__ui_key;
+            if (!fresh || used.has(fresh)) fresh = nextUiKey();
+            used.add(fresh);
+            return item.__ui_key === fresh ? item : { ...item, __ui_key: fresh };
         });
+    }
+
+    /** 条目内容签名（忽略页面内键），用于判断请求期间有没有改过。 */
+    function itemSignature(item) {
+        if (!item || typeof item !== 'object') return '';
+        const clone = {};
+        Object.keys(item).forEach((key) => {
+            if (key === '__ui_key') return;
+            clone[key] = item[key];
+        });
+        try {
+            return JSON.stringify(clone);
+        } catch (e) {
+            return '';
+        }
+    }
+
+    /** 按 id + 第几次出现建立槽位索引，用于对齐重复 id 的条目。 */
+    function slotIndex(items) {
+        const counts = new Map();
+        const slots = new Map();
+        (items || []).forEach((item) => {
+            if (!item) return;
+            const id = String(item.id || '');
+            const seen = counts.get(id) || 0;
+            counts.set(id, seen + 1);
+            slots.set(`${id}#${seen}`, item);
+        });
+        return slots;
+    }
+
+    /**
+     * 合并保存响应，保留请求发出后用户的修改与删除。
+     */
+    function mergeSavedTemplates(prev, snapshot, serverItems) {
+        const prevList = Array.isArray(prev) ? prev : [];
+        const server = Array.isArray(serverItems) ? serverItems : [];
+        const snapshotSlots = slotIndex(snapshot);
+        const prevSlots = slotIndex(prevList);
+
+        const counts = new Map();
+        const merged = server.map((item) => {
+            const id = String((item && item.id) || '');
+            const seen = counts.get(id) || 0;
+            counts.set(id, seen + 1);
+            const slot = `${id}#${seen}`;
+            const before = snapshotSlots.get(slot);
+            const current = prevSlots.get(slot);
+            if (current && before && itemSignature(current) !== itemSignature(before)) {
+                return current;
+            }
+            return item;
+        });
+
+        const serverSlots = slotIndex(server);
+        const seenCounts = new Map();
+        const additions = [];
+        prevList.forEach((item) => {
+            if (!item) return;
+            const id = String(item.id || '');
+            const seen = seenCounts.get(id) || 0;
+            seenCounts.set(id, seen + 1);
+            const slot = `${id}#${seen}`;
+            if (serverSlots.has(slot)) return;
+            // 服务端已无此条目：用户删了或服务端删了，都不该复活。
+            if (snapshotSlots.has(slot)) return;
+            additions.push(item);
+        });
+
+        return merged.concat(additions);
     }
 
     function isUsableTemplate(item) {
@@ -480,7 +565,9 @@
         formatPercent,
         invalidReason,
         isUsableTemplate,
+        itemSignature,
         matchKeyword,
+        mergeSavedTemplates,
         normalizeItem,
         normalizeToHundred,
         nextUiKey,
