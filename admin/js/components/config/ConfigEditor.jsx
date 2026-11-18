@@ -178,6 +178,8 @@ function ConfigEditor() {
         ? sessionSchemaEntries
         : Object.entries(schema || {}).filter(([key]) => !hiddenRootKeys.includes(key));
     const sessionEnabled = mode === 'session' ? Boolean(config && config.enabled) : false;
+    // 正文回读期间保留旧内容但禁止编辑。
+    const readbackLocked = Boolean(loader.configLoading && config);
     const sessionTypeLabel = currentSessionType === 'group' ? '群聊' : '私聊';
     // 三态文案统一用同一口径，避免加载中与失败态各自拼一份句子。
     const configTargetLabel = mode === 'session' ? '该会话的配置' : '全局配置';
@@ -507,7 +509,9 @@ function ConfigEditor() {
                                     />
                                     <Switch
                                         checked={sessionEnabled}
+                                        disabled={readbackLocked}
                                         onChange={(e) => {
+                                            if (readbackLocked) return;
                                             isDirtyRef.current = true;
                                             setConfig(Object.assign({}, config, { enabled: e.target.checked }));
                                         }}
@@ -516,24 +520,44 @@ function ConfigEditor() {
                             </Paper>
                         </Box>
                     )}
-                    {schemaEntries.map(([key, subSchema]) => (
-                        <Box key={key} sx={{ width: '100%' }}>
-                            <ConfigField
-                                fieldKey={key}
-                                schema={subSchema}
-                                value={config[key]}
-                                onChange={(newValue) => {
-                                    isDirtyRef.current = true;
-                                    setConfig(Object.assign({}, config, { [key]: newValue }));
-                                }}
-                                path=""
-                                expandedKeys={expandedKeys}
-                                onToggleExpand={handleToggleExpand}
-                                // 会话模式传当前会话类型，全局模式传空串表示不过滤。
-                                sessionType={mode === 'session' ? currentSessionType : ''}
-                            />
+                    {readbackLocked && (
+                        <Box className="config-inline-notice is-warning">
+                            <Typography variant="caption" className="config-inline-notice-text">
+                                正在回读服务端配置，期间暂不可编辑，完成后再继续修改。
+                            </Typography>
                         </Box>
-                    ))}
+                    )}
+                    <Box
+                        sx={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 1,
+                            // 只读而不是遮挡：保留可见内容，回读结束后自动恢复。
+                            pointerEvents: readbackLocked ? 'none' : 'auto',
+                            opacity: readbackLocked ? 0.6 : 1,
+                        }}
+                        aria-busy={readbackLocked}
+                    >
+                        {schemaEntries.map(([key, subSchema]) => (
+                            <Box key={key} sx={{ width: '100%' }}>
+                                <ConfigField
+                                    fieldKey={key}
+                                    schema={subSchema}
+                                    value={config[key]}
+                                    onChange={(newValue) => {
+                                        if (readbackLocked) return;
+                                        isDirtyRef.current = true;
+                                        setConfig(Object.assign({}, config, { [key]: newValue }));
+                                    }}
+                                    path=""
+                                    expandedKeys={expandedKeys}
+                                    onToggleExpand={handleToggleExpand}
+                                    // 会话模式传当前会话类型，全局模式传空串表示不过滤。
+                                    sessionType={mode === 'session' ? currentSessionType : ''}
+                                />
+                            </Box>
+                        ))}
+                    </Box>
                     </Box>
                 )}
             </Box>
@@ -556,7 +580,7 @@ function ConfigEditor() {
                 <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <Button
                         onClick={handleRestoreDefaults}
-                        disabled={saving}
+                        disabled={saving || readbackLocked}
                         variant="outlined"
                         color="error"
                         size="medium"
@@ -567,7 +591,7 @@ function ConfigEditor() {
                     </Button>
                     <Button
                         onClick={handleDiscardChanges}
-                        disabled={saving}
+                        disabled={saving || readbackLocked}
                         variant="outlined"
                         size="medium"
                         startIcon={<span>↩️</span>}
@@ -578,7 +602,7 @@ function ConfigEditor() {
                     {mode === 'session' && (
                         <Button
                             onClick={handleResetOverride}
-                            disabled={saving || !selectedSession}
+                            disabled={saving || readbackLocked || !selectedSession}
                             variant="outlined"
                             color="warning"
                             size="medium"
@@ -591,7 +615,7 @@ function ConfigEditor() {
                     <Button
                         variant="contained"
                         onClick={handleSave}
-                        disabled={saving || !canSaveConfig}
+                        disabled={saving || readbackLocked || !canSaveConfig}
                         size="medium"
                         startIcon={<span>💾</span>}
                         sx={{
