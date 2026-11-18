@@ -23,8 +23,10 @@ from astrbot.api import logger
 from ..domain.prompt_templates import (
     build_candidate_pool,
     get_avoid_repeat,
+    pick_template,
     resolve_active_template,
     session_type_of,
+    template_digest,
     template_fingerprint,
 )
 
@@ -71,23 +73,51 @@ class PromptPresetService:
         except (TypeError, ValueError):
             return ""
 
+    @staticmethod
+    def _preset_in_round(preset: dict[str, Any], round_token: str) -> bool:
+        """判断预选是否属于当前排期轮次。
+
+        旧数据两端都没有轮次标识时沿用历史行为（复用），
+        只要有一端能表达轮次就必须严格一致。
+        """
+        stored = str(preset.get("round_token") or "")
+        if not stored and not round_token:
+            return True
+        return stored == round_token
+
     # ------------------------------------------------------------------
     # 读取
     # ------------------------------------------------------------------
     def resolve_template(
-        self, session_id: str, template_id: Any
+        self, session_id: str, template_id: Any, digest: Any = ""
     ) -> dict[str, Any] | None:
-        """按 id 在真实候选池内查找模板。
+        """按 id（必要时叠加正文摘要）在真实候选池内查找模板。
 
-        必须查池而不是直接查配置。
+        必须查池而不是直接查配置。模板允许无 id 或重复 id。
         """
         text_id = str(template_id or "")
-        if not text_id:
+        text_digest = str(digest or "")
+        if not text_id and not text_digest:
             return None
-        for item in self._pool(session_id):
-            if str(item.get("id") or "") == text_id:
+        same_id = [
+            item
+            for item in self._pool(session_id)
+            if text_id and str(item.get("id") or "") == text_id
+        ]
+        if not text_digest:
+            return same_id[0] if same_id else None
+        for item in same_id or self._pool(session_id):
+            if template_digest(item) == text_digest:
                 return item
-        return None
+        return same_id[0] if same_id else None
+
+    def _resolve_preset_template(
+        self, session_id: str, preset: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """按预选记录解析实际模板（id + 正文摘要双重匹配）。"""
+        return self.resolve_template(
+            session_id, preset.get("id"), preset.get("text_digest")
+        )
 
     def peek(self, session_id: str) -> dict[str, Any] | None:
         """读取当前预选记录（不校验有效性、不清理）。"""
@@ -141,12 +171,11 @@ class PromptPresetService:
 
         records = payload.get(LAST_TEMPLATE_KEY)
         history = records if isinstance(records, list) else []
+        # 保留重复使用记录。
         kept = [
             item
             for item in history
-            if isinstance(item, dict)
-            and str(item.get("fingerprint") or "")
-            and str(item.get("fingerprint") or "") != fingerprint
+            if isinstance(item, dict) and str(item.get("fingerprint") or "")
         ]
         kept.insert(
             0,
@@ -167,7 +196,7 @@ class PromptPresetService:
         preset = self.peek(session_id)
         if not preset:
             return {"picked": False, "available": False}
-        template = self.resolve_template(session_id, preset.get("id"))
+        template = self._resolve_preset_template(session_id, preset)
         return {
             "picked": True,
             "available": template is not None,
@@ -187,10 +216,12 @@ class PromptPresetService:
         *,
         scheduled_at: float | None = None,
         force: bool = False,
+        extra_avoid: Any = None,
     ) -> dict[str, Any] | None:
         """为当前排期轮次准备预选模板。
 
-        已有可用预选时默认复用，force=True 才强制重抽。
+        只有同一轮次且模板仍可用的预选才会被复用，
+        上一轮遗留的预选一律重抽。
         """
         payload = self._session_payload(session_id)
         if payload is None:
@@ -200,18 +231,30 @@ class PromptPresetService:
         round_token = self._round_token(scheduled_at)
         if not force:
             preset = self.peek(session_id)
-            if preset:
-                template = self.resolve_template(session_id, preset.get("id"))
+            if preset and self._preset_in_round(preset, round_token):
+                template = self._resolve_preset_template(session_id, preset)
                 if template is not None:
                     return template
 
         session_config = self.plugin.config_service.get_session_config(session_id) or {}
+        session_type = session_type_of(session_config)
+        avoid = self.avoid_for_session(session_id, session_config)
         template = resolve_active_template(
             session_config,
-            session_type=session_type_of(session_config),
+            session_type=session_type,
             rng=random.Random(),
-            avoid=self.avoid_for_session(session_id, session_config),
+            avoid=avoid,
         )
+        blocked = {str(item) for item in extra_avoid or [] if item}
+        if template is not None and blocked & {template_fingerprint(template)}:
+            pool = [
+                item
+                for item in build_candidate_pool(
+                    session_config, session_type=session_type
+                )
+                if template_fingerprint(item) not in blocked
+            ]
+            template = pick_template(pool, weighted=True, rng=random.Random())
         if template is None:
             payload.pop(PROMPT_PRESET_KEY, None)
             logger.warning(
@@ -222,6 +265,10 @@ class PromptPresetService:
 
         payload[PROMPT_PRESET_KEY] = {
             "id": str(template.get("id") or ""),
+            # id 可能为空或重复：额外存指纹与正文摘要，
+            # 保证生成时能定位到真正被抽中的那一条。
+            "fingerprint": template_fingerprint(template),
+            "text_digest": template_digest(template),
             "name": str(template.get("name") or ""),
             "weight": template.get("weight"),
             "scope": str(template.get("scope") or ""),
@@ -261,7 +308,14 @@ class PromptPresetService:
         preset = self.peek(session_id)
         if not preset:
             return None, False
-        template = self.resolve_template(session_id, preset.get("id"))
+        payload = self._session_payload(session_id) or {}
+        current_round = self._round_token(payload.get("last_scheduled_at"))
+        if not self._preset_in_round(preset, current_round):
+            # 上一轮遗留的预选：直接作废，否则本轮会绕过加权抽签与回避规则。
+            self.clear(session_id)
+            logger.debug("[主动消息] 预选模板属于上一轮排期，已作废喵。")
+            return None, False
+        template = self._resolve_preset_template(session_id, preset)
         self.clear(session_id)
         if template is None:
             logger.info(
@@ -283,11 +337,18 @@ class PromptPresetService:
         if payload is None:
             return {"ok": False, "reason": "session_data_missing"}
 
+        current = self.peek(session_id) or {}
+        current_fingerprint = str(current.get("fingerprint") or "")
+        if not current_fingerprint:
+            resolved = self._resolve_preset_template(session_id, current)
+            current_fingerprint = template_fingerprint(resolved)
+
         # 沿用当前轮次标识，保证这条新预选归属同一次排期。
         template = self.pick_for_session(
             session_id,
             scheduled_at=payload.get("last_scheduled_at"),
             force=True,
+            extra_avoid=[current_fingerprint] if current_fingerprint else None,
         )
         if template is None:
             return {"ok": False, "reason": "no_available_template"}
