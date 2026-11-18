@@ -28,8 +28,8 @@ const { createPortal } = ReactDOM;
 
 const {
     DECK_ORDER, DECK_META, adoptUiKeys, buildDecks, createEmptyTemplate,
-    invalidReason, isUsableTemplate, matchKeyword, normalizeItem,
-    normalizeToHundred, scopeLabel, stripUiKey,
+    invalidReason, isUsableTemplate, matchKeyword, mergeSavedTemplates,
+    normalizeItem, normalizeToHundred, scopeLabel, stripUiKey,
     CARD_LAUNCH_DURATION, CARD_LAUNCH_STEP,
     CARD_RETRACT_DURATION, CARD_RETRACT_STEP, CARD_RETRACT_LEAD,
 } = window.PromptUtils;
@@ -469,16 +469,19 @@ function PromptsView() {
     const probabilityOf = useCallback((item) => {
         // 草稿不在 decks 里，算不出真实概率。返回 null 而不是 0，
         // 让编辑器显示「保存后计算」—— 0% 会被误读成「这张卡抽不到」。
+        // draft 必须进依赖：否则新草稿会落到下面的数值分支显示 0%。
         if (draft && item && draft.__ui_key === item.__ui_key) return null;
         if (!item.scope) {
+            const anyProb = decks.any && decks.any.prob[item.__ui_key];
+            if (Array.isArray(anyProb)) return anyProb;
             return [
-                decks.friend.prob[item.__ui_key] || 0,
-                decks.group.prob[item.__ui_key] || 0,
+                (decks.friend && decks.friend.prob[item.__ui_key]) || 0,
+                (decks.group && decks.group.prob[item.__ui_key]) || 0,
             ];
         }
         const target = decks[item.scope];
         return (target && target.prob[item.__ui_key]) || 0;
-    }, [decks]);
+    }, [decks, draft]);
 
     const shareOf = useCallback((item) => {
         const target = decks[item.scope || 'any'];
@@ -510,6 +513,8 @@ function PromptsView() {
             item.__ui_key === uiKey ? { ...item, ...patch } : item
         )));
         setDirty(true);
+        // 权重或正文变了，旧的预演结果就不再对应这份配置，作废。
+        setSimulateResult(null);
     }, [setDraftNow]);
 
     const removeByKey = useCallback((uiKey) => {
@@ -644,12 +649,15 @@ function PromptsView() {
             const data = await api.updatePrompts(stripUiKey(submitted));
             // 保存会返回全新条目，必须回收旧键，否则 editingKey 失效、模态被卸载。
             setTemplates((prev) => {
-                const base = prev === snapshot ? submitted : prev;
-                const next = adoptUiKeys(base, (data.templates || []).map(normalizeItem));
+                const serverItems = (data.templates || []).map(normalizeItem);
+                // 请求期间用户可能还在改正文或删卡：只采用未被改动条目的服务端结果。
+                const base = prev === snapshot
+                    ? submitted
+                    : mergeSavedTemplates(prev, submitted, serverItems);
+                const next = adoptUiKeys(base, serverItems);
                 if (!pending) return next;
-                // 草稿刚进表。若 base 走的是 prev 分支（保存期间用户又改了别的卡），
-                // prev 里没有这张卡的 id，adoptUiKeys 接不回它的键 ——
-                // 于是 editingKey 指向一个不存在的键，正在编辑的模态会当场消失。
+                // 草稿刚进表。若 base 走的是 prev 分支，prev 里没有这张卡的 id，
+                // adoptUiKeys 接不回它的键，正在编辑的模态会当场消失。
                 // 这里按 id 手工把待保存时用的键接回来。
                 return next.map((item) => (
                     item.id === pending.id ? { ...item, __ui_key: pending.__ui_key } : item
@@ -861,10 +869,10 @@ function PromptsView() {
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [openDeck, closing, poolOpen]);
 
-    // 有未保存改动时拦截关页，避免误丢。
+    // 有未保存改动或未提交的草稿时拦截关页，避免误丢。
     useEffect(() => {
         const onBeforeUnload = (event) => {
-            if (!dirtyRef.current) return undefined;
+            if (!dirtyRef.current && !draftRef.current) return undefined;
             event.preventDefault();
             event.returnValue = '';
             return '';
