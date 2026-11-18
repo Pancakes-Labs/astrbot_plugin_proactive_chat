@@ -705,9 +705,17 @@ class ApiRoutes:
             try:
                 # 预选写在 session_data 上，必须与调度共用同一把锁，避免并发覆盖。
                 async with plugin.data_lock:
-                    result = preset_service.resample(normalized)
-                    if result.get("ok"):
-                        await plugin.storage_service.save_data()
+                    # 会话数据在任务取消后仍然存在，只有调度器里的 job 能证明
+                    # 这一轮还待执行；否则重抽会为已取消的轮次写回幽灵预选。
+                    if (
+                        plugin.scheduler is None
+                        or plugin.scheduler.get_job(normalized) is None
+                    ):
+                        result = {"ok": False, "reason": "no_pending_job"}
+                    else:
+                        result = preset_service.resample(normalized)
+                        if result.get("ok"):
+                            await plugin.storage_service.save_data()
             except Exception as e:
                 logger.error(f"[主动消息] 重抽提示词预选失败喵: {e}")
                 return JSONResponse(
@@ -719,6 +727,8 @@ class ApiRoutes:
                 reason = result.get("reason")
                 if reason == "session_data_missing":
                     error = "该会话没有排期记录，无法重抽提示词模板"
+                elif reason == "no_pending_job":
+                    error = "该会话当前没有待执行的主动消息任务，无法重抽提示词模板"
                 elif reason == "no_available_template":
                     error = "当前没有可用的提示词模板，请先在提示词页添加或启用模板"
                 else:
@@ -1020,6 +1030,11 @@ class ApiRoutes:
                 pass
 
             async with plugin.data_lock:
+                # 立即触发进行中：记录取消意图，收尾阶段据此跳过重新排期。
+                if normalized in plugin.manual_trigger_sessions:
+                    cancelled = getattr(plugin, "cancelled_trigger_sessions", None)
+                    if cancelled is not None:
+                        cancelled.add(normalized)
                 if normalized in plugin.session_data:
                     plugin.session_data[normalized].pop("next_trigger_time", None)
                     # 任务已取消：预选随本轮排期一起失效，避免遗留幽灵预选。
