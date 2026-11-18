@@ -292,7 +292,7 @@ function TasksView({ onRefresh }) {
                                                 color="error"
                                                 size="small"
                                                 fullWidth
-                                                disabled={isRescheduling || isResamplingPreset}
+                                                disabled={isTriggerRunning || isRescheduling || isResamplingPreset}
                                                 onClick={() => cancelJob(job.id)}
                                                 sx={{ borderRadius: 2.5 }}
                                             >
