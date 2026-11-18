@@ -298,6 +298,21 @@ def build_candidate_pool(
     ]
 
 
+def template_digest(template: Any) -> str:
+    """模板正文摘要，用于在 id 缺失或重复时唯一定位条目。
+
+    与 fingerprint 的分工：fingerprint 表达"是不是同一套策略"（id 优先），
+    digest 只认正文，因此两条同 id 不同正文的模板仍可区分。
+    """
+    if not isinstance(template, dict):
+        return ""
+    text = str(template.get("text") or "").strip()
+    if not text:
+        return ""
+    name = str(template.get("name") or "").strip()
+    return hashlib.sha1(f"{name}\x00{text}".encode()).hexdigest()[:16]
+
+
 def template_fingerprint(template: Any) -> str:
     """模板的稳定标识，用于判断"是不是同一条模板"。
 
@@ -308,12 +323,8 @@ def template_fingerprint(template: Any) -> str:
     template_id = str(template.get("id") or "").strip()
     if template_id:
         return f"id:{template_id}"
-    text = str(template.get("text") or "").strip()
-    if not text:
-        return ""
-    name = str(template.get("name") or "").strip()
-    digest = hashlib.sha1(f"{name}\x00{text}".encode()).hexdigest()[:16]
-    return f"h:{digest}"
+    digest = template_digest(template)
+    return f"h:{digest}" if digest else ""
 
 
 def get_avoid_repeat(section: Any) -> tuple[bool, int]:
@@ -519,5 +530,6 @@ __all__ = [
     "resolve_active_template",
     "scope_matches",
     "session_type_of",
+    "template_digest",
     "template_fingerprint",
 ]
