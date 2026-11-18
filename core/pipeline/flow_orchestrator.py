@@ -230,6 +230,16 @@ class FlowOrchestrator:
         is_private_session = bool(parsed) and is_friend_type(parsed[1])
         session_config = None
         scheduled_job_payload = None
+        # 用户在本次生成期间取消了任务：不得再排下一轮，否则任务会复活。
+        cancelled = normalized_session_id in getattr(
+            plugin, "cancelled_trigger_sessions", ()
+        )
+        if cancelled:
+            plugin.cancelled_trigger_sessions.discard(normalized_session_id)
+            logger.info(
+                f"[主动消息] {plugin.session_service.get_session_log_str(normalized_session_id)} "
+                "的主动消息在触发生成期间被取消，跳过下一次排期喵。"
+            )
 
         # 递增未回复计数并落盘；私聊额外计算并写入下一次调度时间。
         async with plugin.data_lock:
@@ -243,7 +253,7 @@ class FlowOrchestrator:
                 f"[主动消息] {plugin.session_service.get_session_log_str(normalized_session_id)} 的第 {new_unanswered_count} 次主动消息已发送完成，当前未回复次数: {new_unanswered_count} 次喵。"
             )
 
-            if is_private_session:
+            if is_private_session and not cancelled:
                 session_config = plugin.config_service.get_session_config(
                     normalized_session_id
                 )
@@ -276,14 +286,17 @@ class FlowOrchestrator:
                     "session_config": session_config,
                 }
 
+            # 放在锁内完成。
+            if scheduled_job_payload is not None:
+                plugin.scheduler_service.add_chat_job(
+                    normalized_session_id,
+                    scheduled_job_payload["run_date"],
+                    scheduled_at=scheduled_job_payload["scheduled_at"],
+                )
+
             await plugin.storage_service.save_data()
 
         if scheduled_job_payload is not None:
-            plugin.scheduler_service.add_chat_job(
-                normalized_session_id,
-                scheduled_job_payload["run_date"],
-                scheduled_at=scheduled_job_payload["scheduled_at"],
-            )
             logger.info(
                 f"[主动消息] 已为 {plugin.session_service.get_session_log_str(normalized_session_id, scheduled_job_payload['session_config'])} 安排下一次主动消息喵，时间：{scheduled_job_payload['run_date'].strftime('%Y-%m-%d %H:%M:%S')} 喵。"
             )
@@ -327,6 +340,9 @@ class FlowOrchestrator:
         """释放指定会话的手动触发占用状态，并向管理端广播任务刷新。"""
         plugin = self.plugin
         normalized_session_id = plugin.session_service.normalize_session_id(session_id)
+        cancelled = getattr(plugin, "cancelled_trigger_sessions", None)
+        if cancelled is not None:
+            cancelled.discard(normalized_session_id)
         if normalized_session_id not in plugin.manual_trigger_sessions:
             return
 
