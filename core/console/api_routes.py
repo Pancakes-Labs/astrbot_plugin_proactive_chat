@@ -1006,6 +1006,10 @@ class ApiRoutes:
                 )
 
             plugin.manual_trigger_sessions.add(normalized)
+            # 丢弃上一轮可能残留的取消标记，避免新触发起步就被判定为已取消。
+            stale = getattr(plugin, "cancelled_trigger_sessions", None)
+            if stale is not None:
+                stale.discard(normalized)
             # 纳入统一任务登记，插件终止时可被一并取消，避免游离后台任务。
             plugin._track_task(
                 asyncio.create_task(
@@ -1025,18 +1029,18 @@ class ApiRoutes:
         async def cancel_job(umo: str):
             normalized = plugin.session_service.normalize_session_id(umo)
             removed = False
-            try:
-                plugin.scheduler.remove_job(normalized)
-                removed = True
-            except Exception:
-                pass
 
             async with plugin.data_lock:
-                # 立即触发进行中：记录取消意图，收尾阶段据此跳过重新排期。
+                # 先记录取消意图再移除任务。
                 if normalized in plugin.manual_trigger_sessions:
                     cancelled = getattr(plugin, "cancelled_trigger_sessions", None)
                     if cancelled is not None:
                         cancelled.add(normalized)
+                try:
+                    plugin.scheduler.remove_job(normalized)
+                    removed = True
+                except Exception:
+                    pass
                 if normalized in plugin.session_data:
                     plugin.session_data[normalized].pop("next_trigger_time", None)
                     # 任务已取消：预选随本轮排期一起失效，避免遗留幽灵预选。
