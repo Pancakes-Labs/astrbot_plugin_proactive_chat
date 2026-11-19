@@ -22,6 +22,7 @@ from astrbot.api import logger
 
 from ..domain.prompt_templates import (
     build_candidate_pool,
+    filter_avoided_pool,
     get_avoid_repeat,
     pick_template,
     resolve_active_template,
@@ -247,6 +248,7 @@ class PromptPresetService:
         )
         blocked = {str(item) for item in extra_avoid or [] if item}
         if template is not None and blocked & {template_fingerprint(template)}:
+            # 先排除被禁用的候选，再套用近期回避规则，最后抽样。
             pool = [
                 item
                 for item in build_candidate_pool(
@@ -254,8 +256,13 @@ class PromptPresetService:
                 )
                 if template_fingerprint(item) not in blocked
             ]
+            pool = filter_avoided_pool(pool, avoid)
             template = pick_template(pool, weighted=True, rng=random.Random())
         if template is None:
+            if force:
+                # 强制重抽失败时原预选必须保持不变，否则一次失败就抹掉用户已有的选择。
+                logger.debug("[主动消息] 重抽提示词模板失败，已保留原预选喵。")
+                return None
             payload.pop(PROMPT_PRESET_KEY, None)
             logger.warning(
                 "[主动消息] 没有可用的提示词模板，本轮预选为空，"
