@@ -463,6 +463,8 @@ function StatusView({ onRefresh }) {
                 setRestartState({
                     phase: 'pending',
                     instanceStartedAtMs: instanceStartedAtMs,
+                    // 与正常分支保持一致：有精确基线时用严格比较。
+                    instanceExact: hasExactStartedAt,
                 });
                 if (window.Toast) {
                     window.Toast.info('已有重启任务在进行中，正在等待进程重新上线', {
