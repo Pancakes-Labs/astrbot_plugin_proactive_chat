@@ -292,7 +292,9 @@ function TasksView({ onRefresh }) {
                                                 color="error"
                                                 size="small"
                                                 fullWidth
-                                                disabled={isTriggerRunning || isRescheduling || isResamplingPreset}
+                                                // 立即触发期间也允许取消：后端会记录取消意图，
+                                                // 正常收尾与异常兜底都会跳过重新排期。
+                                                disabled={isRescheduling || isResamplingPreset}
                                                 onClick={() => cancelJob(job.id)}
                                                 sx={{ borderRadius: 2.5 }}
                                             >
