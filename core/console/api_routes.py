@@ -328,6 +328,8 @@ class ApiRoutes:
                 unanswered_count=max(0, unanswered_count),
                 source_mode=str(payload.get("source_mode") or "conversation_history"),
                 template_id=str(payload.get("template_id") or ""),
+                # id 允许重复，正文用于在重复 id 中唯一定位这张卡。
+                template_text=str(payload.get("template_text") or ""),
                 # 前端可附带未保存的草稿，保证预览与概率面板同源。
                 draft_templates=payload.get("templates"),
             )

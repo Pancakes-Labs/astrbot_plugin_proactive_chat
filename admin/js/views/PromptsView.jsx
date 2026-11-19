@@ -730,6 +730,8 @@ function PromptsView() {
                 unanswered_count: 0,
                 // 锁定这张卡：模态里的预览永远就是这张卡，不再随机抽。
                 template_id: item.id,
+                // id 可能重复或为空，正文一起带上才能唯一定位到这张卡。
+                template_text: item.text || '',
                 // 草稿必须一起传，否则后端按 id 找不到这张还没进表的新卡，
                 // 预览会直接返回空。
                 templates: (dirtyRef.current || draftRef.current)
