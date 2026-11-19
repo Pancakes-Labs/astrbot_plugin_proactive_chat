@@ -536,6 +536,8 @@ function ConfigEditor() {
                             pointerEvents: readbackLocked ? 'none' : 'auto',
                             opacity: readbackLocked ? 0.6 : 1,
                         }}
+                        // 用 inert 让整棵子树不可聚焦、不可编辑。
+                        inert={readbackLocked ? '' : undefined}
                         aria-busy={readbackLocked}
                     >
                         {schemaEntries.map(([key, subSchema]) => (
@@ -545,9 +547,11 @@ function ConfigEditor() {
                                     schema={subSchema}
                                     value={config[key]}
                                     onChange={(newValue) => {
-                                        if (readbackLocked) return;
+                                        // 回读锁定期间拒绝修改，并告知字段组件不要更新本地态。
+                                        if (readbackLocked) return false;
                                         isDirtyRef.current = true;
                                         setConfig(Object.assign({}, config, { [key]: newValue }));
+                                        return true;
                                     }}
                                     path=""
                                     expandedKeys={expandedKeys}
