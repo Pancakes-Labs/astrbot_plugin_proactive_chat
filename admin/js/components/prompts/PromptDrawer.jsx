@@ -84,7 +84,13 @@ function PromptModal({
         : {};
 
     return (
-        <Box className="pv-modal-root" role="dialog" aria-modal="true" ref={rootRef}>
+        <Box
+            className="pv-modal-root"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pv-modal-title"
+            ref={rootRef}
+        >
             <Box
                 className={`pv-modal-mask${closing ? ' is-closing' : ''}`}
                 onClick={onClose}
@@ -101,7 +107,11 @@ function PromptModal({
                         {isDraft ? '新' : String((index || 0) + 1).padStart(2, '0')}
                     </span>
                     <Box className="pv-modal-title-wrap">
-                        <Typography component="h3" className="pv-modal-title">
+                        <Typography
+                            component="h3"
+                            id="pv-modal-title"
+                            className="pv-modal-title"
+                        >
                             {item.name || (isDraft ? '新建卡牌' : '未命名模板')}
                         </Typography>
                         <Box className="pv-modal-head-meta">
