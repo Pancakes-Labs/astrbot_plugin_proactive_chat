@@ -5,6 +5,12 @@
 
  const { Box, Typography, Button } = MaterialUI;
 
+// 运维操作（重载/重启）的完成确认参数。
+// 实例启动时刻取整到秒，最大误差 1 秒，留 3 秒容差避免抖动误判。
+const OPS_NEW_INSTANCE_TOLERANCE_MS = 3000;
+// 看门狗：等不到新实例就解除按钮锁定，避免用户被永久卡在"等待中"。
+const OPS_CONFIRM_TIMEOUT_MS = 90000;
+
 function StatusMetricRow({ label, value, emphasize = false, status = '' }) {
     return (
         <div className="status-metric-row">
@@ -117,6 +123,13 @@ function StatusView({ onRefresh }) {
     const timerFeedback = useFeedbackMap(3200);
     const previousTimerSnapshotRef = React.useRef({});
     const resetHintTimersRef = React.useRef({});
+    // 快捷操作的终态回调定时器：success / error 是临时结果提示，
+    // 不自动回落会让按钮永远停在"已提交"，用户无法判断还能不能再点。
+    const actionResetTimersRef = React.useRef({});
+    // 每次调度复位都递增代次。
+    const actionResetEpochRef = React.useRef({});
+    // 等待新实例上线的看门狗定时器：按操作键存放，超时后解除锁定。
+    const actionWatchdogTimersRef = React.useRef({});
     const displayTimezone = state.config?.displayTimezone || 'Asia/Shanghai';
 
     React.useEffect(() => {
@@ -125,8 +138,38 @@ function StatusView({ onRefresh }) {
             Object.values(resetHintTimersRef.current).forEach((timerId) => {
                 clearTimeout(timerId);
             });
+            Object.values(actionResetTimersRef.current).forEach((timerId) => {
+                clearTimeout(timerId);
+            });
+            Object.values(actionWatchdogTimersRef.current).forEach((timerId) => {
+                clearTimeout(timerId);
+            });
         };
     }, []);
+
+    // 让快捷操作按钮在展示结果文案若干秒后回落到 idle，恢复可点击语义。
+    // 用 ref 存定时器：连续点击时先清掉旧定时器，避免提前把新状态打回 idle。
+    const scheduleActionReset = (key, reset) => {
+        const timers = actionResetTimersRef.current;
+        if (timers[key]) clearTimeout(timers[key]);
+        const epoch = (actionResetEpochRef.current[key] || 0) + 1;
+        actionResetEpochRef.current[key] = epoch;
+        timers[key] = setTimeout(() => {
+            delete timers[key];
+            if (actionResetEpochRef.current[key] !== epoch) return;
+            reset();
+        }, 3500);
+    };
+
+    // 进入 loading 前撤掉上一次的复位定时器。
+    const clearActionReset = (key) => {
+        const timers = actionResetTimersRef.current;
+        if (timers[key]) {
+            clearTimeout(timers[key]);
+            delete timers[key];
+        }
+        actionResetEpochRef.current[key] = (actionResetEpochRef.current[key] || 0) + 1;
+    };
 
     // 状态快照的本地到达时刻：后端只给整秒值，需要配合本地时钟继续递增。
     const snapshotAtMs = Number(state.statusReceivedAt !== undefined ? state.statusReceivedAt : 0);
@@ -142,6 +185,90 @@ function StatusView({ onRefresh }) {
             ? Math.max(0, Math.floor((nowMs - snapshotAtMs) / 1000))
             : 0
     );
+    // 后端是否提供了精确实例启动时刻：决定用严格比较还是带容差的比较。
+    const hasExactStartedAt = (() => {
+        if (!window.TimeDomain) return false;
+        const ms = window.TimeDomain.toEpochMs(status.plugin_started_at);
+        return Number.isFinite(ms) && ms > 0;
+    })();
+    // 插件实例启动时刻：用服务器快照时刻 - 运行时长反推。
+    // plugin_start_time 是插件实例的属性，重载或重启后必然回退，
+    // 因此这个值后移就等价于"新实例已上线"，比猜测耗时可靠得多。
+    const instanceStartedAtMs = React.useMemo(() => {
+        // 后端直接给实例启动时刻时优先用它。
+        const exact = window.TimeDomain
+            ? window.TimeDomain.toEpochMs(status.plugin_started_at)
+            : null;
+        if (Number.isFinite(exact) && exact > 0) return exact;
+        if (!Number.isFinite(uptimeSeconds) || snapshotServerMs === null) return null;
+        // 回退：用整秒 uptime 反推，取整到秒消除亚秒抖动。
+        return Math.round((snapshotServerMs - uptimeSeconds * 1000) / 1000) * 1000;
+    }, [status.plugin_started_at, uptimeSeconds, snapshotServerMs]);
+
+    // 操作是否仍在等待新实例：加载中与等待确认都需要禁用按钮。
+    const opsBusy = (phase) => phase === 'loading' || phase === 'pending';
+    const opsIcon = (phase, idleIcon) => {
+        if (phase === 'loading' || phase === 'pending') return '⏳';
+        if (phase === 'success') return '✅';
+        if (phase === 'error' || phase === 'unknown') return '⚠️';
+        return idleIcon;
+    };
+
+    // 重载/重启的完成判定：只有观测到实例启动时刻后移才算真正完成。
+    React.useEffect(() => {
+        const targets = [
+            { key: 'reload', title: '重载插件', done: '插件已重载完成，实时数据已恢复', state: reloadState, setState: setReloadState },
+            { key: 'restart', title: '重启 AstrBot', done: 'AstrBot 已重启，实时数据已恢复', state: restartState, setState: setRestartState },
+        ];
+        const watchdogs = actionWatchdogTimersRef.current;
+
+        targets.forEach((item) => {
+            if (item.state.phase !== 'pending') {
+                if (watchdogs[item.key]) {
+                    clearTimeout(watchdogs[item.key]);
+                    delete watchdogs[item.key];
+                }
+                return;
+            }
+
+            // 基线缺失（首个状态快照到达前点击）不当作 0 处理。
+            const baseline = item.state.instanceStartedAtMs;
+            const hasBaseline = typeof baseline === 'number' && Number.isFinite(baseline);
+            // 精确基线用严格更晚比较；反推基线仍保留容差抵消整秒误差。
+            const advanced = hasBaseline
+                && Number.isFinite(instanceStartedAtMs)
+                && (item.state.instanceExact
+                    ? instanceStartedAtMs > baseline
+                    : instanceStartedAtMs - baseline > OPS_NEW_INSTANCE_TOLERANCE_MS);
+            const confirmed = advanced;
+
+            if (confirmed) {
+                if (watchdogs[item.key]) {
+                    clearTimeout(watchdogs[item.key]);
+                    delete watchdogs[item.key];
+                }
+                // 函数式更新：用户已重新发起操作时不要覆盖新状态。
+                item.setState((current) => (
+                    current.phase === 'pending' ? { phase: 'success' } : current
+                ));
+                scheduleActionReset(item.key, () => item.setState({ phase: 'idle' }));
+                if (window.Toast) {
+                    window.Toast.success(item.done, { title: item.title, key: `ops-${item.key}` });
+                }
+                return;
+            }
+
+            // 迟迟等不到新实例：解除锁定并如实告知，允许用户重试。
+            if (watchdogs[item.key]) return;
+            watchdogs[item.key] = setTimeout(() => {
+                delete watchdogs[item.key];
+                item.setState((current) => (
+                    current.phase === 'pending' ? { phase: 'unknown' } : current
+                ));
+                scheduleActionReset(item.key, () => item.setState({ phase: 'idle' }));
+            }, OPS_CONFIRM_TIMEOUT_MS);
+        });
+    }, [instanceStartedAtMs, reloadState, restartState]);
     const jobsCount = Number(status.jobs_count !== undefined ? status.jobs_count : 0);
     const sessionsCount = Number(status.sessions_count !== undefined ? status.sessions_count : 0);
     const autoTriggerTimers = Number(status.auto_trigger_timers !== undefined ? status.auto_trigger_timers : 0);
@@ -274,24 +401,32 @@ function StatusView({ onRefresh }) {
 
     // 重载插件：等价于 /主动消息重启。重载期间控制台会短暂断开，属预期行为。
     const handleReloadPlugin = async () => {
-        if (reloadState.phase === 'loading') return;
+        if (opsBusy(reloadState.phase) || opsBusy(restartState.phase)) return;
         const confirmed = window.confirm(
             '确定要重载主动消息插件吗？\n重载期间 Web 管理端会短暂断开连接，稍后自动恢复。'
         );
         if (!confirmed) return;
 
+        clearActionReset('reload');
         setReloadState({ phase: 'loading' });
         try {
             const result = await api.reloadPlugin();
-            setReloadState({ phase: 'success' });
+            // 接口返回只代表"已派发"，此时绝不能置 success：
+            // 真正完成由 effect 观测到实例启动时刻后移来确认。
+            setReloadState({
+                phase: 'pending',
+                instanceStartedAtMs: instanceStartedAtMs,
+                instanceExact: hasExactStartedAt,
+            });
             if (window.Toast) {
-                window.Toast.success(
-                    (result && result.message) || '已提交重载请求，插件正在重启',
-                    { title: '重载插件' }
+                window.Toast.info(
+                    (result && result.message) || '重载请求已提交，正在等待插件重新上线',
+                    { title: '重载插件', key: 'ops-reload' }
                 );
             }
         } catch (e) {
             setReloadState({ phase: 'error' });
+            scheduleActionReset('reload', () => setReloadState({ phase: 'idle' }));
             const message = e && e.message ? e.message : '重载插件失败，请查看服务端日志';
             if (window.Toast) window.Toast.error(message, { title: '重载插件失败' });
         }
@@ -299,51 +434,69 @@ function StatusView({ onRefresh }) {
 
     // 重启 AstrBot：等价于 /重启AstrBot。进程会在数秒后整体重启。
     const handleRestartAstrbot = async () => {
-        if (restartState.phase === 'loading') return;
+        if (opsBusy(restartState.phase) || opsBusy(reloadState.phase)) return;
         const confirmed = window.confirm(
             '确定要重启整个 AstrBot 进程吗？\n所有插件与平台连接都会中断，进程将在数秒后重新启动。'
         );
         if (!confirmed) return;
 
+        clearActionReset('restart');
         setRestartState({ phase: 'loading' });
         try {
             const result = await api.restartAstrbot();
-            setRestartState({ phase: 'success' });
+            // 同上：派发成功只是请求被接受，完成仍以新实例上线为准。
+            setRestartState({
+                phase: 'pending',
+                instanceStartedAtMs: instanceStartedAtMs,
+                instanceExact: hasExactStartedAt,
+            });
             if (window.Toast) {
-                window.Toast.success(
-                    (result && result.message) || '已触发 AstrBot 重启',
-                    { title: '重启 AstrBot' }
+                window.Toast.info(
+                    (result && result.message) || '重启请求已提交，正在等待进程重新上线',
+                    { title: '重启 AstrBot', key: 'ops-restart' }
                 );
             }
         } catch (e) {
-            // 409 表示已有重启任务在跑（幂等跳过），不是故障，按提示处理。
+            // 409 表示已有重启任务在跑（幂等跳过），不是故障，转为等待态。
             const inProgress = e && e.status === 409;
-            setRestartState({ phase: inProgress ? 'success' : 'error' });
-            const message = e && e.message
-                ? e.message
-                : (inProgress ? '已有重启任务在进行中，请稍候' : '重启 AstrBot 失败，请查看服务端日志');
-            if (window.Toast) {
-                if (inProgress) {
-                    window.Toast.info(message, { title: '重启 AstrBot' });
-                } else {
-                    window.Toast.error(message, { title: '重启 AstrBot 失败' });
+            if (inProgress) {
+                setRestartState({
+                    phase: 'pending',
+                    instanceStartedAtMs: instanceStartedAtMs,
+                    // 与正常分支保持一致：有精确基线时用严格比较。
+                    instanceExact: hasExactStartedAt,
+                });
+                if (window.Toast) {
+                    window.Toast.info('已有重启任务在进行中，正在等待进程重新上线', {
+                        title: '重启 AstrBot',
+                        key: 'ops-restart',
+                    });
                 }
+                return;
             }
+            setRestartState({ phase: 'error' });
+            scheduleActionReset('restart', () => setRestartState({ phase: 'idle' }));
+            const message = e && e.message ? e.message : '重启 AstrBot 失败，请查看服务端日志';
+            if (window.Toast) window.Toast.error(message, { title: '重启 AstrBot 失败' });
         }
     };
 
     const handleManualRefresh = async () => {
         if (manualRefreshState.phase === 'loading') return;
+        clearActionReset('refresh');
         setManualRefreshState((current) => ({ ...current, phase: 'loading' }));
         try {
             // 手动刷新会回到入口层执行一次完整 loadAll，确保状态、会话、配置、任务全部同步。
             await onRefresh();
             setManualRefreshState({ phase: 'success', finishedAt: Date.now() });
+            // 与运维按钮同一套语义：结果文案是临时的，几秒后回到可点击态。
+            scheduleActionReset('refresh', () => setManualRefreshState({ phase: 'idle', finishedAt: 0 }));
             if (window.Toast) {
                 window.Toast.success('控制台数据已刷新', { title: '运行状态' });
             }
         } catch (e) {
             setManualRefreshState({ phase: 'error', finishedAt: Date.now() });
+            scheduleActionReset('refresh', () => setManualRefreshState({ phase: 'idle', finishedAt: 0 }));
             if (window.Toast) {
                 window.Toast.error(e && e.message ? e.message : '刷新失败，请检查服务连接', {
                     title: '刷新失败',
@@ -484,40 +637,48 @@ function StatusView({ onRefresh }) {
 
                             <button
                                 type="button"
-                                className={`btn btn-action${reloadState.phase === 'loading' ? ' is-busy' : ''}`}
+                                className={`btn btn-action${opsBusy(reloadState.phase) ? ' is-busy' : ''}`}
                                 onClick={handleReloadPlugin}
-                                disabled={reloadState.phase === 'loading'}
+                                disabled={opsBusy(reloadState.phase) || opsBusy(restartState.phase)}
                                 title="等价于聊天指令 /主动消息重启"
                             >
                                 <span className="status-action-icon">
-                                    {reloadState.phase === 'loading' ? '⏳' : reloadState.phase === 'success' ? '✅' : reloadState.phase === 'error' ? '⚠️' : '🔁'}
+                                    {opsIcon(reloadState.phase, '🔁')}
                                 </span>
                                 {reloadState.phase === 'loading'
-                                    ? '正在重载插件...'
-                                    : reloadState.phase === 'success'
-                                        ? '重载请求已提交'
-                                        : reloadState.phase === 'error'
-                                            ? '重载失败，请重试'
-                                            : '重载主动消息插件'}
+                                    ? '正在派发重载请求...'
+                                    : reloadState.phase === 'pending'
+                                        ? '等待插件重新上线...'
+                                        : reloadState.phase === 'success'
+                                            ? '重载完成'
+                                            : reloadState.phase === 'unknown'
+                                                ? '未确认重载结果，可重试'
+                                                : reloadState.phase === 'error'
+                                                    ? '重载失败，请重试'
+                                                    : '重载主动消息插件'}
                             </button>
 
                             <button
                                 type="button"
-                                className={`btn btn-action${restartState.phase === 'loading' ? ' is-busy' : ''}`}
+                                className={`btn btn-action${opsBusy(restartState.phase) ? ' is-busy' : ''}`}
                                 onClick={handleRestartAstrbot}
-                                disabled={restartState.phase === 'loading'}
+                                disabled={opsBusy(restartState.phase) || opsBusy(reloadState.phase)}
                                 title="等价于聊天指令 /重启AstrBot"
                             >
                                 <span className="status-action-icon">
-                                    {restartState.phase === 'loading' ? '⏳' : restartState.phase === 'success' ? '✅' : restartState.phase === 'error' ? '⚠️' : '♻️'}
+                                    {opsIcon(restartState.phase, '♻️')}
                                 </span>
                                 {restartState.phase === 'loading'
-                                    ? '正在重启 AstrBot...'
-                                    : restartState.phase === 'success'
-                                        ? '重启请求已提交'
-                                        : restartState.phase === 'error'
-                                            ? '重启失败，请重试'
-                                            : '重启 AstrBot'}
+                                    ? '正在派发重启请求...'
+                                    : restartState.phase === 'pending'
+                                        ? '等待进程重新上线...'
+                                        : restartState.phase === 'success'
+                                            ? 'AstrBot 重启完成'
+                                            : restartState.phase === 'unknown'
+                                                ? '未确认重启结果，可重试'
+                                                : restartState.phase === 'error'
+                                                    ? '重启失败，请重试'
+                                                    : '重启 AstrBot'}
                             </button>
                         </div>
                     </div>

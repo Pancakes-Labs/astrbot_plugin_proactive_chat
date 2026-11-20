@@ -4,7 +4,9 @@
 「主动消息正文」候选：说什么由模板决定，怎么输出由 prompt_settings.output_format
 决定，两者互不干扰。
 
-- scope 为空     -> 私聊、群聊都生效
+scope 一律按「适用范围」解释，多个 scope 会叠加而不是互相排斥：
+
+- scope 为空     -> 私聊、群聊都生效（与专用模板同池共存）
 - scope="group"  -> 仅群聊生效（迁移期保留的旧群聊自定义模板）
 - scope="friend" -> 仅私聊生效
 
@@ -17,11 +19,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 from typing import Any
 
 from .config_keys import (
+    AVOID_REPEAT_TEMPLATE_KEY,
+    AVOID_REPEAT_WINDOW_KEY,
     OUTPUT_FORMAT_CUSTOM_KEY,
     OUTPUT_FORMAT_KEY,
     PROMPT_SETTINGS_KEY,
@@ -30,6 +35,10 @@ from .config_keys import (
 # 配置键与默认值集中定义，避免各层重复硬编码。
 TEMPLATES_KEY = "templates"
 DEFAULT_TEMPLATE_WEIGHT = 100
+# 抽签去重：默认关闭，窗口默认回避最近 1 条（即连续两条不同）。
+DEFAULT_AVOID_REPEAT = False
+DEFAULT_AVOID_WINDOW = 1
+MAX_AVOID_WINDOW = 10
 # 迁移器生成的模板使用固定 id，用于与用户自建模板区分。
 MIGRATED_TEMPLATE_ID = "legacy"
 
@@ -195,6 +204,41 @@ def enabled_templates(templates: Any) -> list[dict[str, Any]]:
     return [item for item in normalize_templates(templates) if item["enabled"]]
 
 
+def pick_template_index(
+    pool: Any,
+    *,
+    rng: random.Random | None = None,
+) -> int:
+    """在候选池内按权重抽一个下标；没有可用条目时返回 -1。"""
+    items = pool if isinstance(pool, list) else []
+    usable = [
+        index
+        for index, item in enumerate(items)
+        if isinstance(item, dict)
+        and item.get("enabled", True) is not False
+        and str(item.get("text") or "").strip()
+    ]
+    if not usable:
+        return -1
+    if len(usable) == 1:
+        return usable[0]
+
+    picker = rng or random
+    weights = [float(items[index].get("weight") or 0) for index in usable]
+    total = sum(weights)
+    if total <= 0:
+        # 权重异常时退化为均匀随机，保证永远能选出模板。
+        return usable[picker.randrange(len(usable))]
+
+    threshold = picker.random() * total
+    accumulated = 0.0
+    for index, weight in zip(usable, weights):
+        accumulated += weight
+        if threshold < accumulated:
+            return index
+    return usable[-1]
+
+
 def pick_template(
     templates: Any,
     *,
@@ -205,6 +249,8 @@ def pick_template(
 
     weighted=False 时固定取第一条，结果确定、便于排查；
     weighted=True 时按 weight 加权随机，权重越大被选中概率越高。
+
+    加权分支复用 pick_template_index，保证抽签算法全项目只有一份。
     """
     # 空正文条目不可用于生成，必须在选取阶段排除。
     candidates = [item for item in enabled_templates(templates) if item["text"].strip()]
@@ -213,20 +259,8 @@ def pick_template(
     if not weighted or len(candidates) == 1:
         return candidates[0]
 
-    picker = rng or random
-    weights = [float(item["weight"]) for item in candidates]
-    total = sum(weights)
-    if total <= 0:
-        # 权重异常时退化为均匀随机，保证永远能选出模板。
-        return candidates[picker.randrange(len(candidates))]
-
-    threshold = picker.random() * total
-    accumulated = 0.0
-    for item, weight in zip(candidates, weights):
-        accumulated += weight
-        if threshold < accumulated:
-            return item
-    return candidates[-1]
+    index = pick_template_index(candidates, rng=rng)
+    return candidates[index] if index >= 0 else None
 
 
 def _is_usable_template(item: dict[str, Any]) -> bool:
@@ -250,35 +284,90 @@ def build_candidate_pool(
 ) -> list[dict[str, Any]]:
     """构建本轮可抽取的候选池（已按 scope 过滤并排除不可用条目）。
 
-    按 scope → 通用 的顺序只取一层：先找仅本会话类型生效的模板，
-    有就只用这批；没有再退回通用模板。这样迁移期保留的旧群聊模板
-    不会污染私聊，也保证不同 scope 的权重不会被混在一起归一化——
-    权重按池归一化，前端才能直接把 weight 读成百分比。
+    scope 表达的是「适用范围」，不是「池归属」：通用模板同时服务私聊与群聊，
+    会与本类型的专用模板一起进入同一个池，按各自权重共同归一化。
+    因此 private/group 池的实际构成 = 本类型专用模板 + 全部通用模板。
     """
     if not isinstance(section, dict):
         return []
 
-    candidates = [
+    return [
         item
         for item in enabled_templates(get_templates(section))
         if scope_matches(item, session_type) and _is_usable_template(item)
     ]
-    if not candidates:
+
+
+def template_digest(template: Any) -> str:
+    """模板正文摘要，用于在 id 缺失或重复时唯一定位条目。
+
+    与 fingerprint 的分工：fingerprint 表达"是不是同一套策略"（id 优先），
+    digest 只认正文，因此两条同 id 不同正文的模板仍可区分。
+    """
+    if not isinstance(template, dict):
+        return ""
+    text = str(template.get("text") or "").strip()
+    if not text:
+        return ""
+    name = str(template.get("name") or "").strip()
+    return hashlib.sha1(f"{name}\x00{text}".encode()).hexdigest()[:16]
+
+
+def template_fingerprint(template: Any) -> str:
+    """模板的稳定标识，用于判断"是不是同一条模板"。
+
+    优先用 id：用户改了正文但保留 id 时仍算同一条，符合"同一套策略"的直觉。
+    """
+    if not isinstance(template, dict):
+        return ""
+    template_id = str(template.get("id") or "").strip()
+    if template_id:
+        return f"id:{template_id}"
+    digest = template_digest(template)
+    return f"h:{digest}" if digest else ""
+
+
+def get_avoid_repeat(section: Any) -> tuple[bool, int]:
+    """读取抽签回避设置，返回 (是否启用, 窗口大小)。
+
+    窗口非法值一律回落到 1。
+    """
+    settings = _prompt_settings(section)
+    enabled = _as_bool(settings.get(AVOID_REPEAT_TEMPLATE_KEY, DEFAULT_AVOID_REPEAT))
+    raw_window = settings.get(AVOID_REPEAT_WINDOW_KEY, DEFAULT_AVOID_WINDOW)
+    if isinstance(raw_window, bool) or not isinstance(raw_window, (int, float)):
+        window = DEFAULT_AVOID_WINDOW
+    elif not math.isfinite(raw_window):
+        window = DEFAULT_AVOID_WINDOW
+    else:
+        window = int(raw_window)
+    if window < 1:
+        window = DEFAULT_AVOID_WINDOW
+    return enabled, min(window, MAX_AVOID_WINDOW)
+
+
+def filter_avoided_pool(
+    pool: list[dict[str, Any]],
+    avoid: Any,
+) -> list[dict[str, Any]]:
+    """从候选池里剔除需要回避的模板，保证至少留下一条。
+
+    avoid 是"近期用过的指纹"列表，新的在前。从完整窗口开始逐级放宽：
+    先剔除最近 N 条，结果为空就只剔除最近 1 条，仍为空则放弃回避。
+    """
+    if not pool:
         return []
+    fingerprints = [item for item in avoid or [] if item]
+    if not fingerprints:
+        return pool
 
-    # 先尝试精确匹配当前会话类型的模板。
-    if session_type:
-        scoped = [
-            item
-            for item in candidates
-            if normalize_scope(item.get("scope")) == session_type
-        ]
-        if scoped:
-            return scoped
-
-    return [
-        item for item in candidates if normalize_scope(item.get("scope")) == SCOPE_ANY
-    ]
+    for keep in range(len(fingerprints), 0, -1):
+        blocked = set(fingerprints[:keep])
+        remaining = [item for item in pool if template_fingerprint(item) not in blocked]
+        if remaining:
+            return remaining
+    # 池里只有一条且它就在回避窗口内：回避会让本轮无模板，只能放行。
+    return pool
 
 
 def resolve_active_template(
@@ -287,15 +376,21 @@ def resolve_active_template(
     session_type: str = "",
     weighted: bool = True,
     rng: random.Random | None = None,
+    avoid: Any = None,
 ) -> dict[str, Any] | None:
     """解析当前生效的主动消息模板（含 id / name / weight）。
 
     weighted 默认为 True：多模板机制本身要求按权重抽样，
     只有显式传 False（如一次性预览或测试）才会固定取第一条。
+
+    avoid 为需要回避的模板指纹列表（新的在前）。调用方负责按配置决定是否
+    传入；预览与预演不传，避免结果随会话历史漂移。
     """
     pool = build_candidate_pool(section, session_type=session_type)
     if not pool:
         return None
+    if avoid:
+        pool = filter_avoided_pool(pool, avoid)
     return pick_template(pool, weighted=weighted, rng=rng)
 
 
@@ -305,6 +400,7 @@ def resolve_active_prompt(
     session_type: str = "",
     weighted: bool = False,
     rng: random.Random | None = None,
+    avoid: Any = None,
 ) -> str:
     """解析当前生效的提示词正文；无可用提示词时返回空串。"""
     template = resolve_active_template(
@@ -312,6 +408,7 @@ def resolve_active_prompt(
         session_type=session_type,
         weighted=weighted,
         rng=rng,
+        avoid=avoid,
     )
     return str(template["text"]) if template else ""
 
@@ -399,10 +496,13 @@ def _as_weight(value: Any) -> int:
 
 
 __all__ = [
+    "DEFAULT_AVOID_REPEAT",
+    "DEFAULT_AVOID_WINDOW",
     "DEFAULT_TEMPLATE_KEY",
     "DEFAULT_TEMPLATE_WEIGHT",
     "LEGACY_CONTEXT_ROLES",
     "LEGACY_STYLE_ROLES",
+    "MAX_AVOID_WINDOW",
     "MIGRATED_TEMPLATE_ID",
     "OUTPUT_FORMAT_CUSTOM",
     "OUTPUT_FORMAT_DEFAULT",
@@ -415,6 +515,8 @@ __all__ = [
     "build_candidate_pool",
     "compute_probabilities",
     "enabled_templates",
+    "filter_avoided_pool",
+    "get_avoid_repeat",
     "get_output_format",
     "get_templates",
     "legacy_role_kind",
@@ -423,8 +525,11 @@ __all__ = [
     "normalize_template",
     "normalize_templates",
     "pick_template",
+    "pick_template_index",
     "resolve_active_prompt",
     "resolve_active_template",
     "scope_matches",
     "session_type_of",
+    "template_digest",
+    "template_fingerprint",
 ]

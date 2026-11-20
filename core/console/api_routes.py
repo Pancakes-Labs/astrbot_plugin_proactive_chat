@@ -328,6 +328,8 @@ class ApiRoutes:
                 unanswered_count=max(0, unanswered_count),
                 source_mode=str(payload.get("source_mode") or "conversation_history"),
                 template_id=str(payload.get("template_id") or ""),
+                # id 允许重复，正文用于在重复 id 中唯一定位这张卡。
+                template_text=str(payload.get("template_text") or ""),
                 # 前端可附带未保存的草稿，保证预览与概率面板同源。
                 draft_templates=payload.get("templates"),
             )
@@ -692,6 +694,60 @@ class ApiRoutes:
         async def list_jobs():
             return {"jobs": await state.collect_jobs_async()}
 
+        # 重抽本轮提示词预选。
+        @app.post("/api/jobs/{umo:path}/prompt/resample")
+        async def resample_job_prompt(umo: str):
+            normalized = plugin.session_service.normalize_session_id(umo)
+            preset_service = getattr(plugin, "prompt_preset_service", None)
+            if preset_service is None:
+                return JSONResponse(
+                    {"ok": False, "error": "提示词预选服务不可用"}, status_code=503
+                )
+
+            try:
+                # 预选写在 session_data 上，必须与调度共用同一把锁，避免并发覆盖。
+                async with plugin.data_lock:
+                    # 会话数据在任务取消后仍然存在，只有调度器里的 job 能证明
+                    # 这一轮还待执行；否则重抽会为已取消的轮次写回幽灵预选。
+                    if (
+                        plugin.scheduler is None
+                        or plugin.scheduler.get_job(normalized) is None
+                    ):
+                        result = {"ok": False, "reason": "no_pending_job"}
+                    else:
+                        result = preset_service.resample(normalized)
+                        if result.get("ok"):
+                            await plugin.storage_service.save_data()
+            except Exception as e:
+                logger.error(f"[主动消息] 重抽提示词预选失败喵: {e}")
+                return JSONResponse(
+                    {"ok": False, "error": "重抽提示词模板失败", "message": str(e)},
+                    status_code=500,
+                )
+
+            if not result.get("ok"):
+                reason = result.get("reason")
+                if reason == "session_data_missing":
+                    error = "该会话没有排期记录，无法重抽提示词模板"
+                elif reason == "no_pending_job":
+                    error = "该会话当前没有待执行的主动消息任务，无法重抽提示词模板"
+                elif reason == "no_available_template":
+                    error = "当前没有可用的提示词模板，请先在提示词页添加或启用模板"
+                else:
+                    error = "重抽提示词模板失败"
+                return JSONResponse(
+                    {"ok": False, "session": normalized, "error": error},
+                    status_code=400,
+                )
+
+            await _broadcast_web_update("prompt_preset")
+            return {
+                "ok": True,
+                "session": normalized,
+                "preset": result.get("preset", {}),
+                "message": "已换一条提示词模板",
+            }
+
         # 手动重新调度下一次主动消息（不重置未回复计数）。
         @app.post("/api/jobs/{umo:path}/reschedule")
         async def reschedule_job(umo: str):
@@ -950,6 +1006,10 @@ class ApiRoutes:
                 )
 
             plugin.manual_trigger_sessions.add(normalized)
+            # 丢弃上一轮可能残留的取消标记，避免新触发起步就被判定为已取消。
+            stale = getattr(plugin, "cancelled_trigger_sessions", None)
+            if stale is not None:
+                stale.discard(normalized)
             # 纳入统一任务登记，插件终止时可被一并取消，避免游离后台任务。
             plugin._track_task(
                 asyncio.create_task(
@@ -969,15 +1029,24 @@ class ApiRoutes:
         async def cancel_job(umo: str):
             normalized = plugin.session_service.normalize_session_id(umo)
             removed = False
-            try:
-                plugin.scheduler.remove_job(normalized)
-                removed = True
-            except Exception:
-                pass
 
             async with plugin.data_lock:
+                # 先记录取消意图再移除任务。
+                if normalized in plugin.manual_trigger_sessions:
+                    cancelled = getattr(plugin, "cancelled_trigger_sessions", None)
+                    if cancelled is not None:
+                        cancelled.add(normalized)
+                try:
+                    plugin.scheduler.remove_job(normalized)
+                    removed = True
+                except Exception:
+                    pass
                 if normalized in plugin.session_data:
                     plugin.session_data[normalized].pop("next_trigger_time", None)
+                    # 任务已取消：预选随本轮排期一起失效，避免遗留幽灵预选。
+                    preset_service = getattr(plugin, "prompt_preset_service", None)
+                    if preset_service is not None:
+                        preset_service.clear(normalized)
                     await plugin.storage_service.save_data()
 
             if removed:

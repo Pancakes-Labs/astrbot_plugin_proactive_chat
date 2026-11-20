@@ -640,9 +640,12 @@ function ConfigField({ fieldKey, schema, value, onChange, depth = 0, path = '', 
     }, [value]);
 
     const handleChange = (newValue) => {
-        // 所有字段都通过统一出口把最新值同时写入本地态与父级配置对象。
+        // 父级返回 false 表示拒绝本次修改，此时既要跳过本地态写入，
+        // 也要把拒绝结果回传给上层包装函数。
+        const accepted = onChange(newValue);
+        if (accepted === false) return false;
         setLocalValue(newValue);
-        onChange(newValue);
+        return true;
     };
 
     const rawTitle = schema.description || fieldKey;

@@ -110,7 +110,8 @@ function ConfigEditor() {
         contextKey: loadContextKey,
         config: config,
         schema: schema,
-        loading: loader.loading,
+        // 滚动恢复只关心正文是否加载完，与 Schema 初始化无关。
+        loading: loader.configLoading,
         expandedKeys: expandedKeys,
         isDirtyRef: isDirtyRef,
         scrollContainerRef: scrollContainerRef,
@@ -143,6 +144,8 @@ function ConfigEditor() {
         if (!schema) return;
         // 切换上下文时立即清除脏标记，防止旧草稿被写入新会话的 key。
         isDirtyRef.current = false;
+        // 换会话时清掉上一份配置。
+        setConfig(null);
         // 关键：先恢复该上下文的展开态，再发起加载。
         // 若等到 loadConfig resolve 后再 setExpandedKeys，期间 useConfigDraft 的
         // “记忆展开态” effect 会先用初始的空数组覆盖 localStorage，
@@ -175,7 +178,11 @@ function ConfigEditor() {
         ? sessionSchemaEntries
         : Object.entries(schema || {}).filter(([key]) => !hiddenRootKeys.includes(key));
     const sessionEnabled = mode === 'session' ? Boolean(config && config.enabled) : false;
+    // 正文回读期间保留旧内容但禁止编辑。
+    const readbackLocked = Boolean(loader.configLoading && config);
     const sessionTypeLabel = currentSessionType === 'group' ? '群聊' : '私聊';
+    // 三态文案统一用同一口径，避免加载中与失败态各自拼一份句子。
+    const configTargetLabel = mode === 'session' ? '该会话的配置' : '全局配置';
     // config 为空时（无可用会话 / 请求失败）没有可提交内容，需一并禁用保存。
     const canSaveConfig = Boolean(config) && (mode !== 'session' || sessionConfigState.baseAvailable);
     const selectedSessionMeta = sessions.find((item) => item.session === selectedSession);
@@ -309,21 +316,34 @@ function ConfigEditor() {
         if (window.Toast) window.Toast.success('未保存的更改已撤销', { title: '配置管理' });
     };
 
+    // 只有 Schema 初始化阶段才整页替换为加载态。
     if (loader.loading) {
         return (
             <Box sx={{ textAlign: 'center', py: 6 }}>
                 <Box sx={{ fontSize: '36px', mb: 1.5 }}>⚙️</Box>
-                <Typography variant="body1" color="text.secondary">加载配置中...</Typography>
+                <Typography variant="body1" color="text.secondary">正在加载配置结构...</Typography>
             </Box>
         );
     }
 
-    // 仅 Schema 缺失时整页不可用；config 为空仍保留顶部控制区，否则用户会被困在会话模式。
+    // Schema 拿不到才是真正的整页不可用：没有结构就无法渲染任何字段。
     if (!schema) {
         return (
             <Box sx={{ textAlign: 'center', py: 6 }}>
                 <Box sx={{ fontSize: '36px', mb: 1.5 }}>❌</Box>
-                <Typography variant="body1" color="error">无法加载配置</Typography>
+                <Typography variant="body1" color="error">无法加载配置结构</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                    {loader.schemaError || '服务端未返回可用的配置结构，请检查后端日志'}
+                </Typography>
+                <Button
+                    variant="outlined"
+                    size="small"
+                    onClick={() => window.location.reload()}
+                    startIcon={<span>🔄</span>}
+                    sx={{ mt: 2, borderRadius: 2 }}
+                >
+                    重新加载页面
+                </Button>
             </Box>
         );
     }
@@ -400,13 +420,54 @@ function ConfigEditor() {
 
             {/* 主编辑区：根据 schemaEntries 动态递归渲染所有当前可见配置项。 */}
             <Box ref={scrollContainerRef} className="config-editor-scroll">
-                {!config ? (
-                    <Box sx={{ textAlign: 'center', py: 6 }}>
-                        <Box sx={{ fontSize: '36px', mb: 1.5 }}>❌</Box>
-                        <Typography variant="body1" color="error">无法加载配置</Typography>
-                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                            请切换目标会话，或返回全局配置后重试
+                {loader.configLoading && !config ? (
+                    // 正文加载中：骨架占位，避免与“加载失败”共用一个 ❌ 图标造成误判。
+                    <Box className="config-state-panel">
+                        <Box className="config-state-icon">⚙️</Box>
+                        <Typography variant="body1" color="text.secondary">
+                            正在加载{configTargetLabel}...
                         </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                            配置项较多时需要几秒，请稍候...
+                        </Typography>
+                    </Box>
+                ) : (!config && !loader.configError) ? (
+                    // 空态：尚未选择会话属于正常等待，不应该渲染成错误。
+                    <Box className="config-state-panel">
+                        <Box className="config-state-icon">{loader.configEmptyReason === 'no_session' ? '👈' : '🗂️'}</Box>
+                        <Typography variant="body1" color="text.secondary">
+                            {loader.configEmptyReason === 'no_session' ? '请先在左上方选择一个目标会话' : '暂无可编辑的配置内容'}
+                        </Typography>
+                    </Box>
+                ) : (!config && loader.configError) ? (
+                    // 失败态：把真实原因展示出来，并提供就地重试，不用刷新整页。
+                    <Box className="config-state-panel is-error">
+                        <Box className="config-state-icon">❌</Box>
+                        <Typography variant="body1" color="error">无法加载{configTargetLabel}</Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                            {loader.configError}
+                        </Typography>
+                        <Box sx={{ display: 'flex', gap: 1.5, justifyContent: 'center', mt: 2 }}>
+                            <Button
+                                variant="contained"
+                                size="small"
+                                onClick={() => loader.loadConfig(mode, selectedSession)}
+                                startIcon={<span>🔄</span>}
+                                sx={{ borderRadius: 2 }}
+                            >
+                                重试
+                            </Button>
+                            {mode === 'session' && (
+                                <Button
+                                    variant="outlined"
+                                    size="small"
+                                    onClick={() => setMode('global')}
+                                    sx={{ borderRadius: 2 }}
+                                >
+                                    返回全局配置
+                                </Button>
+                            )}
+                        </Box>
                     </Box>
                 ) : (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
@@ -448,7 +509,9 @@ function ConfigEditor() {
                                     />
                                     <Switch
                                         checked={sessionEnabled}
+                                        disabled={readbackLocked}
                                         onChange={(e) => {
+                                            if (readbackLocked) return;
                                             isDirtyRef.current = true;
                                             setConfig(Object.assign({}, config, { enabled: e.target.checked }));
                                         }}
@@ -457,24 +520,48 @@ function ConfigEditor() {
                             </Paper>
                         </Box>
                     )}
-                    {schemaEntries.map(([key, subSchema]) => (
-                        <Box key={key} sx={{ width: '100%' }}>
-                            <ConfigField
-                                fieldKey={key}
-                                schema={subSchema}
-                                value={config[key]}
-                                onChange={(newValue) => {
-                                    isDirtyRef.current = true;
-                                    setConfig(Object.assign({}, config, { [key]: newValue }));
-                                }}
-                                path=""
-                                expandedKeys={expandedKeys}
-                                onToggleExpand={handleToggleExpand}
-                                // 会话模式传当前会话类型，全局模式传空串表示不过滤。
-                                sessionType={mode === 'session' ? currentSessionType : ''}
-                            />
+                    {readbackLocked && (
+                        <Box className="config-inline-notice is-warning">
+                            <Typography variant="caption" className="config-inline-notice-text">
+                                正在回读服务端配置，期间暂不可编辑，完成后再继续修改。
+                            </Typography>
                         </Box>
-                    ))}
+                    )}
+                    <Box
+                        sx={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 1,
+                            // 只读而不是遮挡：保留可见内容，回读结束后自动恢复。
+                            pointerEvents: readbackLocked ? 'none' : 'auto',
+                            opacity: readbackLocked ? 0.6 : 1,
+                        }}
+                        // 用 inert 让整棵子树不可聚焦、不可编辑。
+                        inert={readbackLocked ? '' : undefined}
+                        aria-busy={readbackLocked}
+                    >
+                        {schemaEntries.map(([key, subSchema]) => (
+                            <Box key={key} sx={{ width: '100%' }}>
+                                <ConfigField
+                                    fieldKey={key}
+                                    schema={subSchema}
+                                    value={config[key]}
+                                    onChange={(newValue) => {
+                                        // 回读锁定期间拒绝修改，并告知字段组件不要更新本地态。
+                                        if (readbackLocked) return false;
+                                        isDirtyRef.current = true;
+                                        setConfig(Object.assign({}, config, { [key]: newValue }));
+                                        return true;
+                                    }}
+                                    path=""
+                                    expandedKeys={expandedKeys}
+                                    onToggleExpand={handleToggleExpand}
+                                    // 会话模式传当前会话类型，全局模式传空串表示不过滤。
+                                    sessionType={mode === 'session' ? currentSessionType : ''}
+                                />
+                            </Box>
+                        ))}
+                    </Box>
                     </Box>
                 )}
             </Box>
@@ -497,7 +584,7 @@ function ConfigEditor() {
                 <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <Button
                         onClick={handleRestoreDefaults}
-                        disabled={saving}
+                        disabled={saving || readbackLocked}
                         variant="outlined"
                         color="error"
                         size="medium"
@@ -508,7 +595,7 @@ function ConfigEditor() {
                     </Button>
                     <Button
                         onClick={handleDiscardChanges}
-                        disabled={saving}
+                        disabled={saving || readbackLocked}
                         variant="outlined"
                         size="medium"
                         startIcon={<span>↩️</span>}
@@ -519,7 +606,7 @@ function ConfigEditor() {
                     {mode === 'session' && (
                         <Button
                             onClick={handleResetOverride}
-                            disabled={saving || !selectedSession}
+                            disabled={saving || readbackLocked || !selectedSession}
                             variant="outlined"
                             color="warning"
                             size="medium"
@@ -532,7 +619,7 @@ function ConfigEditor() {
                     <Button
                         variant="contained"
                         onClick={handleSave}
-                        disabled={saving || !canSaveConfig}
+                        disabled={saving || readbackLocked || !canSaveConfig}
                         size="medium"
                         startIcon={<span>💾</span>}
                         sx={{

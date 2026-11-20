@@ -57,10 +57,12 @@ from .prompt_templates import (
     OUTPUT_FORMAT_CUSTOM,
     OUTPUT_FORMAT_DEFAULT,
     TEMPLATES_KEY,
+    get_avoid_repeat,
     get_output_format,
     normalize_templates,
     resolve_active_prompt,
     resolve_active_template,
+    template_fingerprint,
 )
 from .request_context import ProactiveContext
 from .session_config import SessionConfig
@@ -136,6 +138,7 @@ __all__ = [
     "extract_payload_text",
     "is_friend_type",
     "is_group_type",
+    "get_avoid_repeat",
     "get_output_format",
     "is_group_umo",
     "normalize_templates",
@@ -143,4 +146,5 @@ __all__ = [
     "resolve_active_prompt",
     "resolve_active_template",
     "resolve_placeholders",
+    "template_fingerprint",
 ]

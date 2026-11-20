@@ -57,6 +57,8 @@
         triggerJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/trigger`, {}),
         cancelJob: (session) => HttpUtil.del(`/api/jobs/${encodeURIComponent(session)}`),
         rescheduleJob: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/reschedule`, {}),
+        // 只重抽本轮提示词模板，不影响排期时间、计时器与未回复计数。
+        resampleJobPrompt: (session) => HttpUtil.post(`/api/jobs/${encodeURIComponent(session)}/prompt/resample`, {}),
 
         // 提示词管理专用接口：与配置页的模板编辑互不影响，走独立路径。
         listPrompts: () => HttpUtil.get('/api/prompts'),

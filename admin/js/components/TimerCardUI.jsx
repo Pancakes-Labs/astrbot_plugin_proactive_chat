@@ -145,13 +145,14 @@ function TimerCardCountdown({ percent, status, kicker, tokens, emptyText, ringTi
 }
 
 // 配置事实行：dt 为配置项名，dd 为取值与补充说明。
+// fullWidth 供长文本（模型名等）独占整行，避免被两列网格挤成多行。
 function TimerCardFacts({ facts }) {
     if (!Array.isArray(facts) || facts.length === 0) return null;
     return (
         <dl className="tcard-facts">
             {facts.map((fact, index) => (
                 <div
-                    className={`tcard-fact ${fact.warning ? 'is-warning' : ''}`}
+                    className={`tcard-fact ${fact.warning ? 'is-warning' : ''} ${fact.fullWidth ? 'is-full-width' : ''}`}
                     key={`fact-${index}`}
                 >
                     <dt>{fact.label}</dt>

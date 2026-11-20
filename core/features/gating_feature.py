@@ -75,7 +75,10 @@ class GatingStage(BaseStage):
                 state.reason == REASON_MISSING_WITH_HISTORY
                 and is_unanswered_limit_enabled(max_unanswered)
             ):
-                if mark_untrusted(session_info):
+                # 本轮不会生成，预选随之作废。与计数标记合并成一次落盘，
+                # 否则重启后旧预选会从磁盘复活，再次挂到已停发的会话上。
+                changed = self._discard_preset(plugin, session_id)
+                if mark_untrusted(session_info) or changed:
                     await plugin.storage_service.save_data()
                 logger.warning(
                     f"[主动消息] {plugin.session_service.get_session_log_str(session_id, session_config)} 的未回复计数缺失，"
@@ -87,6 +90,8 @@ class GatingStage(BaseStage):
                 logger.info(
                     f"[主动消息] {plugin.session_service.get_session_log_str(session_id, session_config)} 的未回复次数 ({unanswered_count}) 已达到上限 ({max_unanswered})，暂停主动消息喵。"
                 )
+                if self._discard_preset(plugin, session_id):
+                    await plugin.storage_service.save_data()
                 ctx.abort("max_unanswered")
                 return StageResult.STOP
 
@@ -111,6 +116,21 @@ class GatingStage(BaseStage):
                 )
             )
         return StageResult.CONTINUE
+
+    @staticmethod
+    def _discard_preset(plugin: Any, session_id: str) -> bool:
+        """本轮确定不会生成时清掉预选，返回是否确有清理动作。
+
+        只操作内存：调用方已持有 data_lock，由它决定何时落盘。
+        """
+        preset_service = getattr(plugin, "prompt_preset_service", None)
+        if preset_service is None:
+            return False
+        try:
+            return bool(preset_service.clear(session_id))
+        except Exception as e:  # noqa: BLE001 - 清理失败不影响准入判定
+            logger.debug(f"[主动消息] 清理提示词预选失败喵: {e}")
+            return False
 
 
 class GatingFeature:

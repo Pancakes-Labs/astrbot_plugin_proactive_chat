@@ -18,11 +18,13 @@ from astrbot.api import logger
 from ..domain.config_keys import (
     CONTEXT_SETTINGS_KEY,
     GROUP_SILENCE_SETTINGS_KEY,
+    MODEL_SETTINGS_KEY,
     SCHEDULE_SETTINGS_KEY,
     SESSION_DEFAULTS_KEY,
     SESSION_LIST_KEY,
     STARTUP_CHECK_SETTINGS_KEY,
 )
+from ..domain.model_scene import MODEL_KEY, PROVIDER_ID_KEY, SCENES_KEY, ModelScene
 
 
 class StateBuilder:
@@ -401,6 +403,8 @@ class StateBuilder:
             or self._metadata_version
             or "未知版本",
             "uptime_seconds": uptime_sec,
+            # 插件实例启动时刻（秒，浮点）。前端据此精确判断重载是否完成。
+            "plugin_started_at": plugin.plugin_start_time,
             "uptime": str(
                 datetime.fromtimestamp(now)
                 - datetime.fromtimestamp(plugin.plugin_start_time)
@@ -438,12 +442,123 @@ class StateBuilder:
             job["persona"] = persona_map.get(job["id"], {})
         return jobs
 
+    def _collect_prompt_preset(self, session_id: str) -> dict[str, Any]:
+        """读取会话的提示词预选摘要；服务缺失时返回空结构。
+
+        预选只在排期时产生，因此计时器卡片此时通常还是空的，
+        前端据 picked 字段决定要不要显示这一行。
+        """
+        service = getattr(self.plugin, "prompt_preset_service", None)
+        if service is None:
+            return {"picked": False, "available": False}
+        try:
+            return service.describe(session_id)
+        except Exception as e:
+            logger.debug(f"[主动消息] 读取提示词预选失败喵: {e}")
+            return {"picked": False, "available": False}
+
+    def _resolve_job_model(
+        self, session_id: str, session_config: dict[str, Any], providers: dict[str, Any]
+    ) -> dict[str, Any]:
+        """解析该会话主动消息场景将使用的模型，供任务卡片透传展示。
+
+        只读配置与已注册 Provider，不发真实请求：显式模型名优先，
+        为空时回落到 Provider 默认模型，仍取不到则标记为跟随会话默认。
+        """
+        node: dict[str, Any] = {}
+        settings = session_config.get(MODEL_SETTINGS_KEY)
+        if isinstance(settings, dict):
+            scenes = settings.get(SCENES_KEY)
+            if isinstance(scenes, dict):
+                raw = scenes.get(ModelScene.PROACTIVE)
+                if isinstance(raw, dict):
+                    node = raw
+
+        provider_id = str(node.get(PROVIDER_ID_KEY) or "").strip()
+        model_name = str(node.get(MODEL_KEY) or "").strip()
+        provider_name = ""
+        provider_missing = False
+
+        if provider_id:
+            provider = providers.get(provider_id)
+            if provider is None:
+                # 配置里写了 Provider 但已被删除：前端据此给出回退提示。
+                provider_missing = True
+            else:
+                provider_name = self._provider_display_name(provider_id, provider)
+                if not model_name:
+                    model_name = self._provider_default_model(provider)
+        else:
+            # 留空表示跟随会话当前对话模型，模型名只能尽力同步读取。
+            resolved = self._session_provider_sync(session_id)
+            if resolved is not None:
+                resolved_id, session_provider = resolved
+                if resolved_id:
+                    provider_name = self._provider_display_name(
+                        resolved_id, session_provider
+                    )
+                if not model_name:
+                    model_name = self._provider_default_model(session_provider)
+
+        return {
+            "provider_id": provider_id,
+            "provider_name": provider_name,
+            "model": model_name,
+            "follow_session_default": not provider_id,
+            "provider_missing": provider_missing,
+        }
+
+    def _session_provider_sync(self, session_id: str) -> tuple[str, Any] | None:
+        """同步读取会话当前对话 Provider；不可用时返回 None。
+
+        优先语义与 ModelRouter 一致，但这里必须在同步上下文里取，
+        因此只尝试旧版同步接口，并主动丢弃误返回的协程。
+        """
+        context = getattr(self.plugin, "context", None)
+        if context is None:
+            return None
+        getter = getattr(context, "get_using_provider", None)
+        if not callable(getter):
+            return None
+
+        try:
+            provider = getter(umo=session_id or None)
+        except TypeError:
+            try:
+                provider = getter(session_id or None)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+        # 上游改为异步实现时会返回协程，同步路径无法消费，直接关闭避免告警。
+        if inspect.isawaitable(provider):
+            close = getattr(provider, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            return None
+        if provider is None:
+            return None
+
+        provider_id = ""
+        config = getattr(provider, "provider_config", None)
+        if isinstance(config, dict):
+            provider_id = str(config.get("id") or "").strip()
+        if not provider_id:
+            provider_id = str(getattr(provider, "provider_id", "") or "").strip()
+        return provider_id, provider
+
     def _collect_jobs_sync(self) -> list[dict[str, Any]]:
         """任务摘要的同步构建实现，供异步版本复用。"""
         plugin = self.plugin
         if not plugin.scheduler:
             return []
 
+        # Provider 实例表只取一次：逐个的任务解析复用同一份，避免重复枚举。
+        providers = self._collect_provider_instances()
         jobs = []
         for job in plugin.scheduler.get_jobs():
             session_id = str(job.id)
@@ -495,6 +610,12 @@ class StateBuilder:
                     "quiet_hours": schedule_settings.get("quiet_hours", ""),
                     "quiet_hours_enabled": bool(
                         schedule_settings.get("quiet_hours_enabled", True)
+                    ),
+                    # 本轮预选模板：供任务卡片展示与操作按钮使用。
+                    "prompt_preset": self._collect_prompt_preset(session_id),
+                    # 本轮将使用的模型：供任务卡片事实行展示。
+                    "model_info": self._resolve_job_model(
+                        session_id, session_config, providers
                     ),
                 }
             )

@@ -48,6 +48,17 @@ class LlmService:
         # 惰性构造：插件装配顺序变化时仍可自愈，不依赖 main 里的初始化顺序。
         self._model_router: ModelRouter | None = None
 
+    def _avoid_fingerprints(self, session_id: str, session_config: dict) -> list[str]:
+        """兜底渲染路径的回避指纹；预选服务缺失或异常时退回不回避。"""
+        service = getattr(self.plugin, "prompt_preset_service", None)
+        if service is None:
+            return []
+        try:
+            return service.avoid_for_session(session_id, session_config)
+        except Exception as e:  # noqa: BLE001 - 回避失败不应中断生成
+            logger.warning(f"[主动消息] 读取提示词回避记录失败，兜底路径不回避喵: {e}")
+            return []
+
     # ------------------------------------------------------------------
     # 动态内容块
     # ------------------------------------------------------------------
@@ -204,7 +215,12 @@ class LlmService:
         motivation_template = ""
         if prepared_prompt is None or extra_parts is None:
             motivation_template = (
-                resolve_active_prompt(session_config, session_type=session_type) or ""
+                resolve_active_prompt(
+                    session_config,
+                    session_type=session_type,
+                    avoid=self._avoid_fingerprints(session_id, session_config),
+                )
+                or ""
             )
 
         if prepared_prompt is None:

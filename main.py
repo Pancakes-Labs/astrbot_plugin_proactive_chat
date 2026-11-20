@@ -27,6 +27,7 @@ from .core.services.config_service import ConfigService
 from .core.services.context_service import ContextService
 from .core.services.lifecycle_service import LifecycleService
 from .core.services.llm_service import LlmService
+from .core.services.prompt_preset_service import PromptPresetService
 from .core.services.scheduler_service import SchedulerService
 from .core.services.sender_service import SenderService
 from .core.services.session_service import SessionService
@@ -56,6 +57,9 @@ class ProactiveChatPlugin(star.Star):
         self.session_data: dict = {}
         # 记录当前正在执行“立即触发”的会话，防止重复点击导致并发主动消息。
         self.manual_trigger_sessions: set[str] = set()
+        # 已被用户取消、但执行中的触发尚未收尾的会话。
+        # 收尾阶段据此跳过重新排期，避免已取消的任务按新时间复活。
+        self.cancelled_trigger_sessions: set[str] = set()
 
         self.version = get_plugin_version()
 
@@ -68,6 +72,8 @@ class ProactiveChatPlugin(star.Star):
         # 配置装配：汇总 Feature 自带配置声明并执行一次性数据迁移。
         self.config_assembly_service = ConfigAssemblyService(self)
         self.scheduler_service = SchedulerService(self)
+        # 提示词预选：排期时抽好模板，生成时按 id 复用，与调度解耦。
+        self.prompt_preset_service = PromptPresetService(self)
         self.context_service = ContextService(self)
         self.llm_service = LlmService(self)
         self.sender_service = SenderService(self)

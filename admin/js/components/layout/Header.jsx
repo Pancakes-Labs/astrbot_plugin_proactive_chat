@@ -35,18 +35,14 @@ function Header({ currentView, wsConnected }) {
         dispatch({ type: 'TOGGLE_THEME' });
     };
 
-    // 视图 key 到标题文案的映射集中维护，避免 JSX 中散落条件判断。
-    const viewTitles = {
-        status: '运行状态',
-        tasks: '任务管理',
-        notifications: '通知中心',
-        docs: '文档浏览',
-        config: '配置管理',
-    };
-
     // 优先使用前端 socket 实时状态，后端连接计数作为补充信息。
     const wsCount = Number(status?.ws_connections !== undefined ? status.ws_connections : 0);
     const connected = typeof wsConnected === 'boolean' ? wsConnected : wsCount > 0;
+
+    // 标题从侧边栏菜单表派生：新增视图只改一处，标题不会再漏配后静默退回默认值。
+    const menus = window.SidebarMenus || [];
+    const activeMenu = menus.find((item) => item.key === currentView);
+    const title = (activeMenu && activeMenu.label) || '';
 
     return (
         <div className="top-bar">
@@ -55,7 +51,7 @@ function Header({ currentView, wsConnected }) {
                 color: 'text.primary',
                 letterSpacing: '-0.5px'
             }}>
-                {viewTitles[currentView] || viewTitles.status}
+                {title}
             </Typography>
 
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', justifyContent: 'flex-end' }}>

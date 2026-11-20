@@ -377,6 +377,26 @@
                         "type": "text",
                         "default": "",
                         "hint": "仅在输出格式选择「自定义」时生效，会替换插件默认的格式说明。留空则自动退回插件默认格式。可以写允许旁白、动作描写等要求。"
+                    },
+                    "avoid_repeat_template": {
+                        "description": "避免连续重复使用同一模板",
+                        "type": "bool",
+                        "default": false,
+                        "hint": "开启后，本轮抽中的提示词模板会避开最近几次主动消息已经用过的模板。仅在还有别的可用模板时生效。"
+                    },
+                    "avoid_repeat_window": {
+                        "description": "回避时计算的模板数量",
+                        "type": "int",
+                        "default": 1,
+                        "hint": "1 表示只和上一次不同；3 表示最近 3 次用过的模板都不会再被抽中。数值越大，同一个模板的出场间隔越长。",
+                        "condition": {
+                            "avoid_repeat_template": true
+                        },
+                        "slider": {
+                            "min": 1,
+                            "max": 10,
+                            "step": 1
+                        }
                     }
                 }
             },

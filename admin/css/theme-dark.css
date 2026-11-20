@@ -312,3 +312,820 @@ body.dark-theme .header-clock-chip {
     background: rgb(var(--md-primary-rgb) / 0.10);
     border-color: rgb(var(--md-primary-rgb) / 0.22);
 }
+
+/* ===== 提示词页 =====
+   亮色下的浅色底在暗色里会过曝，统一换成低透明度同色系底。 */
+body.dark-theme .pv-hero {
+    background:
+        linear-gradient(135deg, rgb(var(--md-primary-rgb) / 0.10), rgba(79, 55, 139, 0.06) 48%, rgba(28, 27, 31, 0.6) 100%),
+        var(--md-sys-color-surface);
+}
+
+body.dark-theme .pv-pill {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgb(var(--md-primary-rgb) / 0.2);
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+body.dark-theme .pv-pill.is-accent {
+    color: var(--md-sys-color-primary);
+    background: rgb(var(--md-primary-rgb) / 0.14);
+}
+
+/* ---- 页头控制台 ---- */
+/* 页面底景：暗色下换成极淡的冷紫台面，不能沿用亮色的暖白。 */
+body.dark-theme .pv-backdrop {
+    background:
+        radial-gradient(ellipse 70% 46% at 50% 4%, rgb(var(--md-primary-rgb) / 0.09), transparent 62%),
+        radial-gradient(ellipse 52% 30% at 50% 46%, rgba(120, 90, 52, 0.1), transparent 70%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 46%);
+}
+
+/* 页头操作区：与亮色同结构，换成低透明度白底。 */
+body.dark-theme .pv-hero-btn.MuiButton-root {
+    border-color: rgb(var(--md-primary-rgb) / 0.2);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+body.dark-theme .pv-hero-btn.MuiButton-root:hover {
+    border-color: rgb(var(--md-primary-rgb) / 0.4);
+    background: rgb(var(--md-primary-rgb) / 0.16);
+    color: var(--md-sys-color-primary);
+}
+
+body.dark-theme .pv-hero-btn.is-on.MuiButton-root {
+    background: rgb(var(--md-primary-rgb) / 0.22);
+}
+
+body.dark-theme .pv-hero-btn.MuiButton-root.Mui-disabled {
+    border-color: rgb(var(--md-primary-rgb) / 0.1);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+body.dark-theme .pv-hero-icon-btn.MuiIconButton-root {
+    border-color: rgb(var(--md-primary-rgb) / 0.2);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+body.dark-theme .pv-hero-icon-btn.MuiIconButton-root:hover {
+    background: rgb(var(--md-primary-rgb) / 0.16);
+    border-color: rgb(var(--md-primary-rgb) / 0.4);
+}
+
+/* 搜索胶囊：暗色下避免纯白底把整行照得过曝。 */
+body.dark-theme .pv-search {
+    border-color: rgb(var(--md-primary-rgb) / 0.2);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+body.dark-theme .pv-search.is-open {
+    border-color: rgb(var(--md-primary-rgb) / 0.4);
+    background: rgba(255, 255, 255, 0.09);
+}
+
+body.dark-theme .pv-search-clear {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+body.dark-theme .pv-save-mark {
+    border-color: rgb(var(--md-primary-rgb) / 0.2);
+    background: rgb(var(--md-primary-rgb) / 0.12);
+}
+
+body.dark-theme .pv-save.is-dirty .pv-save-mark {
+    background: rgb(var(--md-warning-rgb) / 0.16);
+    border-color: rgb(var(--md-warning-rgb) / 0.4);
+}
+
+/* 洞洞板墙面：暗底上孔洞用亮色才看得见，但必须压得很淡。
+   层顺序必须与亮色完全一致：孔内暗 -> 孔沿高光 -> 板缝 -> 两道光。 */
+body.dark-theme .pv-wall {
+    border-color: rgba(255, 240, 214, 0.06);
+    border-radius: 12px;
+    background-color: rgba(22, 20, 26, 0.42);
+    background-image:
+        radial-gradient(circle at 50% 50%, rgba(255, 240, 214, 0.14) 1.7px, transparent 2.3px),
+        radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.34) 1.7px, transparent 2.3px),
+        repeating-linear-gradient(90deg, transparent 0 239px, rgba(255, 240, 214, 0.035) 239px 240px),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0) 14%),
+        linear-gradient(180deg, rgba(120, 90, 52, 0.14), rgba(120, 90, 52, 0) 22%);
+    background-size: 24px 24px, 24px 24px, 100% 100%, 100% 100%, 100% 100%;
+    background-position: 0 0, 0 1px, 0 0, 0 0, 0 0;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 240, 214, 0.06),
+        inset 0 0 60px -28px rgba(0, 0, 0, 0.5);
+}
+
+/* 货架层板：亮色版现在是「台面（::before）+ 前立面（::after）」两段，
+   所以暗色也必须成对给出，不能只覆盖其中一段 —— 只改一段会让两个面
+   在暗色下明度倒挂（立面比台面亮），厚度方向整个读反。
+   纹理也一并改成横向粗纹：木架与卡盒必须是两种料。 */
+
+/* 台面：朝上的水平面，全块最亮的一段。 */
+body.dark-theme .pv-shelf::before {
+    background-image:
+        /* 远端收暗 */
+        linear-gradient(180deg,
+            rgba(0, 0, 0, 0.46) 0,
+            rgba(0, 0, 0, 0.14) 34%,
+            transparent 76%),
+        /* 左右端面 */
+        linear-gradient(90deg,
+            rgba(0, 0, 0, 0.52) 0,
+            transparent calc(var(--pv-plank-skew) * 0.9),
+            transparent calc(100% - var(--pv-plank-skew) * 0.9),
+            rgba(0, 0, 0, 0.52) 100%),
+        /* 近棱受光 */
+        linear-gradient(180deg, transparent calc(100% - 5px), rgba(255, 236, 202, 0.14) 100%),
+        /* 木料整体色差 */
+        repeating-linear-gradient(179.4deg,
+            rgba(168, 128, 84, 0.05) 0 34px,
+            rgba(0, 0, 0, 0.08) 34px 71px,
+            transparent 71px 96px),
+        /* 主纹与高光丝：与亮色同一套丝距 */
+        repeating-linear-gradient(180.5deg, rgba(0, 0, 0, 0.26) 0 1.2px, transparent 1.2px 9px),
+        repeating-linear-gradient(179.3deg, rgba(176, 136, 90, 0.12) 0 1px, transparent 1px 14px),
+        repeating-linear-gradient(180.9deg, rgba(255, 232, 194, 0.06) 0 1.3px, transparent 1.3px 23px),
+        linear-gradient(180deg, #57391E 0%, #482E18 44%, #3C2513 100%);
+}
+
+/* 前立面：垂直的正面，必须比台面暗一档 —— 这是两个面的明度关系，不是装饰。 */
+body.dark-theme .pv-shelf::after {
+    background-image:
+        linear-gradient(180deg, rgba(255, 236, 208, 0.2) 0, rgba(255, 236, 208, 0) 2.5px),
+        repeating-linear-gradient(180.5deg, rgba(0, 0, 0, 0.3) 0 1.2px, transparent 1.2px 9px),
+        repeating-linear-gradient(179.3deg, rgba(168, 126, 82, 0.1) 0 1px, transparent 1px 14px),
+        repeating-linear-gradient(180.9deg, rgba(255, 232, 194, 0.05) 0 1.3px, transparent 1.3px 23px),
+        linear-gradient(180deg,
+            #452B15 0,
+            #3B2411 3px,
+            #311D0D 7px,
+            #28170A 11px,
+            #1F1106 100%);
+    box-shadow:
+        inset 0 -2px 0 rgba(0, 0, 0, 0.7),
+        inset 0 -6px 10px -6px rgba(0, 0, 0, 0.7);
+    filter: drop-shadow(0 5px 6px rgba(0, 0, 0, 0.6));
+}
+
+/* 吊链：暗色下链环要提亮一档，否则在深色墙面上完全消失。
+   金属本体的横向明暗关系必须保留 —— 那是链子读作圆柱形而非细条的依据。 */
+body.dark-theme .pv-shelf-chain {
+    background-image:
+        linear-gradient(90deg,
+            #4A3718 0%,
+            #8A6C38 20%,
+            #D9BE86 46%,
+            #A98B50 64%,
+            #6B5226 86%,
+            #3A2C14 100%),
+        repeating-linear-gradient(180deg,
+            transparent 0 7px,
+            rgba(10, 6, 2, 0.85) 7px 8px,
+            rgba(10, 6, 2, 0.4) 8px 8.5px,
+            transparent 8.5px 9.5px);
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+/* 吊链：暗色下重给金属柱面的三档明暗与环缝。 */
+body.dark-theme .pv-shelf-chain {
+    background-image:
+        repeating-linear-gradient(180deg,
+            transparent 0 2.4px,
+            rgba(255, 236, 202, 0.16) 2.4px 3.2px,
+            transparent 3.2px 6.6px),
+        repeating-linear-gradient(180deg,
+            transparent 0 4.6px,
+            rgba(0, 0, 0, 0.66) 4.6px 5.3px,
+            rgba(0, 0, 0, 0.2) 5.3px 5.8px,
+            transparent 5.8px 6.6px),
+        linear-gradient(90deg,
+            #3A2A12 0%,
+            #7E6330 26%,
+            #D3BB8C 52%,
+            #8E7238 74%,
+            #47340F 100%);
+    filter: drop-shadow(0 1.5px 1.5px rgba(0, 0, 0, 0.45));
+}
+
+/* 顶端钉座：暗色下压深，靠外圈亮边在深墙上立住。 */
+body.dark-theme .pv-shelf-chain::before {
+    background: linear-gradient(180deg, #5C441E 0%, #31220E 100%);
+    box-shadow:
+        0 0 0 1px rgba(255, 244, 220, 0.16),
+        0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+/* 顶端吊环：暗色金属环。 */
+body.dark-theme .pv-shelf-chain::after {
+    background: radial-gradient(circle at 50% 50%,
+        rgba(0, 0, 0, 0) 0 2.9px,
+        #55401D 2.9px 3.9px,
+        #C7AA74 3.9px 4.9px,
+        #7E6230 4.9px 5.5px,
+        rgba(0, 0, 0, 0) 5.5px 100%);
+    filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.6));
+}
+
+/* 端头压片：暗色金属，压片与螺帽分别给值。 */
+body.dark-theme .pv-shelf-anchor {
+    background: radial-gradient(ellipse at 50% 32%,
+        #D6BE93 0 20%,
+        #A4894F 46%,
+        #75602F 74%,
+        #3E2E13 100%);
+    box-shadow:
+        inset 0 -1px 1px rgba(0, 0, 0, 0.6),
+        0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+body.dark-theme .pv-shelf-anchor::after {
+    background: radial-gradient(ellipse at 50% 28%, #9C7F45 0 34%, #3A2A10 100%);
+    box-shadow:
+        inset 0 0.6px 0.8px rgba(255, 240, 214, 0.3),
+        0 0.4px 0.6px rgba(0, 0, 0, 0.55);
+}
+
+/* 挂钩：暗底上要提亮金属杆，否则一排挂钩完全消失。
+   杆身 / 孔口 / 钩尖三段各自独立，必须分别给暗色值。 */
+body.dark-theme .pv-hook-shank {
+    background: linear-gradient(
+        90deg,
+        #4E3018 0%,
+        #8E6236 24%,
+        #EFD2A6 52%,
+        #A97742 76%,
+        #432811 100%
+    );
+    box-shadow:
+        1.5px 2px 3px -1.5px rgba(0, 0, 0, 0.8),
+        0 1px 2px rgba(0, 0, 0, 0.65);
+}
+
+/* 钩子头部孔口：暗底上改用亮金属，与杆身同一档明度。 */
+body.dark-theme .pv-hook-shank::before {
+    background: radial-gradient(
+        ellipse at 50% 34%,
+        #C9A876 0 24%,
+        #B08F5C 46%,
+        #8E7042 68%,
+        #6B5230 86%,
+        #4A3620 100%
+    );
+    box-shadow:
+        inset 0 1px 1.2px rgba(38, 24, 8, 0.4),
+        0 1px 0 rgba(255, 240, 214, 0.3);
+}
+
+/* 钩唇：现在是一根用 background 渐变画的圆管（不再是 border 拼的折线），
+   所以暗色下必须整组重给 background，而不是只改 border-color。 */
+body.dark-theme .pv-hook-tip {
+    background: linear-gradient(180deg, #F0DCB8 0%, #C79A6A 44%, #8E6438 100%);
+    box-shadow:
+        0 1px 0 rgba(54, 34, 14, 0.55),
+        /* 弯头朝左翘，受光的端头在左侧，所以高光偏移必须是 -1px（亮色版同向）。 */
+        -1px -1px 2px -0.5px rgba(255, 240, 214, 0.35);
+}
+
+/* 肘头圆球：暗色下同样要「下缘收暗、左上受光」，否则它与管口之间看不出接缝。 */
+body.dark-theme .pv-hook-tip::before {
+    background: radial-gradient(circle at 34% 28%, #F6E2C0 0 26%, #C89B68 56%, #7F5A2E 100%);
+    box-shadow:
+        0 0.6px 1px rgba(0, 0, 0, 0.7),
+        0 0 0 0.5px rgba(255, 240, 214, 0.24);
+}
+
+body.dark-theme .pv-hook-tip::after {
+    background: rgba(0, 0, 0, 0.42);
+}
+
+/* 卡片开孔：暗色下孔洞要比卡面更深，才有穿透感。 */
+body.dark-theme .pv-card-hole {
+    background: radial-gradient(circle at 50% 62%, #4A3418 0%, #5E4526 58%, #7A5C36 100%);
+    box-shadow:
+        inset 0 1.5px 2px rgba(0, 0, 0, 0.82),
+        inset 0 -1px 0 rgba(255, 240, 216, 0.14),
+        0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* ---- 实木卡盒 ----
+   暗色下切深胡桃木：木色整体压深、纹路提亮一档，
+   结疤与高光同步降饱和，避免变成三块反光的塑料。 */
+
+/* 统一外轮廓环：暗色下描边几乎看不见（深木 + 深描边），
+   靠顶部一条极淡的亮边维持「整块木头」的连续性。 */
+body.dark-theme .pv-box-stage::after {
+    box-shadow:
+        inset 1px 0 0 #543A1C,
+        inset -1px 0 0 #543A1C,
+        inset 0 0 0 1px rgba(0, 0, 0, 0.32),
+        inset 0 1px 0 rgba(255, 236, 208, 0.12);
+}
+
+/* 轮廓环只覆盖盒口段，盒面自绘下半圈描边。 */
+body.dark-theme .pv-box-face {
+    box-shadow:
+        inset 0 0 0 1px rgba(0, 0, 0, 0.32),
+        0 18px 30px -20px rgba(0, 0, 0, 0.64),
+        inset 0 3px 5px -3px rgba(0, 0, 0, 0.36),
+        inset 0 1px 0 rgba(255, 236, 208, 0.1),
+        0 -2px 0 rgba(0, 0, 0, 0.32) inset,
+        inset 0 -18px 24px rgba(0, 0, 0, 0.2);
+}
+
+body.dark-theme .pv-box-face {
+    background-image:
+        url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/><feComponentTransfer><feFuncA type='linear' slope='0.12'/></feComponentTransfer></filter><rect width='120' height='120' filter='url(%23n)'/></svg>"),
+        /* 左右侧壁转折：与亮色版同一条逻辑，暗色下改成纯黑系，
+           否则在深胡桃上会泛出一圈暖色脏边。 */
+        linear-gradient(90deg, rgba(0, 0, 0, 0.34) 0, transparent 14px, transparent calc(100% - 14px), rgba(0, 0, 0, 0.4) 100%),
+        radial-gradient(ellipse 46% 20% at 26% 30%, rgba(12, 8, 4, 0.4), transparent 72%),
+        repeating-linear-gradient(90.4deg, transparent 0 6px, rgba(168, 132, 92, 0.1) 6px 7px, transparent 7px 15px),
+        repeating-linear-gradient(89.6deg, transparent 0 21px, rgba(255, 232, 196, 0.07) 21px 23px),
+        linear-gradient(167deg, #71492A 0%, #5A381E 54%, #442717 100%);
+    box-shadow:
+        0 18px 30px -20px rgba(0, 0, 0, 0.64),
+        /* 唇口下方的接触影：亮色版已从 0.34 降到 0.18，暗色同步压到 0.36 ——
+           上一版这条深带把前壁和盒口切成了两块木头。 */
+        inset 0 3px 5px -3px rgba(0, 0, 0, 0.36),
+        inset 0 1px 0 rgba(255, 236, 208, 0.1),
+        0 -2px 0 rgba(0, 0, 0, 0.32) inset,
+        inset 0 -18px 24px rgba(0, 0, 0, 0.2);
+}
+
+/* 盒面阴影恒定：暗色与亮色同步，悬停/打开都不再加阴影与描边。 */
+body.dark-theme .pv-box-inner {
+    background-image:
+        linear-gradient(180deg,
+            #4E3018 0,
+            #452A15 22%,
+            #3C2412 48%,
+            #331E0E 72%,
+            #2C1A0B 100%);
+    /* 上两角暗角单独成层：有卡时由 .has-cards 关掉。 */
+    --pv-inner-corner:
+        inset 8px 6px 8px -6px rgba(0, 0, 0, 0.5),
+        inset -8px 6px 8px -6px rgba(0, 0, 0, 0.5);
+    box-shadow:
+        inset 14px 0 16px -12px rgba(0, 0, 0, 0.55),
+        inset -14px 0 16px -12px rgba(0, 0, 0, 0.55),
+        var(--pv-inner-corner),
+        inset 0 3px 5px -3px rgba(0, 0, 0, 0.55);
+}
+
+/* 盒口侧壁（左右两条）：暗色值与旧 U 形前框的左右两边一致。
+   前两条是盒口段外轮廓描边，与轮廓环同色。 */
+body.dark-theme .pv-box-jamb {
+    border-color: transparent #543A1C transparent #543A1C;
+    box-shadow:
+        inset 10px 0 8px -7px rgba(0, 0, 0, 0.5),
+        inset -10px 0 8px -7px rgba(0, 0, 0, 0.5);
+}
+
+/* 盒口前挡板：暗色值与旧 U 形前框的底边一致。 */
+body.dark-theme .pv-box-rim {
+    border-color: transparent transparent #4A3016;
+    box-shadow: 0 3px 6px -3px rgba(0, 0, 0, 0.6);
+}
+
+/* 斜接面：暗色下随侧壁一起压深，斜边同样走暗痕而非亮线。 */
+body.dark-theme .pv-box-rim::before {
+    background-image:
+        linear-gradient(to bottom right,
+            rgba(0, 0, 0, 0) 0 82%,
+            rgba(0, 0, 0, 0.62) 88% 100%),
+        linear-gradient(170deg, #5E3C22 0%, #543A1C 50%, #49311A 100%);
+}
+
+body.dark-theme .pv-box-rim::after {
+    background-image:
+        linear-gradient(to bottom left,
+            rgba(0, 0, 0, 0) 0 82%,
+            rgba(0, 0, 0, 0.58) 88% 100%),
+        linear-gradient(190deg, #5A3920 0%, #543A1C 50%, #46301A 100%);
+}
+
+/* 包边底板：整圈木框的实木底，暗色下与盒面同料。 */
+body.dark-theme .pv-box-lip {
+    /* 左右转角的暗角，与亮色版同位置；有卡时由 .has-cards 关掉。 */
+    --pv-lip-corner:
+        radial-gradient(circle 13px at 0 0, rgba(0, 0, 0, 0.44), transparent 100%),
+        radial-gradient(circle 13px at 100% 0, rgba(0, 0, 0, 0.44), transparent 100%);
+    background-image:
+        /* 最外 1px 是暗色侧壁色的延续，与 .pv-box-jamb 左右边框同值。 */
+        linear-gradient(90deg,
+            #543A1C 0 1px,
+            transparent 1px calc(100% - 1px),
+            #543A1C calc(100% - 1px) 100%),
+        var(--pv-lip-corner),
+        linear-gradient(180deg,
+            rgba(0, 0, 0, 0.3) 0,
+            rgba(255, 236, 208, 0.14) 1px,
+            rgba(255, 236, 208, 0.04) calc(var(--pv-band) - 2px),
+            transparent var(--pv-band)),
+        linear-gradient(90deg,
+            rgba(0, 0, 0, 0.36) 0,
+            transparent var(--pv-band),
+            transparent calc(100% - var(--pv-band)),
+            rgba(0, 0, 0, 0.36) 100%),
+        repeating-linear-gradient(90.4deg, transparent 0 6px, rgba(168, 132, 92, 0.09) 6px 7px, transparent 7px 15px),
+        repeating-linear-gradient(89.6deg, transparent 0 21px, rgba(255, 232, 196, 0.06) 21px 23px),
+        linear-gradient(180deg, #5E3C22 0%, #523220 44%, #63401F 100%);
+    box-shadow:
+        inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+        inset 0 1px 0 rgba(255, 236, 208, 0.1);
+}
+
+/* 前唇：暗色下只是框内侧一道更深的接触影。 */
+body.dark-theme .pv-box-mouth {
+    background: linear-gradient(180deg,
+        rgba(0, 0, 0, 0.1) 0%,
+        rgba(0, 0, 0, 0.34) 100%);
+}
+
+/* 迷你卡：暗底上不能用纯白纸，压到暖灰米，描边保留花色但提亮一档。
+   投影方向必须与亮色一致（左上受光 -> 影子偏右下），
+   上一版写的是 0 -2px（影子往上），与卡片整体光源自相矛盾。 */
+/* 卡底渐变收到纸色而不是灰调，避免盒口处露出一条亮灰矩形。 */
+body.dark-theme .pv-peek {
+    background: linear-gradient(180deg, #EAE1D2 0%, #D8CCB8 62%, #CBBE9F 100%);
+    border-color: rgb(var(--pv-accent-rgb) / 0.3);
+    /* 只留纸厚边，不画整块偏移阴影。 */
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.5),
+        inset 0 -1px 0 rgba(120, 96, 62, 0.26),
+        inset 1px 0 0 rgba(255, 255, 255, 0.18),
+        inset -1px 0 0 rgba(96, 74, 44, 0.3);
+}
+
+body.dark-theme .pv-peek:not(.is-away):hover {
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.5),
+        inset 0 -1px 0 rgba(120, 96, 62, 0.26),
+        inset 1px 0 0 rgba(255, 255, 255, 0.18),
+        inset -1px 0 0 rgba(96, 74, 44, 0.3),
+        0 3px 7px -2px rgba(0, 0, 0, 0.45);
+}
+
+/* 序号条 / 状态点 / 两段正文 / 脚注点线：暗底上统一提亮。 */
+body.dark-theme .pv-peek-no {
+    background: rgb(var(--pv-accent-rgb) / 0.5);
+}
+
+body.dark-theme .pv-peek-dot {
+    opacity: 0.9;
+}
+
+/* 压在暖灰纸面上，主色必须够深才读得出色块。 */
+body.dark-theme .pv-peek-sec.is-intent {
+    background: rgba(96, 68, 158, 0.34);
+    box-shadow: inset 0 0 0 1px rgba(96, 68, 158, 0.26);
+}
+
+body.dark-theme .pv-peek-sec.is-final {
+    background: rgba(22, 132, 96, 0.34);
+    box-shadow: inset 0 0 0 1px rgba(22, 132, 96, 0.24);
+}
+
+body.dark-theme .pv-peek-foot {
+    background-image: repeating-linear-gradient(
+        90deg,
+        rgba(226, 214, 194, 0.3) 0 3px,
+        transparent 3px 6px
+    );
+}
+
+/* 木色变深后，木牌文字要反过来提亮，否则读不出来。 */
+body.dark-theme .pv-box-title,
+body.dark-theme .pv-box-figure {
+    color: #F3E3CC;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+body.dark-theme .pv-box-meter {
+    background: rgba(0, 0, 0, 0.42);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+body.dark-theme .pv-box-meter-fill {
+    background: linear-gradient(90deg, rgba(255, 246, 230, 0.86), rgba(255, 246, 230, 0.5));
+    box-shadow: 0 0 6px rgba(255, 246, 230, 0.3);
+}
+
+body.dark-theme .pv-box-floor {
+    background: radial-gradient(ellipse at 50% 34%,
+        rgba(0, 0, 0, 0.66) 0,
+        rgba(0, 0, 0, 0.3) 52%,
+        transparent 78%);
+}
+
+body.dark-theme .pv-box-floor::after {
+    background: radial-gradient(ellipse at 50% 40%,
+        rgba(0, 0, 0, 0.6) 0,
+        transparent 72%);
+}
+
+/* ---- 卡牌 ----
+   暗色卡牌：底压到深灰，靠花色描边识别类型。
+   卡片的 box-shadow 必须留空 —— 卡片带 mask 打孔，阴影会被一并裁掉，
+   投影统一放在 .pv-card-slot::before 上。 */
+body.dark-theme .pv-card {
+    border-color: rgb(var(--pv-accent-rgb) / 0.34);
+    /* 实色卡面：不透明，墙面与挂钩不从卡身透出来。 */
+    background-color: #1E1C22;
+    background-image: linear-gradient(180deg, #24222A 0%, #1E1C22 52%, #1A181E 100%);
+    box-shadow: none;
+}
+
+body.dark-theme .pv-card:hover {
+    border-color: rgb(var(--pv-accent-rgb) / 0.62);
+}
+
+body.dark-theme .pv-card-slot::before {
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.42);
+}
+
+body.dark-theme .pv-card-slot:hover::before {
+    box-shadow: 0 16px 28px -18px rgba(0, 0, 0, 0.8);
+}
+
+body.dark-theme .pv-card.is-disabled {
+    border-color: rgba(255, 240, 214, 0.16);
+    background-color: #232128;
+    background-image: linear-gradient(180deg, #272430 0%, #232128 52%, #1F1D24 100%);
+}
+
+body.dark-theme .pv-card-name {
+    color: var(--md-sys-color-on-surface);
+}
+
+body.dark-theme .pv-card.is-disabled .pv-card-name {
+    color: rgba(230, 225, 229, 0.5);
+}
+
+body.dark-theme .pv-sec {
+    background: rgba(255, 255, 255, 0.055);
+    border-color: rgba(255, 255, 255, 0.09);
+    color: rgba(232, 220, 202, 0.84);
+}
+
+/* 这次我想：暗色下用主色薄底，与卡面的花色描边呼应。 */
+body.dark-theme .pv-sec.is-intent {
+    background: rgb(var(--md-primary-rgb) / 0.1);
+    border-color: rgb(var(--md-primary-rgb) / 0.22);
+}
+
+body.dark-theme .pv-sec.is-final {
+    background: rgba(5, 150, 105, 0.16);
+    border-color: rgba(5, 150, 105, 0.34);
+}
+
+/* 段标签胶囊：暗色下提高底与字的对比，胶囊边界才看得清。 */
+body.dark-theme .pv-sec-label {
+    background: rgb(var(--md-primary-rgb) / 0.16);
+    color: rgb(var(--md-primary-rgb) / 0.95);
+}
+
+body.dark-theme .pv-sec.is-final .pv-sec-label {
+    background: rgba(5, 150, 105, 0.2);
+    color: rgba(110, 231, 183, 0.85);
+}
+
+/* 卡脚虚线在暗色下换成半透明白：主色紫在深底上几乎不可见。 */
+body.dark-theme .pv-card-foot::before {
+    background-image: repeating-linear-gradient(
+        90deg,
+        rgba(255, 255, 255, 0.26) 0 6px,
+        transparent 6px 11px
+    );
+}
+
+body.dark-theme .pv-card-scope {
+    background: rgb(var(--pv-accent-rgb) / 0.16);
+}
+
+body.dark-theme .pv-card-idle-reason {
+    color: var(--md-sys-color-warning);
+    background: rgb(var(--md-warning-rgb) / 0.14);
+}
+
+body.dark-theme .pv-card-rate-share {
+    background: rgba(255, 255, 255, 0.07);
+}
+
+/* 新建卡位：暗色下不能用「白 0.015」，那在黑底上等于不存在。
+   改用主色薄底，并把描边提到 0.34 / 0.6，虚框才在墙面之上立得住。 */
+body.dark-theme .pv-card-slot .pv-card-ghost {
+    border-color: rgb(var(--md-primary-rgb) / 0.34);
+    background:
+        radial-gradient(ellipse 62% 44% at 50% 46%, rgb(var(--md-primary-rgb) / 0.12), transparent 72%),
+        linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.09), rgb(var(--md-primary-rgb) / 0.05));
+    color: rgb(var(--md-primary-rgb) / 0.8);
+}
+
+body.dark-theme .pv-card-slot .pv-card-ghost:hover {
+    background:
+        radial-gradient(ellipse 62% 44% at 50% 46%, rgb(var(--md-primary-rgb) / 0.2), transparent 72%),
+        linear-gradient(180deg, rgb(var(--md-primary-rgb) / 0.16), rgb(var(--md-primary-rgb) / 0.1));
+    border-color: rgb(var(--md-primary-rgb) / 0.6);
+    color: var(--md-sys-color-primary);
+}
+
+/* ---- 卡池透视抽屉 ---- */
+body.dark-theme .pv-pool-mask {
+    background: rgba(0, 0, 0, 0.4);
+}
+
+body.dark-theme .pv-pool-drawer {
+    background: rgba(24, 22, 28, 0.96);
+    border-left-color: rgb(var(--md-primary-rgb) / 0.16);
+    box-shadow: -18px 0 48px -24px rgba(0, 0, 0, 0.8);
+}
+
+body.dark-theme .pv-pool-tab {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgb(var(--md-primary-rgb) / 0.16);
+}
+
+body.dark-theme .pv-pool-tab.is-active {
+    background: rgba(24, 22, 28, 0.96);
+    color: var(--md-sys-color-primary);
+    box-shadow: none;
+}
+
+body.dark-theme .pv-pool-head {
+    border-bottom-color: rgb(var(--md-primary-rgb) / 0.14);
+}
+
+body.dark-theme .pv-pool-kpi-cell,
+body.dark-theme .pv-pool-compare-row {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgb(var(--md-primary-rgb) / 0.12);
+}
+
+body.dark-theme .pv-pool-block + .pv-pool-block,
+body.dark-theme .pv-pool-notes {
+    border-top-color: rgb(var(--md-primary-rgb) / 0.16);
+}
+
+body.dark-theme .pv-pool-note {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgb(var(--md-primary-rgb) / 0.12);
+}
+
+body.dark-theme .pv-pool-note.is-warn {
+    background: rgb(var(--md-warning-rgb) / 0.12);
+    border-color: rgb(var(--md-warning-rgb) / 0.26);
+}
+
+body.dark-theme .pv-pool-note.is-info {
+    background: rgba(96, 165, 250, 0.12);
+    border-color: rgba(96, 165, 250, 0.26);
+}
+
+/* ---- 卡片放大模态 ----
+   与卡片同源，但必须完全不透明：编辑区透出背景会很难读。 */
+body.dark-theme .pv-modal {
+    border-color: rgb(var(--pv-accent-rgb) / 0.28);
+    background-color: #201E24;
+    background-image: linear-gradient(180deg, rgb(var(--pv-accent-rgb) / 0.07), rgba(32, 30, 36, 0) 28%);
+    box-shadow:
+        0 2px 6px rgba(0, 0, 0, 0.4),
+        0 32px 64px -24px rgba(0, 0, 0, 0.85);
+}
+
+/* 遮罩在暗色下压得更实，模糊同样收敛到 9px：
+   背景保留可辨认的轮廓，不会糊成一片纯黑。 */
+body.dark-theme .pv-modal-mask {
+    background: rgba(0, 0, 0, 0.46);
+    backdrop-filter: blur(9px) saturate(1.02);
+    -webkit-backdrop-filter: blur(9px) saturate(1.02);
+}
+
+/* 暗色下的按钮：搜索、⋯、保存徽章统一成低亮度白描边。 */
+body.dark-theme .pv-pill {
+    border-color: rgb(var(--md-primary-rgb) / 0.2);
+}
+
+body.dark-theme .pv-pill strong {
+    color: var(--md-sys-color-on-surface);
+}
+
+/* 页头两组控件之间的竖分隔线。 */
+body.dark-theme .pv-hero-tools::after {
+    background: rgb(var(--md-primary-rgb) / 0.22);
+}
+
+/* 主操作按钮：暗色下用主色薄底，与常态按钮保持同一明度层级。 */
+body.dark-theme .pv-hero-btn.is-primary.MuiButton-root {
+    border-color: rgb(var(--md-primary-rgb) / 0.46);
+    background: rgb(var(--md-primary-rgb) / 0.16);
+    color: var(--md-sys-color-primary);
+}
+
+body.dark-theme .pv-modal-head {
+    border-bottom-color: rgb(var(--md-primary-rgb) / 0.14);
+    background: linear-gradient(180deg, rgb(var(--pv-accent-rgb) / 0.08), rgba(32, 30, 36, 0));
+}
+
+body.dark-theme .pv-modal-foot {
+    border-top-color: rgb(var(--md-primary-rgb) / 0.14);
+    background: rgba(22, 20, 26, 0.94);
+}
+
+/* 迷你卡开孔：暗底上要比卡面更深。 */
+body.dark-theme .pv-peek-hole {
+    background: radial-gradient(circle at 50% 70%, #3A2611, #5E4526 72%);
+    box-shadow:
+        inset 0 -0.5px 0 rgba(255, 236, 208, 0.2),
+        0 0.5px 0 rgba(255, 255, 255, 0.06);
+}
+
+body.dark-theme .pv-empty-action {
+    background: rgb(var(--md-primary-rgb) / 0.12);
+    border-color: rgb(var(--md-primary-rgb) / 0.3);
+}
+
+/* ---- 光谱与图例 ---- */
+body.dark-theme .pv-spectrum,
+body.dark-theme .pv-spectrum-empty {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+body.dark-theme .pv-legend-dot,
+body.dark-theme .pv-spectrum-seg {
+    /* 暗底上色块需要略提亮，否则深紫段几乎看不见。 */
+    filter: brightness(1.25);
+}
+
+/* ---- 预演双轨 ---- */
+body.dark-theme .pv-dual-track {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+body.dark-theme .pv-dual-theory {
+    background: rgba(255, 255, 255, 0.24);
+}
+
+/* ---- 预览积木层 ---- */
+body.dark-theme .pv-layer {
+    background: rgb(var(--md-primary-rgb) / 0.06);
+}
+
+body.dark-theme .pv-layer.is-hit {
+    background: rgb(var(--md-primary-rgb) / 0.12);
+}
+
+/* ---- 编辑精修区 ----
+   与模态同处不透明深底，卡与输入框只需微弱分层，避免层层叠叠的灰块。 */
+body.dark-theme .pv-editor-card {
+    background: rgba(255, 255, 255, 0.035);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+body.dark-theme .pv-editor-count {
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+body.dark-theme .pv-editor-kpi {
+    background: rgb(var(--md-primary-rgb) / 0.12);
+    border-color: rgb(var(--md-primary-rgb) / 0.2);
+}
+
+body.dark-theme .pv-editor-kpi.is-muted {
+    background: transparent;
+    border-color: transparent;
+}
+
+body.dark-theme .pv-editor-textarea .MuiInputBase-root {
+    background: rgba(0, 0, 0, 0.24);
+}
+
+body.dark-theme .pv-editor-toolbar-sep {
+    background: rgb(var(--md-primary-rgb) / 0.22);
+}
+
+body.dark-theme .pv-editor-issues {
+    background: rgb(var(--md-warning-rgb) / 0.12);
+}
+
+/* 右栏与左栏的分界线。 */
+body.dark-theme .pv-editor-preview {
+    border-left-color: rgb(var(--md-primary-rgb) / 0.14);
+}
+
+/* 模态头部状态标签。 */
+body.dark-theme .pv-modal-state.is-on {
+    color: var(--md-sys-color-primary);
+}
+
+/* 抽样对照条：偏差预警色在暗底上要提亮。 */
+body.dark-theme .pv-dual-num.is-warn {
+    color: var(--md-sys-color-warning);
+}
+
+body.dark-theme .pv-empty {
+    color: var(--md-sys-color-on-surface-variant);
+}

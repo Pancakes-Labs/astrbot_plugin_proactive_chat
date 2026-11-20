@@ -57,14 +57,65 @@ class FlowOrchestrator:
         """GATE 阶段正常终止（未回复上限/无配置）：不重调度。"""
         return None
 
+    def _cancelled_marker(self) -> set[str] | None:
+        """返回取消标记集合；属性缺失或类型异常时返回 None。"""
+        marker = getattr(self.plugin, "cancelled_trigger_sessions", None)
+        return marker if isinstance(marker, set) else None
+
+    def _trigger_cancelled(self, ctx: ProactiveContext) -> bool:
+        """只读判断本轮手动触发是否已被用户取消。
+
+        仅手动触发的运行参与：排期触发的并发运行不能因为同一会话
+        存在取消标记就放弃自己的重新排期。
+        """
+        if ctx.trigger is not TriggerSource.MANUAL:
+            return False
+        marker = self._cancelled_marker()
+        if not marker:
+            return False
+        session_id = self.plugin.session_service.normalize_session_id(ctx.session_id)
+        return session_id in marker
+
+    def _consume_trigger_cancel(self, ctx: ProactiveContext) -> bool:
+        """读取并消费本轮取消标记，返回是否命中。
+
+        调用方必须持有 data_lock：cancel_job 在锁内写入标记，
+        只有同为锁内的消费才能保证读到的是最新意图。
+        """
+        if not self._trigger_cancelled(ctx):
+            return False
+        marker = self._cancelled_marker()
+        if marker is not None:
+            marker.discard(
+                self.plugin.session_service.normalize_session_id(ctx.session_id)
+            )
+        return True
+
     async def _on_reschedule(self, ctx: ProactiveContext, reset: bool) -> None:
         """需要重新调度下一次主动消息。"""
-        await self.plugin.scheduler_service.schedule_next_chat_and_save(ctx.session_id)
+        plugin = self.plugin
+        cancelled = [False]
+
+        def cancel_check() -> bool:
+            # 由 schedule_next_chat_and_save 在持锁时调用：
+            # 只有与任务登记同处一个临界区，取消检查才不会被并发取消绕过。
+            cancelled[0] = self._consume_trigger_cancel(ctx)
+            return cancelled[0]
+
+        await plugin.scheduler_service.schedule_next_chat_and_save(
+            ctx.session_id,
+            cancel_check=cancel_check if ctx.trigger is TriggerSource.MANUAL else None,
+        )
+        if cancelled[0]:
+            logger.info(
+                f"[主动消息] {plugin.session_service.get_session_log_str(ctx.session_id)} 的主动消息已被取消，跳过重新排期喵。"
+            )
 
     async def _on_abort(self, ctx: ProactiveContext, error: Exception | None) -> None:
         """阶段异常时的兜底：清理调度痕迹并尝试重调度。
 
-        流程：记录错误 -> 清理残留调度状态 -> 重新排期 -> 上报遥测。
+        流程：记录错误 -> 消费取消标记并清理残留调度状态 -> 重新排期 -> 上报遥测。
+        已取消的会话不重新排期，否则错误兜底会把用户取消的任务重新登记。
         """
         plugin = self.plugin
         session_id = ctx.session_id
@@ -80,13 +131,30 @@ class FlowOrchestrator:
         except Exception as clean_e:
             logger.debug(f"[主动消息] 清理失败任务数据时出错喵: {clean_e}")
 
+        cancelled = [False]
+
+        def cancel_check() -> bool:
+            # 锁内消费取消标记：与任务登记同一临界区，避免并发取消被漏判。
+            cancelled[0] = self._consume_trigger_cancel(ctx)
+            return cancelled[0]
+
         try:
             logger.info(
                 f"[主动消息] 尝试重新调度 {plugin.session_service.get_session_log_str(session_id)} 的主动消息任务喵。"
             )
-            await plugin.scheduler_service.schedule_next_chat_and_save(session_id)
+            await plugin.scheduler_service.schedule_next_chat_and_save(
+                session_id,
+                cancel_check=(
+                    cancel_check if ctx.trigger is TriggerSource.MANUAL else None
+                ),
+            )
         except Exception as se:
             logger.error(f"[主动消息] 在错误处理中重新调度失败喵: {se}")
+
+        if cancelled[0]:
+            logger.info(
+                f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 的主动消息已被取消，错误兜底跳过重新排期喵。"
+            )
 
         if error is not None and plugin.telemetry and plugin.telemetry.enabled:
             plugin._track_task(
@@ -141,7 +209,9 @@ class FlowOrchestrator:
                 e,
             )
         finally:
-            await self.clear_manual_trigger_state(normalized_session_id)
+            # 只有手动触发才持有该占用。
+            if trigger is TriggerSource.MANUAL:
+                await self.clear_manual_trigger_state(normalized_session_id)
 
     async def _cleanup_group_schedule_state(self, session_id: str) -> None:
         """群聊成功发送后清理残留调度状态（与旧实现时机一致）。"""
@@ -233,15 +303,25 @@ class FlowOrchestrator:
 
         # 递增未回复计数并落盘；私聊额外计算并写入下一次调度时间。
         async with plugin.data_lock:
+            # 取消标记必须在锁内读取并消费：cancel_job 同样在锁内写入，
+            # 锁外读取会沿用过期结果，把已取消的任务重新登记回去。
+            cancelled = self._consume_trigger_cancel(ctx)
+            if cancelled:
+                logger.info(
+                    f"[主动消息] {plugin.session_service.get_session_log_str(normalized_session_id)} "
+                    "的主动消息在触发生成期间被取消，跳过下一次排期喵。"
+                )
             new_unanswered_count = unanswered_count + 1
             plugin.session_data.setdefault(normalized_session_id, {})[
                 "unanswered_count"
             ] = new_unanswered_count
+            # 记录本轮实际发出的模板，供下一轮判重。
+            self._remember_used_template(normalized_session_id, ctx)
             logger.info(
                 f"[主动消息] {plugin.session_service.get_session_log_str(normalized_session_id)} 的第 {new_unanswered_count} 次主动消息已发送完成，当前未回复次数: {new_unanswered_count} 次喵。"
             )
 
-            if is_private_session:
+            if is_private_session and not cancelled:
                 session_config = plugin.config_service.get_session_config(
                     normalized_session_id
                 )
@@ -270,15 +350,21 @@ class FlowOrchestrator:
                 )
                 scheduled_job_payload = {
                     "run_date": run_date,
+                    "scheduled_at": scheduled_at,
                     "session_config": session_config,
                 }
+
+            # 放在锁内完成。
+            if scheduled_job_payload is not None:
+                plugin.scheduler_service.add_chat_job(
+                    normalized_session_id,
+                    scheduled_job_payload["run_date"],
+                    scheduled_at=scheduled_job_payload["scheduled_at"],
+                )
 
             await plugin.storage_service.save_data()
 
         if scheduled_job_payload is not None:
-            plugin.scheduler_service.add_chat_job(
-                normalized_session_id, scheduled_job_payload["run_date"]
-            )
             logger.info(
                 f"[主动消息] 已为 {plugin.session_service.get_session_log_str(normalized_session_id, scheduled_job_payload['session_config'])} 安排下一次主动消息喵，时间：{scheduled_job_payload['run_date'].strftime('%Y-%m-%d %H:%M:%S')} 喵。"
             )
@@ -286,12 +372,52 @@ class FlowOrchestrator:
         # 群聊由沉默倒计时驱动，不依赖持久化调度字段，故在成功发送后清理残留状态。
         await self._cleanup_group_schedule_state(normalized_session_id)
 
+    def _remember_used_template(self, session_id: str, ctx: ProactiveContext) -> None:
+        """记录本轮实际发出的提示词模板，供下一轮回避判重。
+
+        元数据取自 PROMPT 阶段写入的 PromptBlock：template_id 可能为空，
+        因此同时带上 name 与 raw_text，让指纹函数能退化为内容摘要。
+        """
+        plugin = self.plugin
+        service = getattr(plugin, "prompt_preset_service", None)
+        if service is None:
+            return
+        template = self._used_template_of(ctx)
+        if not template:
+            return
+        try:
+            service.remember_template(session_id, template)
+        except Exception as e:  # noqa: BLE001 - 记录失败不应影响收尾
+            logger.warning(f"[主动消息] 记录本轮提示词模板失败喵: {e}")
+
+    @staticmethod
+    def _used_template_of(ctx: ProactiveContext) -> dict[str, Any]:
+        """从提示词块里取出本轮用户模板的身份信息；未找到时返回空字典。"""
+        for block in ctx.prompts.blocks:
+            metadata = block.metadata or {}
+            if metadata.get("layer") != "user":
+                continue
+            return {
+                "id": str(metadata.get("template_id") or ""),
+                "name": str(metadata.get("template_name") or ""),
+                "text": str(metadata.get("raw_text") or ""),
+            }
+        return {}
+
     async def clear_manual_trigger_state(self, session_id: str) -> None:
-        """释放指定会话的手动触发占用状态，并向管理端广播任务刷新。"""
+        """释放指定会话的手动触发占用状态，并向管理端广播任务刷新。
+
+        只应由持有该占用的手动触发执行调用。
+        """
         plugin = self.plugin
         normalized_session_id = plugin.session_service.normalize_session_id(session_id)
         if normalized_session_id not in plugin.manual_trigger_sessions:
+            # 未持有占用：不碰取消标记，避免误清别处仍在进行的运行。
             return
+
+        cancelled = getattr(plugin, "cancelled_trigger_sessions", None)
+        if cancelled is not None:
+            cancelled.discard(normalized_session_id)
 
         plugin.manual_trigger_sessions.discard(normalized_session_id)
         if plugin.web_admin_server:

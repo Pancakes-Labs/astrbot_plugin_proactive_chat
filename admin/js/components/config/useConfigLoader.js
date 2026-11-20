@@ -7,13 +7,21 @@
 
     function useConfigLoader(api) {
         const [schema, setSchema] = useState(null);
+        // loading 只表示“Schema 初始化中”，配置正文的进度由 configLoading 单独表达。
         const [loading, setLoading] = useState(true);
+        const [schemaError, setSchemaError] = useState('');
         const [sessions, setSessions] = useState([]);
         const [sessionLoading, setSessionLoading] = useState(false);
         const [sessionConfigState, setSessionConfigState] = useState({ baseAvailable: true, message: '' });
         // 会话模式下展示的“最终生效人格”预览，避免用户只能在日志里确认结果。
         const [sessionPersona, setSessionPersona] = useState(null);
         const [config, setConfig] = useState(null);
+        // 初始即为 true：schema 就绪到 loadConfig 发起之间存在一帧 config 仍为 null，
+        // 若该帧被当作“非加载中”，就会闪出“无法加载配置”的错误态。
+        const [configLoading, setConfigLoading] = useState(true);
+        const [configError, setConfigError] = useState('');
+        // 区分“还在加载”与“确实没有可编辑内容”：未选会话属于正常等待，不是错误。
+        const [configEmptyReason, setConfigEmptyReason] = useState('');
         const loadConfigSeqRef = useRef(0);
 
         const loadSessions = React.useCallback(async () => {
@@ -46,7 +54,8 @@
 
             // 递增请求序号，防止快速切换会话时后返回的旧请求覆盖新状态。
             const requestSeq = ++loadConfigSeqRef.current;
-            setLoading(true);
+            setConfigLoading(true);
+            setConfigError('');
             try {
                 let configData = null;
 
@@ -54,6 +63,8 @@
                     if (!currentSession) {
                         if (requestSeq === loadConfigSeqRef.current) {
                             setConfig(null);
+                            // 未选会话是等待用户操作，标记为空态原因而不是失败。
+                            setConfigEmptyReason('no_session');
                             setSessionConfigState({ baseAvailable: false, message: '请先选择一个会话' });
                         }
                         return false;
@@ -96,11 +107,15 @@
 
                 // 配置加载始终以服务端返回值为准，草稿不参与初始化覆盖。
                 setConfig(configData);
+                setConfigEmptyReason('');
                 return true;
             } catch (e) {
                 if (requestSeq === loadConfigSeqRef.current) {
                     console.error('加载配置失败', e);
                     setConfig(null);
+                    setConfigEmptyReason('');
+                    // 失败原因保留在状态里：错误态需要能自解释，而不是只弹一个 toast。
+                    setConfigError((e && e.message) || '配置加载失败，请稍后重试');
                     // 请求失败时人格预览同样不可信，清掉避免展示过期信息。
                     if (currentMode === 'session') {
                         setSessionPersona(null);
@@ -117,7 +132,7 @@
             } finally {
                 if (requestSeq === loadConfigSeqRef.current) {
                     setSessionLoading(false);
-                    setLoading(false);
+                    setConfigLoading(false);
                 }
             }
         }, [api, schema]);
@@ -130,10 +145,25 @@
                 try {
                     const schemaData = await api.getConfigSchema();
                     if (disposed) return;
+                    // Schema 可能是空对象或数组（后端未返回结构），同样视为不可用：
+                    // 空结构无法渲染任何字段，硬渲染只会得到 0 个配置组的一片空白。
+                    if (
+                        !schemaData
+                        || typeof schemaData !== 'object'
+                        || Array.isArray(schemaData)
+                        || Object.keys(schemaData).length === 0
+                    ) {
+                        throw new Error('服务端返回的配置结构为空');
+                    }
                     setSchema(schemaData);
+                    setSchemaError('');
                     await loadSessions();
                 } catch (e) {
                     console.error('初始化配置页失败', e);
+                    if (!disposed) {
+                        // 错误原因落到状态里。
+                        setSchemaError((e && e.message) || '配置结构加载失败');
+                    }
                     if (!disposed && window.Toast) {
                         window.Toast.error((e && e.message) || '配置结构加载失败', {
                             title: '配置页初始化失败',
@@ -151,9 +181,14 @@
 
         return {
             schema: schema,
+            schemaError: schemaError,
             config: config,
             setConfig: setConfig,
             loading: loading,
+            // 正文加载态与错误态单独暴露：视图据此区分“加载中 / 空态 / 失败”。
+            configLoading: configLoading,
+            configError: configError,
+            configEmptyReason: configEmptyReason,
             sessions: sessions,
             sessionLoading: sessionLoading,
             sessionConfigState: sessionConfigState,

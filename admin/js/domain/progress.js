@@ -237,6 +237,35 @@
         });
     }
 
+    // 本轮预选模板的展示口径。
+    function resolvePromptPresetSpec(job) {
+        const preset = (job && job.prompt_preset) || {};
+        if (!preset.picked) {
+            return {
+                picked: false,
+                name: '待抽取',
+                sub: '排期后自动选定',
+                warning: false,
+            };
+        }
+        const name = String(preset.name || '').trim() || '未命名模板';
+        if (!preset.available) {
+            return {
+                picked: true,
+                name: `${name}（已失效）`,
+                sub: '生成时将重新抽取',
+                warning: true,
+            };
+        }
+        const weight = Number(preset.weight);
+        return {
+            picked: true,
+            name: name,
+            sub: weight > 0 ? `权重 ${weight}` : '',
+            warning: false,
+        };
+    }
+
     // 任务页卡片展示数据：与计时器卡片复用同一套三段式结构，文案口径保持一致。
     function resolveScheduledCard(job, nowMs, displayTimezone) {
         // 复用计时卡片的状态、倒计时与进度推导，避免两处阈值不一致。
@@ -244,6 +273,8 @@
         const session = window.SessionDomain.resolveSessionDisplay(job);
         const personaDisplay = window.resolvePersonaDisplay(job.persona);
         const unansweredSpec = resolveUnansweredSpec(job);
+        const presetSpec = resolvePromptPresetSpec(job);
+        const modelDisplay = window.resolveModelDisplay(job.model_info);
         const remainingSeconds = Number(progress.remainingSeconds) || 0;
         const progressPercent = clampPercent(progress.progressPercent);
 
@@ -311,6 +342,14 @@
             unansweredIsWarning: unansweredSpec.isWarning,
             intervalText: intervalText,
             quietText: quietText,
+            promptPresetPicked: presetSpec.picked,
+            promptPresetName: presetSpec.name,
+            promptPresetSub: presetSpec.sub,
+            promptPresetWarning: presetSpec.warning,
+            modelText: modelDisplay.value,
+            modelSubText: modelDisplay.sub,
+            modelTitle: modelDisplay.title,
+            modelState: modelDisplay.state,
         });
     }
 

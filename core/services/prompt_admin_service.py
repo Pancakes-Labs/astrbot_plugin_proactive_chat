@@ -49,7 +49,7 @@ from ..domain.prompt_templates import (
     get_output_format,
     get_templates,
     normalize_templates,
-    pick_template,
+    pick_template_index,
     resolve_active_template,
 )
 
@@ -282,19 +282,36 @@ class PromptAdminService:
         session_type: str,
         template_id: str = "",
         *,
+        template_text: str = "",
         draft_templates: Any = None,
     ) -> dict[str, Any] | None:
         """取用于预览的模板。
 
-        指定 template_id 时按 id 精确命中；否则按真实抽样逻辑抽一条，
-        这样预览看到的就是模型本轮真正会收到的那份提示词。
+        定位顺序：id + 正文 -> 仅正文 -> id 首条。
+        id 允许重复（归一化阶段不去重），只按 id 取首条会让同 id 的另一张卡
+        预览出别人的正文，因此正文相同优先。
+        两者都没给时按真实抽样逻辑抽一条，预览即模型本轮真正收到的那份。
         """
         settings, templates = self._resolve_settings(draft_templates)
         section = {PROMPT_SETTINGS_KEY: settings}
-        if template_id:
-            for item in templates:
-                if str(item.get("id") or "") == template_id:
-                    return item
+        text = str(template_text or "")
+        if template_id or text:
+            same_id = (
+                [item for item in templates if str(item.get("id") or "") == template_id]
+                if template_id
+                else []
+            )
+            if text:
+                # 先在 id 命中项里找同正文，避免重复 id 串卡。
+                for item in same_id:
+                    if str(item.get("text") or "") == text:
+                        return item
+                # id 未命中或正文不同：退化为全表按正文定位（草稿可能刚换了 id）。
+                for item in templates:
+                    if str(item.get("text") or "") == text:
+                        return item
+            if same_id:
+                return same_id[0]
             return None
         return resolve_active_template(section, session_type=session_type)
 
@@ -305,6 +322,7 @@ class PromptAdminService:
         unanswered_count: int = PREVIEW_DEFAULT_UNANSWERED,
         source_mode: str = "conversation_history",
         template_id: str = "",
+        template_text: str = "",
         platform_history_count: int = PREVIEW_DEFAULT_HISTORY_COUNT,
         draft_templates: Any = None,
     ) -> dict[str, Any]:
@@ -316,11 +334,14 @@ class PromptAdminService:
         settings, _ = self._resolve_settings(draft_templates)
         section = {PROMPT_SETTINGS_KEY: settings}
 
-        # sampled=True 表示本轮是现场抽签（未指定 template_id），
+        # sampled=True 表示本轮是现场抽签（未指定任何定位条件），
         # 每次调用都可能抽到不同模板。前端据此提示用户，避免误认为结果不稳定。
-        sampled = not template_id
+        sampled = not (template_id or template_text)
         template = self.resolve_template_for_preview(
-            session_type, template_id, draft_templates=draft_templates
+            session_type,
+            template_id,
+            template_text=template_text,
+            draft_templates=draft_templates,
         )
         template = template or {}
 
@@ -483,16 +504,11 @@ class PromptAdminService:
         rng = random.Random(seed)
         # 归一化允许 id 为空或重复，按 id 聚合会让同名条目互相覆盖，
         # 因此统计与期望值都按池内索引对齐，id 只作展示字段。
-        # 必须直接在 pool 上抽样：resolve_active_template 每轮都会重新
-        # 归一化并造出新字典，返回对象与 pool 里的元素不同一，身份映射必然落空。
+        # 抽签直接用 pick_template_index 返回的下标计数。
         counts: list[int] = [0] * len(pool)
-        position_of = {id(item): index for index, item in enumerate(pool)}
         for _ in range(rounds):
-            picked = pick_template(pool, weighted=True, rng=rng)
-            if not picked:
-                continue
-            index = position_of.get(id(picked))
-            if index is not None:
+            index = pick_template_index(pool, rng=rng)
+            if index >= 0:
                 counts[index] += 1
 
         probabilities = compute_probabilities(pool)

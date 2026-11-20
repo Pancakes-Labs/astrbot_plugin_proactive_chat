@@ -220,6 +220,50 @@ function resolvePersonaDisplay(persona) {
     };
 }
 
+// 把后端返回的任务模型摘要整理成卡片事实行的文案与提示。
+// 三种状态：显式配置 / 跟随会话默认 / Provider 已失效。
+function resolveModelDisplay(modelInfo) {
+    const payload = modelInfo && typeof modelInfo === 'object' ? modelInfo : {};
+    const model = String(payload.model || '').trim();
+    const providerName = String(payload.provider_name || '').trim();
+    const providerId = String(payload.provider_id || '').trim();
+    const providerLabel = providerName || providerId;
+
+    if (payload.provider_missing) {
+        return {
+            state: 'warning',
+            value: `${providerId || '配置的提供商'}（不存在）`,
+            sub: '请检查模型设置',
+            title: '该会话配置的服务提供商已被删除或改名，本轮会回退到其他候选',
+        };
+    }
+
+    if (payload.follow_session_default && !model) {
+        return {
+            state: 'default',
+            value: '跟随会话当前模型',
+            sub: providerLabel ? `默认提供商：${providerLabel}` : '',
+            title: '留空表示跟随该会话当前使用的对话模型',
+        };
+    }
+
+    if (!model) {
+        return {
+            state: 'unknown',
+            value: providerLabel ? `${providerLabel}（默认模型）` : '未解析到模型',
+            sub: '发送时按提供商默认模型',
+            title: '未显式指定模型，实际生效的是该提供商的默认模型',
+        };
+    }
+
+    return {
+        state: 'normal',
+        value: model,
+        sub: providerLabel ? `提供商：${providerLabel}` : '',
+        title: providerLabel ? `提供商：${providerLabel}｜模型：${model}` : `模型：${model}`,
+    };
+}
+
 // 统一挂到 window，供各页面和组件直接调用，无需额外模块系统。
 window.parseDateish = parseDateish;
 window.formatDateTime = formatDateTime;
@@ -228,4 +272,5 @@ window.formatDuration = formatDuration;
 window.resolveSourceModeLabel = resolveSourceModeLabel;
 window.formatUnansweredLabel = formatUnansweredLabel;
 window.resolvePersonaDisplay = resolvePersonaDisplay;
+window.resolveModelDisplay = resolveModelDisplay;
 

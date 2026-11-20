@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -247,6 +248,9 @@ class SchedulerService:
             "last_schedule_min_interval_seconds",
             "last_schedule_max_interval_seconds",
             "last_schedule_random_interval_seconds",
+            # 预选模板属于本轮排期的产物：会话被禁用或任务过期后若不清，
+            # 下次启用会带着一条用户早已忘记的模板进入新一轮。
+            "prompt_preset",
         }
 
         changed = False
@@ -315,11 +319,29 @@ class SchedulerService:
                 except Exception:
                     pass
 
-    def add_chat_job(self, run_session_id: str, run_date: datetime) -> None:
-        """规范化 session_id，清理同目标历史任务，并注册一个新的定时 job。"""
+    def add_chat_job(
+        self,
+        run_session_id: str,
+        run_date: datetime,
+        *,
+        scheduled_at: float | None = None,
+    ) -> None:
+        """规范化 session_id，清理同目标历史任务，预选模板并注册定时 job。"""
         plugin = self.plugin
         normalized = plugin.session_service.normalize_session_id(run_session_id)
         self.purge_related_jobs(normalized)
+
+        if scheduled_at is None:
+            session_info = plugin.session_data.get(normalized, {})
+            if isinstance(session_info, dict):
+                scheduled_at = session_info.get("last_scheduled_at")
+        try:
+            plugin.prompt_preset_service.pick_for_session(
+                normalized, scheduled_at=scheduled_at
+            )
+        except Exception as e:  # noqa: BLE001 - 预选失败不应阻断排期
+            logger.warning(f"[主动消息] 预选提示词模板失败，生成时将现场抽取喵: {e}")
+
         plugin.scheduler.add_job(
             plugin.check_and_chat,
             "date",
@@ -609,8 +631,11 @@ class SchedulerService:
             logger.info("[主动消息] 没有需要恢复的定时任务喵。")
 
     async def schedule_next_chat_and_save(
-        self, session_id: str, reset_counter: bool = False
-    ) -> None:
+        self,
+        session_id: str,
+        reset_counter: bool = False,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> bool:
         """安排下一次主动聊天并立即将状态持久化到文件。
 
         全过程在 data_lock 内完成：迁移会话键 -> 重置计数(可选) ->
@@ -618,16 +643,23 @@ class SchedulerService:
         """
         plugin = self.plugin
         if getattr(plugin, "_terminating", False):
-            return
+            return False
 
         normalized_session_id = plugin.session_service.normalize_session_id(session_id)
         session_config = plugin.config_service.get_session_config(normalized_session_id)
         if not session_config:
-            return
+            return False
 
         schedule_conf = session_config.get("schedule_settings", {})
 
         async with plugin.data_lock:
+            # 取消意图与任务登记必须原子：cancel_job 同样在锁内写入标记。
+            if cancel_check is not None and cancel_check():
+                logger.info(
+                    f"[主动消息] {plugin.session_service.get_session_log_str(normalized_session_id, session_config)} 的主动消息已被取消，跳过排期喵。"
+                )
+                return False
+
             # 若传入的是非规范键，先把其数据迁移到规范键下。
             if (
                 normalized_session_id != session_id
@@ -662,11 +694,14 @@ class SchedulerService:
                 next_trigger_time,
             ) = self.compute_next_trigger(schedule_conf)
 
-            self.add_chat_job(normalized_session_id, run_date)
-
+            # 先写会话数据再注册任务：预选需要读取本轮 scheduled_at 作为轮次标识。
             session_payload = plugin.session_data.setdefault(normalized_session_id, {})
             session_payload["next_trigger_time"] = next_trigger_time
             session_payload["last_scheduled_at"] = scheduled_at
+
+            self.add_chat_job(
+                normalized_session_id, run_date, scheduled_at=scheduled_at
+            )
             session_payload["last_schedule_min_interval_seconds"] = min_interval
             session_payload["last_schedule_max_interval_seconds"] = max_interval
             session_payload["last_schedule_random_interval_seconds"] = random_interval
@@ -675,6 +710,7 @@ class SchedulerService:
             )
 
             await plugin.storage_service.save_data()
+            return True
 
     # ------------------------------------------------------------------
     # 群聊沉默计时
@@ -1053,7 +1089,7 @@ class SchedulerService:
                     random_interval
                 )
 
-                self.add_chat_job(session_id, run_date)
+                self.add_chat_job(session_id, run_date, scheduled_at=scheduled_at)
 
                 logger.info(
                     f"[主动消息] {plugin.session_service.get_session_log_str(session_id, current_config)} 满足条件，自动触发任务已创建喵！执行时间 (非持久化): {run_date.strftime('%Y-%m-%d %H:%M:%S')} 喵"
