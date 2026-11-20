@@ -70,6 +70,68 @@ async def verify_message_persisted(
         return False
 
 
+async def _load_records(
+    conversation_manager: Any,
+    session_id: str,
+    conv_id: str,
+) -> list:
+    """读取对话历史记录列表；任何异常都返回空列表。
+
+    只用于存档后的回读校验，失败不应影响主流程。
+    """
+    try:
+        conversation = await conversation_manager.get_conversation(session_id, conv_id)
+        if not conversation or not conversation.history:
+            return []
+        history = conversation.history
+        if isinstance(history, str):
+            history = json.loads(history)
+        return history if isinstance(history, list) else []
+    except Exception as e:
+        logger.debug(f"[主动消息] 回读对话历史失败喵: {e}")
+        return []
+
+
+async def verify_pair_persisted(
+    conversation_manager: Any,
+    session_id: str,
+    conv_id: str,
+    user_text: str,
+    assistant_text: str,
+    limit: int = 4,
+) -> tuple[bool, bool]:
+    """回读末尾若干条记录，判断本轮 user / assistant 两侧是否都已落盘。
+
+    仅检查末尾 limit 条：更早的记录与本轮无关，全量扫描在长会话里代价过高。
+
+    Returns:
+        (user_ok, assistant_ok)。user_text 为空时 user_ok 恒为 False，
+        由调用方据此判断空内容是否被静默丢弃。
+    """
+    records = await _load_records(conversation_manager, session_id, conv_id)
+    if not records:
+        return False, False
+
+    target_assistant = (assistant_text or "").strip()
+    target_user = (user_text or "").strip()
+
+    user_ok = False
+    assistant_ok = False
+    for record in reversed(records[-limit:]):
+        if not isinstance(record, dict):
+            continue
+        role = record.get("role")
+        text = reduce_record_text(record.get("content", "")).strip()
+        if not text:
+            continue
+        if role == "assistant" and target_assistant and target_assistant in text:
+            assistant_ok = True
+        elif role == "user" and target_user and target_user in text:
+            user_ok = True
+
+    return user_ok, assistant_ok
+
+
 async def add_message_pair(
     conversation_manager: Any,
     conv_id: str,
