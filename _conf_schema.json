@@ -444,6 +444,24 @@
                         "type": "string",
                         "default": "bot",
                         "hint": "用于判断平台聊天流水中哪些发言属于 Bot 自己。不同平台记录的名字可能不同，例如 bot、astrbot、assistant。"
+                    },
+                    "history_archive_mode": {
+                        "description": "主动消息提示词的历史存档方式",
+                        "type": "string",
+                        "options": [
+                            "semantic_event",
+                            "full",
+                            "bare_marker",
+                            "empty"
+                        ],
+                        "labels": [
+                            "语义事件（推荐）",
+                            "完整提示词（旧行为）",
+                            "仅短标记（实验）",
+                            "空内容（实验）"
+                        ],
+                        "default": "semantic_event",
+                        "hint": "决定主动消息发送后往对话历史里的伪 User 消息写入什么。完整提示词：把本轮提示词原样存档。语义事件：把提示词抽象为一条事件记录后再存档，记录里只保留“当时发生了一次主动消息，没有人回复”这类事实。仅短标记：只写一个 [主动消息] 标记。空内容：什么都不写，实验性功能，如果导致主动消息效果不理想请不要使用。"
                     }
                 }
             },
