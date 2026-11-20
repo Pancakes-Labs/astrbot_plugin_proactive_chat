@@ -13,8 +13,13 @@ from astrbot.api import logger
 
 from ...utils.time_utils import is_quiet_time
 from ..adapters.astrbot_conversation import add_message_pair, verify_message_persisted
-from ..domain.config_keys import ENABLED_KEY
+from ..domain.config_keys import ENABLED_KEY, HISTORY_ARCHIVE_MODE_KEY
 from ..domain.domain_enums import HookPoint, StageResult, TriggerSource
+from ..domain.history_marker import (
+    BARE_MARKER,
+    build_proactive_history_text,
+    normalize_archive_mode,
+)
 from ..domain.request_context import ProactiveContext
 from ..domain.session_key import is_friend_type, is_group_type
 from ..features.feature_manifest import build_default_features
@@ -265,20 +270,19 @@ class FlowOrchestrator:
         conv_id = ctx.conversation_id
         unanswered_count = ctx.unanswered_count
         outcome = ctx.outcome
-        user_prompt = (
+        # 本轮真正发给模型的完整提示词
+        full_prompt = (
             outcome.final_user_prompt if outcome and outcome.final_user_prompt else ""
         ) or ctx.prompts.merge_text()
+        user_prompt = self._build_history_user_text(ctx, full_prompt)
         assistant_response = outcome.text if outcome else ""
 
         if not (assistant_response or "").strip():
             logger.debug("[主动消息] 本次结果无文本内容，跳过对话历史存档喵。")
         else:
             try:
-                await add_message_pair(
-                    plugin.context.conversation_manager,
-                    conv_id,
-                    user_prompt,
-                    assistant_response,
+                await self._save_history_pair(
+                    conv_id, user_prompt, assistant_response, full_prompt
                 )
                 if await verify_message_persisted(
                     plugin.context.conversation_manager,
@@ -371,6 +375,77 @@ class FlowOrchestrator:
 
         # 群聊由沉默倒计时驱动，不依赖持久化调度字段，故在成功发送后清理残留状态。
         await self._cleanup_group_schedule_state(normalized_session_id)
+
+    def _build_history_user_text(self, ctx: ProactiveContext, full_prompt: str) -> str:
+        """生成写入对话历史的 user 侧文本。
+
+        存档与请求已经解耦：这里返回什么都不会影响本轮已发出的内容，
+        只影响下一轮及以后回灌给模型的历史。
+
+        Args:
+            ctx: 本轮执行上下文。
+            full_prompt: 本轮实际发送的完整提示词。
+
+        Returns:
+            待存档文本；清空形态返回空串。
+        """
+        mode = ""
+        session_type = ""
+        config = ctx.config
+        if config is not None:
+            mode = config.context_settings.get(HISTORY_ARCHIVE_MODE_KEY, "")
+            session_type = str(config.session_type or "")
+
+        # 会话配置缺失时按会话 ID 反推类型，否则群聊会被写成私聊措辞。
+        if not session_type:
+            parsed = self.plugin.session_service.parse_session_id(ctx.session_id)
+            if parsed:
+                if is_group_type(parsed[1]):
+                    session_type = "group"
+                elif is_friend_type(parsed[1]):
+                    session_type = "friend"
+
+        # 计数是发送后的序号：本轮尚未递增，故手动加一。
+        text = build_proactive_history_text(
+            mode,
+            full_text=full_prompt,
+            unanswered_index=ctx.unanswered_count + 1,
+            session_type=session_type,
+        )
+        # 打印存档体积。形态名取归一化后的值。
+        logger.info(
+            f"[主动消息] 历史存档形态使用 {normalize_archive_mode(mode)}，"
+            f"本次写入 {len(text)} 字（原完整提示词为 {len(full_prompt)} 字）喵。"
+        )
+        return text
+
+    async def _save_history_pair(
+        self,
+        conv_id: str,
+        user_prompt: str,
+        assistant_response: str,
+        fallback_prompt: str,
+    ) -> None:
+        """存档一对消息；空 user 文本被拒收时退回可用文本重试一次。
+
+        失败时优先退回最短标记，仍为空才退回完整提示词。
+        """
+        manager = self.plugin.context.conversation_manager
+        try:
+            await add_message_pair(manager, conv_id, user_prompt, assistant_response)
+            return
+        except Exception as e:
+            # 非空文本仍失败属于真实故障，交给外层统一记录。
+            if user_prompt:
+                raise
+            # 异常对象在 except 块结束后会被 Python 删除，在这里用完。
+            error_text = str(e)
+
+        retry_text = BARE_MARKER or fallback_prompt or "主动消息"
+        logger.warning(
+            f"[主动消息] 空内容存档被拒绝，改用「{retry_text}」重试一次喵: {error_text}"
+        )
+        await add_message_pair(manager, conv_id, retry_text, assistant_response)
 
     def _remember_used_template(self, session_id: str, ctx: ProactiveContext) -> None:
         """记录本轮实际发出的提示词模板，供下一轮回避判重。
