@@ -92,17 +92,31 @@ async def _load_records(
         return []
 
 
+async def count_history_records(
+    conversation_manager: Any,
+    session_id: str,
+    conv_id: str,
+) -> int:
+    """读取当前对话历史条数，用作本轮新增记录的边界基线。
+
+    读不到时返回 0：调用方据此退化为扫描全量"""
+    return len(await _load_records(conversation_manager, session_id, conv_id))
+
+
 async def verify_pair_persisted(
     conversation_manager: Any,
     session_id: str,
     conv_id: str,
     user_text: str,
     assistant_text: str,
+    since: int = 0,
     limit: int = 4,
 ) -> tuple[bool, bool]:
-    """回读末尾若干条记录，判断本轮 user / assistant 两侧是否都已落盘。
+    """回读本轮的新增记录边界，判断 user / assistant 两侧是否都已落盘。
 
-    仅检查末尾 limit 条：更早的记录与本轮无关，全量扫描在长会话里代价过高。
+    Args:
+        since: 写入前读取到的历史条数。0 表示基线不可用，退化为看末尾。
+        limit: 基线不可用时回看的条数上限。
 
     Returns:
         (user_ok, assistant_ok)。user_text 为空时 user_ok 恒为 False，
@@ -115,9 +129,19 @@ async def verify_pair_persisted(
     target_assistant = (assistant_text or "").strip()
     target_user = (user_text or "").strip()
 
+    # 基线可用时只看新增部分；否则退化为末尾 limit 条。
+    if since > 0:
+        appended = records[since:]
+    else:
+        appended = records[-limit:]
+    if not appended:
+        return False, False
+
+    # 基线正确时这一批就是本轮写入，两个标志来自同一对消息；
+    # 基线失效（历史被并发改写）时仍有极小概率跨对匹配，故要求数量对齐。
     user_ok = False
     assistant_ok = False
-    for record in reversed(records[-limit:]):
+    for record in appended:
         if not isinstance(record, dict):
             continue
         role = record.get("role")
