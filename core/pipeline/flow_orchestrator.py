@@ -14,6 +14,7 @@ from astrbot.api import logger
 from ...utils.time_utils import is_quiet_time
 from ..adapters.astrbot_conversation import (
     add_message_pair,
+    count_history_records,
     verify_message_persisted,
     verify_pair_persisted,
 )
@@ -391,7 +392,7 @@ class FlowOrchestrator:
         await self._cleanup_group_schedule_state(normalized_session_id)
 
     async def _allocate_archive_index(self, ctx: ProactiveContext) -> int:
-        """在锁内基于会话实际计数分配本轮序号，并立即落盘。"""
+        """在锁内基于会话实际计数分配本轮序号。"""
         plugin = self.plugin
         normalized_session_id = plugin.session_service.normalize_session_id(
             ctx.session_id
@@ -404,7 +405,12 @@ class FlowOrchestrator:
                 current = 0
             index = max(current, 0) + 1
             payload["unanswered_count"] = index
-            await plugin.storage_service.save_data()
+            try:
+                await plugin.storage_service.save_data()
+            except Exception as e:  # noqa: BLE001 - 落盘失败不应阻断存档
+                logger.warning(
+                    f"[主动消息] 分配未回复序号后落盘失败，将在收尾阶段重试喵: {e}"
+                )
         return index
 
     def _resolve_archive_context(self, ctx: ProactiveContext) -> tuple[str, str]:
@@ -486,6 +492,9 @@ class FlowOrchestrator:
     ) -> None:
         """存档一对消息，并在被拒收时按短标记 -> 完整提示词两级回退。"""
         manager = self.plugin.context.conversation_manager
+        # 写入前记录基线：主动消息的历史内容高度重复，只有新增记录
+        # 才能证明本轮真的落盘了，末尾文本匹配会把上一轮的相同记录误判成本轮。
+        baseline = await count_history_records(manager, session_id, conv_id)
         try:
             await add_message_pair(manager, conv_id, user_prompt, assistant_response)
             return
@@ -495,7 +504,12 @@ class FlowOrchestrator:
 
         # 部分提交（user 已写入、assistant 失败）时不能整对重发，否则会重复。
         user_ok, assistant_ok = await verify_pair_persisted(
-            manager, session_id, conv_id, user_prompt, assistant_response
+            manager,
+            session_id,
+            conv_id,
+            user_prompt,
+            assistant_response,
+            since=baseline,
         )
         if user_ok and assistant_ok:
             logger.info("[主动消息] 存档虽抛异常，但回读确认两侧均已落盘喵。")
