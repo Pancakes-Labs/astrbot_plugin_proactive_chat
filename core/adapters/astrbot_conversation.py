@@ -70,6 +70,92 @@ async def verify_message_persisted(
         return False
 
 
+async def _load_records(
+    conversation_manager: Any,
+    session_id: str,
+    conv_id: str,
+) -> list:
+    """读取对话历史记录列表；任何异常都返回空列表。
+
+    只用于存档后的回读校验，失败不应影响主流程。
+    """
+    try:
+        conversation = await conversation_manager.get_conversation(session_id, conv_id)
+        if not conversation or not conversation.history:
+            return []
+        history = conversation.history
+        if isinstance(history, str):
+            history = json.loads(history)
+        return history if isinstance(history, list) else []
+    except Exception as e:
+        logger.debug(f"[主动消息] 回读对话历史失败喵: {e}")
+        return []
+
+
+async def count_history_records(
+    conversation_manager: Any,
+    session_id: str,
+    conv_id: str,
+) -> int:
+    """读取当前对话历史条数，用作本轮新增记录的边界基线。
+
+    读不到时返回 0：调用方据此退化为扫描全量"""
+    return len(await _load_records(conversation_manager, session_id, conv_id))
+
+
+async def verify_pair_persisted(
+    conversation_manager: Any,
+    session_id: str,
+    conv_id: str,
+    user_text: str,
+    assistant_text: str,
+    since: int = 0,
+    limit: int = 4,
+) -> tuple[bool, bool]:
+    """回读本轮的新增记录边界，判断 user / assistant 两侧是否都已落盘。
+
+    Args:
+        since: 写入前读取到的历史条数。0 表示基线不可用，退化为看末尾。
+        limit: 基线不可用时回看的条数上限。
+
+    Returns:
+        (user_ok, assistant_ok)。user_text 为空时 user_ok 恒为 False，
+        由调用方据此判断空内容是否被静默丢弃。
+    """
+    records = await _load_records(conversation_manager, session_id, conv_id)
+    if not records:
+        return False, False
+
+    target_assistant = (assistant_text or "").strip()
+    target_user = (user_text or "").strip()
+
+    # 基线可用时只看新增部分；否则退化为末尾 limit 条。
+    if since > 0:
+        appended = records[since:]
+    else:
+        appended = records[-limit:]
+    if not appended:
+        return False, False
+
+    # 基线正确时这一批就是本轮写入，两个标志来自同一对消息；
+    # 基线失效（历史被并发改写）时仍有极小概率跨对匹配，故要求数量对齐。
+    user_ok = False
+    assistant_ok = False
+    for record in appended:
+        if not isinstance(record, dict):
+            continue
+        role = record.get("role")
+        text = reduce_record_text(record.get("content", "")).strip()
+        if not text:
+            continue
+        if role == "assistant" and target_assistant and target_assistant in text:
+            assistant_ok = True
+        elif role == "user" and target_user and target_user in text:
+            user_ok = True
+
+    return user_ok, assistant_ok
+
+
 async def add_message_pair(
     conversation_manager: Any,
     conv_id: str,
