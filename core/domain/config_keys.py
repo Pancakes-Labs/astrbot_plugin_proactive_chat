@@ -42,6 +42,8 @@ AVOID_REPEAT_WINDOW_KEY = "avoid_repeat_window"
 # 按场景（proactive / decisions / vision）指定 Provider 与模型，含回退链
 MODEL_SETTINGS_KEY = "model_settings"
 CONTEXT_SETTINGS_KEY = "context_settings"
+# context_settings 内部：主动消息发送后写入对话历史的 user 侧形态
+HISTORY_ARCHIVE_MODE_KEY = "history_archive_mode"
 SCHEDULE_SETTINGS_KEY = "schedule_settings"
 STARTUP_CHECK_SETTINGS_KEY = "startup_check_settings"
 GROUP_SILENCE_SETTINGS_KEY = "group_silence_settings"
@@ -116,6 +118,7 @@ __all__ = [
     "ENABLED_KEY",
     "GROUP_ONLY_SECTIONS",
     "GROUP_SILENCE_SETTINGS_KEY",
+    "HISTORY_ARCHIVE_MODE_KEY",
     "LEGACY_FRIEND_SETTINGS_KEY",
     "LEGACY_GROUP_SETTINGS_KEY",
     "LEGACY_KEY_MAP",
