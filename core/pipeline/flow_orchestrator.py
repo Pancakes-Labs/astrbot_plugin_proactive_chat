@@ -27,6 +27,7 @@ from ..domain.history_marker import (
     contains_proactive_marker,
     normalize_archive_mode,
 )
+from ..domain.media_policy import is_media_component, media_placeholder
 from ..domain.request_context import ProactiveContext
 from ..domain.session_key import is_friend_type, is_group_type
 from ..features.feature_manifest import build_default_features
@@ -291,6 +292,10 @@ class FlowOrchestrator:
             unanswered_index,
         )
         assistant_response = outcome.text if outcome else ""
+        # 纯媒体轮次不能跳过存档：跳过会让未回复计数与历史脱节，
+        # 模型下一轮也完全不知道自己发过图。改为写入媒体占位文本。
+        if not (assistant_response or "").strip() and outcome is not None:
+            assistant_response = self._build_media_archive_text(outcome)
 
         if not (assistant_response or "").strip():
             logger.debug("[主动消息] 本次结果无文本内容，跳过对话历史存档喵。")
@@ -528,6 +533,29 @@ class FlowOrchestrator:
                 last_error = retry_error
 
         raise last_error
+
+    @staticmethod
+    def _build_media_archive_text(outcome: Any) -> str:
+        """为纯媒体轮次生成可存档的占位文本。
+
+        优先用 DELIVER 阶段回填的媒体摘要（如“1 张图片”），
+        缺失时退回链中媒体的通用占位，保证历史里能看出机器人发过东西。
+        """
+        summary = str(getattr(outcome, "media_summary", "") or "").strip()
+        if summary:
+            return f"[主动发送媒体：{summary}]"
+
+        chain = getattr(outcome, "chain", None) or []
+        placeholders: list[str] = []
+        for comp in chain:
+            if not is_media_component(comp):
+                continue
+            placeholder = media_placeholder(comp)
+            if placeholder not in placeholders:
+                placeholders.append(placeholder)
+        if not placeholders:
+            return ""
+        return "".join(placeholders)
 
     @staticmethod
     def _archive_fallback_texts(user_prompt: str, fallback_prompt: str) -> list[str]:
