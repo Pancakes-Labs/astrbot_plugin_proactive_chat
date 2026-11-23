@@ -29,5 +29,7 @@ class DeliveryReport:
     dropped_components: list[dict[str, Any]] = field(default_factory=list)
     # 是否因链中已有语音而跳过 TTS。
     tts_skipped: bool = False
+    # 实际送达的文本（按发送顺序拼接），用于只归档真正送达的内容。
+    delivered_text: str = ""
     # 扩展信息。
     metadata: dict[str, Any] = field(default_factory=dict)

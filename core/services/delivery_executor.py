@@ -19,6 +19,7 @@ from ..domain.delivery_plan import (
     DeliveryPlan,
     degraded_components,
 )
+from ..domain.media_policy import is_text_component, text_of
 from ..domain.tool_markup_cleaner import clean_llm_text
 from .delivery_planner import TTS_ORDER_TEXT_FIRST
 
@@ -60,6 +61,8 @@ class DeliveryExecutor:
         sent_batches = 0
         media_sent: dict[str, int] = {}
         degraded_total = 0
+        # 收集真正送达的文本批次，供报告回填后只归档用户看到的内容。
+        delivered_text: list[str] = []
 
         if text_first:
             # 图文优先：先发批次，再补语音。
@@ -71,6 +74,7 @@ class DeliveryExecutor:
                 sender_service=sender_service,
                 settings=settings,
                 seg_conf=seg_conf,
+                delivered_text=delivered_text,
             )
             any_sent = any_sent or sent
             sent_batches += batches
@@ -98,6 +102,7 @@ class DeliveryExecutor:
                         sender_service=sender_service,
                         settings=settings,
                         seg_conf=seg_conf,
+                        delivered_text=delivered_text,
                     )
                     any_sent = any_sent or sent2
                     sent_batches += batches2
@@ -129,6 +134,7 @@ class DeliveryExecutor:
                 sender_service=sender_service,
                 settings=settings,
                 seg_conf=seg_conf,
+                delivered_text=delivered_text,
             )
             any_sent = any_sent or sent
             sent_batches += batches
@@ -136,6 +142,12 @@ class DeliveryExecutor:
             self._merge_counts(media_sent, media)
 
         if report is not None:
+            # 语音承载正文且不再发文本时，送达的正文来自语音，同样可归档。
+            if voice_sent and withhold_text and not delivered_text:
+                delivered_text.append(plan.visible_text)
+            report.delivered_text = "\n\n".join(
+                item.strip() for item in delivered_text if item.strip()
+            )
             report.voice_sent = bool(voice_sent)
             report.segmented = bool(plan.segmented)
             report.segment_count = sent_batches
@@ -158,8 +170,13 @@ class DeliveryExecutor:
         sender_service: Any,
         settings: dict[str, Any],
         seg_conf: dict,
+        delivered_text: list[str],
     ) -> tuple[bool, int, dict[str, int], int]:
-        """逐批发送，返回 (是否送出, 批次数, 媒体计数, 降级数)。"""
+        """逐批发送，返回 (是否送出, 批次数, 媒体计数, 降级数)。
+
+        delivered_text 为外部传入的收集器：只有真正送达的文本批次才会写入，
+        供 RECORD 阶段只归档用户确实看到的内容。
+        """
         any_sent = False
         sent_batches = 0
         media_sent: dict[str, int] = {}
@@ -173,17 +190,50 @@ class DeliveryExecutor:
                 sender_service=sender_service,
                 degrade_on_failure=settings["degrade_on_failure"],
                 meta=plan.chain_meta,
+                timeout=float(settings.get("send_timeout_seconds") or 0),
             )
             if ok:
                 any_sent = True
                 sent_batches += 1
                 degraded_total += degraded
-                self._merge_counts(media_sent, batch.media_counts())
+                self._collect_delivered_text(
+                    batch, delivered_text, degraded=bool(degraded)
+                )
+                # 降级成功只说明占位文本送达，媒体本身并未送达，
+                # 因此不计入媒体统计，避免历史里出现虚假的送达记录。
+                if not degraded:
+                    self._merge_counts(media_sent, batch.media_counts())
 
             if index < len(plan.batches) - 1:
                 await asyncio.sleep(self._interval_for(batch, seg_conf, settings))
 
         return any_sent, sent_batches, media_sent, degraded_total
+
+    @staticmethod
+    def _collect_delivered_text(
+        batch: DeliveryBatch, sink: list[str], *, degraded: bool = False
+    ) -> None:
+        """收集已送达批次的文本。
+
+        降级批次实际发出的是媒体占位文本，因此按占位符收集，
+        不能把被替换掉的媒体记成送达，也不能让纯媒体降级后历史留空。
+        """
+        if degraded:
+            items, _ = degraded_components(batch.components)
+            for item in items:
+                if isinstance(item, str) and item.strip():
+                    sink.append(item)
+                elif is_text_component(item):
+                    text = text_of(item)
+                    if text.strip():
+                        sink.append(text)
+            return
+
+        for comp in batch.components:
+            if is_text_component(comp):
+                text = text_of(comp)
+                if text.strip():
+                    sink.append(text)
 
     @staticmethod
     def _merge_counts(target: dict[str, int], source: dict[str, int]) -> None:
@@ -202,13 +252,16 @@ class DeliveryExecutor:
         sender_service: Any,
         degrade_on_failure: bool,
         meta: dict | None = None,
+        timeout: float = 0.0,
     ) -> tuple[bool, int]:
         """发送一个批次，失败时按需降级为文本占位重试一次。"""
         if not batch.components:
             return False, 0
 
         components = self._build_chain(batch)
-        if await sender_service.send_chain(session_id, event, components, meta) is True:
+        if await self._send_once(
+            sender_service, session_id, event, components, meta, timeout
+        ):
             return True, 0
 
         if not degrade_on_failure or not batch.has_media():
@@ -221,10 +274,33 @@ class DeliveryExecutor:
         logger.warning(
             f"[主动消息] {batch.kind} 批次发送失败，已将 {replaced} 个媒体降级为文本占位重试喵。"
         )
-        if await sender_service.send_chain(session_id, event, fallback, meta) is True:
+        if await self._send_once(
+            sender_service, session_id, event, fallback, meta, timeout
+        ):
             batch.degraded = True
             return True, replaced
         return False, 0
+
+    @staticmethod
+    async def _send_once(
+        sender_service: Any,
+        session_id: str,
+        event: Any,
+        components: list,
+        meta: dict | None,
+        timeout: float,
+    ) -> bool:
+        """执行一次发送；超时按失败处理，避免平台卡死拖住后续批次。"""
+        call = sender_service.send_chain(session_id, event, components, meta)
+        if timeout <= 0:
+            return (await call) is True
+        try:
+            return (await asyncio.wait_for(call, timeout=timeout)) is True
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[主动消息] 单批发送超过 {timeout:.0f} 秒仍未返回，按发送失败处理喵。"
+            )
+            return False
 
     @staticmethod
     def _build_chain(batch: DeliveryBatch) -> list:
