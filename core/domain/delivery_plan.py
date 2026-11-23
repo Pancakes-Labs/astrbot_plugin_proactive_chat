@@ -227,9 +227,10 @@ def group_into_batches(
     current: list = []
     current_text_len = 0
     current_media = 0
+    current_media_type = ""
 
     def flush() -> None:
-        nonlocal current, current_text_len, current_media
+        nonlocal current, current_text_len, current_media, current_media_type
         if not current:
             return
         batch = DeliveryBatch(
@@ -246,6 +247,7 @@ def group_into_batches(
         current = []
         current_text_len = 0
         current_media = 0
+        current_media_type = ""
 
     for kind, payload in events:
         if kind == _EVENT_TEXT:
@@ -260,14 +262,18 @@ def group_into_batches(
 
         # 媒体事件
         if media_grouping == GROUPING_OWN_MESSAGE:
-            # limit 为 0 表示不限制：连续媒体合并，不逐条拆分。
+            media_type = media_type_of(payload)
+            # limit 为 0 表示不限制：只合并连续且同类的媒体
             if limit and current_media >= limit:
                 flush()
             elif current_text_len:
                 # own_message 下媒体不与文本同批，先收掉当前文本批。
                 flush()
+            elif current_media and media_type and media_type != current_media_type:
+                flush()
             current.append(payload)
             current_media += 1
+            current_media_type = media_type or current_media_type
             continue
 
         # follow_text：媒体跟随当前批
