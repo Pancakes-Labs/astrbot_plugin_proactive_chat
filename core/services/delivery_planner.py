@@ -46,6 +46,7 @@ UNKNOWN_PLACEHOLDER = "placeholder"
 DEFAULT_MAX_MEDIA_PER_BATCH = 4
 DEFAULT_MEDIA_INTERVAL_SECONDS = 1.0
 DEFAULT_MEDIA_TIMEOUT_SECONDS = 30.0
+DEFAULT_SEND_TIMEOUT_SECONDS = 120.0
 
 
 class DeliveryPlanner:
@@ -93,6 +94,9 @@ class DeliveryPlanner:
             ),
             "media_timeout_seconds": self._as_float(
                 raw.get("media_timeout_seconds"), DEFAULT_MEDIA_TIMEOUT_SECONDS, 1.0
+            ),
+            "send_timeout_seconds": self._as_float(
+                raw.get("send_timeout_seconds"), DEFAULT_SEND_TIMEOUT_SECONDS
             ),
             "restrict_local_media": self._as_bool(
                 raw.get("restrict_local_media"), True
@@ -186,18 +190,25 @@ class DeliveryPlanner:
             kind = component_kind(comp)
 
             if kind == KIND_INTERACTIVE:
-                if strip_interactive:
-                    dropped.append(describe_component(comp, "interactive_component"))
-                else:
-                    kept.append(comp)
+                # 交互组件无法进入事件/批次路径（主动消息没有真实用户事件），
+                # 因此无论开关如何都记录为剥离，避免关闭剥离后静默丢失。
+                dropped.append(
+                    describe_component(
+                        comp,
+                        "interactive_component"
+                        if strip_interactive
+                        else "interactive_unsupported",
+                    )
+                )
                 continue
 
             if is_media_component(comp):
-                if restrict_local:
-                    safe, reason = is_safe_media_source(comp, allowed_dirs)
-                    if not safe:
-                        dropped.append(describe_component(comp, reason))
-                        continue
+                safe, reason = is_safe_media_source(
+                    comp, allowed_dirs, restrict_local=restrict_local
+                )
+                if not safe:
+                    dropped.append(describe_component(comp, reason))
+                    continue
                 kept.append(comp)
                 continue
 

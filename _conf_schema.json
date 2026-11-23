@@ -772,6 +772,17 @@
                         },
                         "hint": "纯媒体消息之间的固定等待时间。纯媒体没有正文，无法按字数计算间隔。"
                     },
+                    "send_timeout_seconds": {
+                        "description": "单批发送超时（秒）",
+                        "type": "int",
+                        "default": 120,
+                        "slider": {
+                            "min": 10,
+                            "max": 600,
+                            "step": 10
+                        },
+                        "hint": "单个发送批次的等待上限。平台发送长时间无响应时按失败处理，避免卡住后续批次；0 表示不限制。"
+                    },
                     "tts_order": {
                         "description": "语音与图文顺序",
                         "type": "string",
