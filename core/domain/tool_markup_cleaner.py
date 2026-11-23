@@ -341,11 +341,17 @@ def clean_llm_text(text: str, *, extract_payload: bool = True) -> str:
 def clean_chain_components(chain: list) -> list:
     """清洗消息链中的纯文本组件。
 
-    非文本组件原样保留；文本组件清洗后为空则整段丢弃，
-    避免发送空消息。不依赖具体组件类型，靠 text 属性识别。
+    只对纯文本组件（Plain / Unknown）做清洗，清洗后为空则丢弃；
+    媒体等非文本组件一律原样保留。
     """
+    from .media_policy import is_text_component
+
     cleaned: list = []
     for comp in chain or []:
+        if not is_text_component(comp):
+            cleaned.append(comp)
+            continue
+
         text = getattr(comp, "text", None)
         if not isinstance(text, str):
             cleaned.append(comp)
