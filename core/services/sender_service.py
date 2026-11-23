@@ -165,7 +165,6 @@ class SenderService:
 
         return random.uniform(interval[0], interval[1])
 
-
     # ------------------------------------------------------------------
     # 事件构造
     # ------------------------------------------------------------------
@@ -372,8 +371,7 @@ class SenderService:
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "[主动消息] 媒体落库超过 "
-                    f"{timeout:.0f} 秒已跳过该组件喵。"
+                    f"[主动消息] 媒体落库超过 {timeout:.0f} 秒已跳过该组件喵。"
                 )
                 continue
             except Exception as e:  # noqa: BLE001 - 单个媒体失败不应影响其它组件
@@ -393,9 +391,7 @@ class SenderService:
             session_config = {}
         try:
             planner = self._planner()
-            return float(
-                planner.get_settings(session_config)["media_timeout_seconds"]
-            )
+            return float(planner.get_settings(session_config)["media_timeout_seconds"])
         except Exception:  # pragma: no cover
             return 30.0
 
@@ -530,9 +526,7 @@ class SenderService:
                 sent = await event.send(chain)
             except Exception as e:
                 logger.error(f"[主动消息] 事件发送异常喵，回退平台直发: {e}")
-                sent_direct = await self.send_chain_direct(
-                    session_id, components, meta
-                )
+                sent_direct = await self.send_chain_direct(session_id, components, meta)
                 if sent_direct:
                     self._mark_event_sent(event)
                 else:
@@ -663,9 +657,7 @@ class SenderService:
                             "text_length": len(text),
                             "media_total": plan.media_total,
                             "media_components": ",".join(sorted(plan.media_counts)),
-                            "media_degraded": (
-                                report.media_degraded if report else 0
-                            ),
+                            "media_degraded": (report.media_degraded if report else 0),
                             "dropped_components": len(plan.dropped),
                             "success": any_sent,
                         },

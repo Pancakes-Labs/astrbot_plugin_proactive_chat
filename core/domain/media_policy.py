@@ -193,7 +193,9 @@ def _media_sources(comp: object, media_type: str) -> list[str]:
     return sources
 
 
-def is_safe_media_source(comp: object, allowed_dirs: list[str] | None = None) -> tuple[bool, str]:
+def is_safe_media_source(
+    comp: object, allowed_dirs: list[str] | None = None
+) -> tuple[bool, str]:
     """判断媒体来源是否允许发送。
 
     规则：

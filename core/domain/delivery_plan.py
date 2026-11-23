@@ -220,7 +220,9 @@ def group_into_batches(
     Returns:
         批次列表；空输入返回空列表。
     """
-    limit = max_media_per_batch if max_media_per_batch and max_media_per_batch > 0 else 0
+    limit = (
+        max_media_per_batch if max_media_per_batch and max_media_per_batch > 0 else 0
+    )
     batches: list = []
     current: list = []
     current_text_len = 0

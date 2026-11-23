@@ -90,9 +90,7 @@ class DeliveryExecutor:
                 elif withhold_text:
                     # 语音失败且正文已被扣下：补发文本，保证有正文送达。
                     # 只发文本批：媒体批已在上面发过，整份重发会重复。
-                    logger.warning(
-                        "[主动消息] 语音合成失败，补发被扣下的文本批次喵。"
-                    )
+                    logger.warning("[主动消息] 语音合成失败，补发被扣下的文本批次喵。")
                     sent2, batches2, media2, degraded2 = await self._send_batches(
                         plan=plan.text_only(),
                         session_id=session_id,
@@ -119,9 +117,7 @@ class DeliveryExecutor:
                     await asyncio.sleep(0.5)
 
             # 语音成功且不附带原文时才裁剪文本；语音失败仍发完整内容兜底。
-            batch_plan = (
-                plan.media_only() if (voice_sent and not always_text) else plan
-            )
+            batch_plan = plan.media_only() if (voice_sent and not always_text) else plan
             if voice_sent and not always_text:
                 logger.info(
                     "[主动消息] 语音已送达且未开启附带原文，本次仅补发媒体批次喵。"
@@ -212,10 +208,7 @@ class DeliveryExecutor:
             return False, 0
 
         components = self._build_chain(batch)
-        if (
-            await sender_service.send_chain(session_id, event, components, meta)
-            is True
-        ):
+        if await sender_service.send_chain(session_id, event, components, meta) is True:
             return True, 0
 
         if not degrade_on_failure or not batch.has_media():
@@ -228,10 +221,7 @@ class DeliveryExecutor:
         logger.warning(
             f"[主动消息] {batch.kind} 批次发送失败，已将 {replaced} 个媒体降级为文本占位重试喵。"
         )
-        if (
-            await sender_service.send_chain(session_id, event, fallback, meta)
-            is True
-        ):
+        if await sender_service.send_chain(session_id, event, fallback, meta) is True:
             batch.degraded = True
             return True, replaced
         return False, 0

@@ -187,9 +187,7 @@ class DeliveryPlanner:
 
             if kind == KIND_INTERACTIVE:
                 if strip_interactive:
-                    dropped.append(
-                        describe_component(comp, "interactive_component")
-                    )
+                    dropped.append(describe_component(comp, "interactive_component"))
                 else:
                     kept.append(comp)
                 continue
@@ -247,9 +245,7 @@ class DeliveryPlanner:
 
         # 1) 组装并派发装饰钩子（提前到 TTS 之前，钩子拦截时不会先发语音）。
         base = self.assemble_base_components(text, initial_chain)
-        decorated, should_send = await sender_service.run_decorating_hooks(
-            event, base
-        )
+        decorated, should_send = await sender_service.run_decorating_hooks(event, base)
         if not should_send:
             plan.blocked_reason = "stopped_by_hook"
             return plan
@@ -264,9 +260,7 @@ class DeliveryPlanner:
 
         # 3) 剥离交互组件 / 校验媒体来源。
         # 返回的 dropped 仅含真正被丢弃的组件；转占位的未知组件另计入 downgraded。
-        components, dropped, downgraded = self.sanitize_components(
-            decorated, settings
-        )
+        components, dropped, downgraded = self.sanitize_components(decorated, settings)
         plan.dropped = dropped
         if dropped:
             logger.info(
@@ -276,9 +270,7 @@ class DeliveryPlanner:
                 )
             )
         if downgraded:
-            logger.info(
-                f"[主动消息] {downgraded} 个未知组件已转为文本占位喵。"
-            )
+            logger.info(f"[主动消息] {downgraded} 个未知组件已转为文本占位喵。")
         if not components:
             # 这里是因为组件全被策略剥离，属于生成内容不可投递，
             # 与钩子主动清空不同，调用方应视为本轮失败。
@@ -303,9 +295,7 @@ class DeliveryPlanner:
         # 组件数在降级后统计，占位符也会作为独立文本段参与判定。
         seg_conf = session_config.get("segmented_reply_settings") or {}
         allow_split, text_total = self._resolve_split(seg_conf, components)
-        text_component_total = sum(
-            1 for comp in components if is_text_component(comp)
-        )
+        text_component_total = sum(1 for comp in components if is_text_component(comp))
         if text_total:
             plan.warnings.append(f"text_length:{text_total}")
 
