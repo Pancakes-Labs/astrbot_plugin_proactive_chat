@@ -681,6 +681,112 @@
                         "hint": "开启后，即使语音发送成功，也会再发一条纯文本原文，确保内容可见。"
                     }
                 }
+            },
+            "rich_media_settings": {
+                "description": "🖼️ 富媒体发送设置",
+                "type": "object",
+                "hint": "控制主动消息中图片、语音、视频、文件等组件的分组方式与失败降级行为。",
+                "items": {
+                    "enabled": {
+                        "description": "启用富媒体发送",
+                        "type": "bool",
+                        "default": true,
+                        "hint": "关闭后，主动消息中如果发送了文本以外的富媒体，会统一降级为文本占位（如 [图片]）。"
+                    },
+                    "media_grouping": {
+                        "description": "媒体分组方式",
+                        "type": "string",
+                        "options": [
+                            "follow_text",
+                            "own_message"
+                        ],
+                        "labels": [
+                            "跟随前一条文本",
+                            "每条媒体独立发送"
+                        ],
+                        "default": "follow_text",
+                        "hint": "跟随前一条文本：媒体与上一段文字合并成一条发出，图文不脱钩；独立发送：每条媒体单独成条，连续同类媒体会合并。"
+                    },
+                    "max_media_per_batch": {
+                        "description": "单条消息的最大媒体数",
+                        "type": "int",
+                        "default": 4,
+                        "slider": {
+                            "min": 0,
+                            "max": 10,
+                            "step": 1
+                        },
+                        "hint": "单条消息最多携带的媒体数量，0 表示不限制。超出会自动拆成多条。"
+                    },
+                    "degrade_on_failure": {
+                        "description": "发送失败时降级为文本",
+                        "type": "bool",
+                        "default": true,
+                        "hint": "媒体发送失败时，自动改用 [图片] 这类文本占位重试一次，保证消息仍能送达。"
+                    },
+                    "strip_interactive_components": {
+                        "description": "剥离交互类组件",
+                        "type": "bool",
+                        "default": true,
+                        "hint": "剥离 @、引用回复、戳一戳、表情等依赖真实用户事件的组件。"
+                    },
+                    "unknown_component_policy": {
+                        "description": "未知组件处理方式",
+                        "type": "string",
+                        "options": [
+                            "drop",
+                            "placeholder"
+                        ],
+                        "labels": [
+                            "直接丢弃",
+                            "转为文本占位"
+                        ],
+                        "default": "drop",
+                        "hint": "对于合并转发、音乐卡片等尚不支持的组件：丢弃最安全，转占位可以留下痕迹。"
+                    },
+                    "restrict_local_media": {
+                        "description": "限制本地媒体来源",
+                        "type": "bool",
+                        "default": true,
+                        "hint": "开启后只允许发送插件数据目录与临时目录内的本地文件，防止模型或第三方插件诱导发送任意本地文件。"
+                    },
+                    "media_timeout_seconds": {
+                        "description": "媒体落库超时（秒）",
+                        "type": "int",
+                        "default": 30,
+                        "slider": {
+                            "min": 1,
+                            "max": 600,
+                            "step": 5
+                        },
+                        "hint": "平台流水补写时单个媒体的下载/转码超时，超时只跳过该组件，不影响整条流水。"
+                    },
+                    "media_interval_seconds": {
+                        "description": "媒体消息间隔（秒）",
+                        "type": "float",
+                        "default": 1,
+                        "slider": {
+                            "min": 0.0,
+                            "max": 10.0,
+                            "step": 0.1
+                        },
+                        "hint": "纯媒体消息之间的固定等待时间。纯媒体没有正文，无法按字数计算间隔。"
+                    },
+                    "tts_order": {
+                        "description": "语音与图文顺序",
+                        "type": "string",
+                        "options": [
+                            "voice_first",
+                            "text_first"
+                        ],
+                        "labels": [
+                            "先语音后图文",
+                            "先图文后语音"
+                        ],
+                        "default": "voice_first",
+                        "hint": "同时开启 TTS 与富媒体时的发送顺序。"
+                    }
+                }
             }
         }
     },
