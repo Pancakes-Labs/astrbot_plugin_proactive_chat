@@ -49,6 +49,7 @@ STARTUP_CHECK_SETTINGS_KEY = "startup_check_settings"
 GROUP_SILENCE_SETTINGS_KEY = "group_silence_settings"
 TTS_SETTINGS_KEY = "tts_settings"
 SEGMENTED_REPLY_SETTINGS_KEY = "segmented_reply_settings"
+RICH_MEDIA_SETTINGS_KEY = "rich_media_settings"
 
 # 仅对群聊注入的二级分组：运行时按会话类型选择性合入
 GROUP_ONLY_SECTIONS: tuple[str, ...] = (GROUP_SILENCE_SETTINGS_KEY,)
@@ -67,6 +68,7 @@ OVERRIDABLE_ROOT_KEYS: frozenset[str] = frozenset(
         GROUP_SILENCE_SETTINGS_KEY,
         TTS_SETTINGS_KEY,
         SEGMENTED_REPLY_SETTINGS_KEY,
+        RICH_MEDIA_SETTINGS_KEY,
     }
 )
 
@@ -133,6 +135,7 @@ __all__ = [
     "OVERRIDABLE_ROOT_KEYS",
     "PERSONA_ID_KEY",
     "PROMPT_SETTINGS_KEY",
+    "RICH_MEDIA_SETTINGS_KEY",
     "SCHEDULE_SETTINGS_KEY",
     "SEGMENTED_REPLY_SETTINGS_KEY",
     "SESSION_DEFAULTS_KEY",
