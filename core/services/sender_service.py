@@ -632,6 +632,8 @@ class SenderService:
 
         # 只有真正送达过内容才记录媒体摘要：未送达的轮次不应污染对话历史。
         # 计数以报告里的实际送达为准：媒体可能被降级或整批失败。
+        if report is not None and not report.sent:
+            report.sent = bool(any_sent)
         sent_media = report.media_sent if report is not None else {}
         if outcome is not None and any_sent and sent_media:
             outcome.media_counts = dict(sent_media)

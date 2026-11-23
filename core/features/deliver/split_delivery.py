@@ -51,6 +51,13 @@ class DeliverStage(BaseStage):
             )
             ctx.abort("send_failed")
             return StageResult.RESCHEDULE
+        # 返回成功但没有实际送出任何内容（例如装饰钩子清空了消息链）：
+        # 既不存档也不计数，保持旧实现的「静默跳过」语义。
+        if not report.sent:
+            logger.info(
+                f"[主动消息] {plugin.session_service.get_session_log_str(session_id)} 的本次主动消息未实际送出内容，跳过存档与计数喵。"
+            )
+            return StageResult.STOP
         return StageResult.CONTINUE
 
 
@@ -86,6 +93,7 @@ class SplitDeliveryFeature:
                 "restrict_local_media": True,
                 "media_timeout_seconds": 30,
                 "media_interval_seconds": 1,
+                "send_timeout_seconds": 120,
                 "tts_order": "voice_first",
             }
         }

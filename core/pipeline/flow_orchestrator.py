@@ -27,7 +27,6 @@ from ..domain.history_marker import (
     contains_proactive_marker,
     normalize_archive_mode,
 )
-from ..domain.media_policy import is_media_component, media_placeholder
 from ..domain.request_context import ProactiveContext
 from ..domain.session_key import is_friend_type, is_group_type
 from ..features.feature_manifest import build_default_features
@@ -292,10 +291,17 @@ class FlowOrchestrator:
             unanswered_index,
         )
         assistant_response = outcome.text if outcome else ""
+        # 优先用「真实送达」的内容归档：部分批次失败时不能把原文整体存档，
+        # 否则用户没收到的话也会出现在下一轮提示词里。
+        delivered = self._delivered_text_of(ctx)
+        if delivered:
+            assistant_response = delivered
         # 纯媒体轮次不能跳过存档：跳过会让未回复计数与历史脱节，
         # 模型下一轮也完全不知道自己发过图。改为写入媒体占位文本。
-        if not (assistant_response or "").strip() and outcome is not None:
-            assistant_response = self._build_media_archive_text(outcome)
+        if outcome is not None:
+            assistant_response = self._merge_media_archive_text(
+                ctx, assistant_response, outcome
+            )
 
         if not (assistant_response or "").strip():
             logger.debug("[主动消息] 本次结果无文本内容，跳过对话历史存档喵。")
@@ -535,27 +541,34 @@ class FlowOrchestrator:
         raise last_error
 
     @staticmethod
-    def _build_media_archive_text(outcome: Any) -> str:
-        """为纯媒体轮次生成可存档的占位文本。
+    def _delivered_text_of(ctx: ProactiveContext) -> str:
+        """读取 DELIVER 阶段回填的真实送达文本；无报告时返回空串。"""
+        report = getattr(ctx, "delivery", None)
+        delivered = getattr(report, "delivered_text", "") if report else ""
+        return str(delivered or "").strip()
 
-        优先用 DELIVER 阶段回填的媒体摘要（如“1 张图片”），
-        缺失时退回链中媒体的通用占位，保证历史里能看出机器人发过东西。
+    @staticmethod
+    def _merge_media_archive_text(
+        ctx: ProactiveContext, assistant_response: str, outcome: Any
+    ) -> str:
+        """把真正送达的媒体摘要合并进归档文本。
+
+        只以 DELIVER 回填的 media_summary 为准：媒体全部发送失败、
+        被策略剥离或被钩子清空时该字段为空，此时不生成任何媒体记录，
+        避免历史里出现用户从未收到的内容。
         """
+        report = getattr(ctx, "delivery", None)
+        if report is not None and not getattr(report, "sent", False):
+            # 本轮实际未送达任何内容（例如装饰钩子清空），保持静默跳过。
+            return assistant_response
         summary = str(getattr(outcome, "media_summary", "") or "").strip()
-        if summary:
-            return f"[主动发送媒体：{summary}]"
+        if not summary:
+            return assistant_response
 
-        chain = getattr(outcome, "chain", None) or []
-        placeholders: list[str] = []
-        for comp in chain:
-            if not is_media_component(comp):
-                continue
-            placeholder = media_placeholder(comp)
-            if placeholder not in placeholders:
-                placeholders.append(placeholder)
-        if not placeholders:
-            return ""
-        return "".join(placeholders)
+        media_text = f"[主动发送媒体：{summary}]"
+        if not assistant_response.strip():
+            return media_text
+        return f"{assistant_response}\n{media_text}"
 
     @staticmethod
     def _archive_fallback_texts(user_prompt: str, fallback_prompt: str) -> list[str]:
