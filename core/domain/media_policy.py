@@ -55,7 +55,8 @@ MEDIA_PLACEHOLDERS = {
 # base64 载荷上限：超出视为不可投递，避免超大内联数据进入消息链
 MAX_BASE64_CHARS = 16 * 1024 * 1024
 
-_REMOTE_PREFIXES = ("http://", "https://", "data:")
+_HTTP_PREFIXES = ("http://", "https://")
+_DATA_PREFIX = "data:"
 _BASE64_PREFIX = "base64://"
 _FILE_PREFIX = "file://"
 
@@ -194,14 +195,19 @@ def _media_sources(comp: object, media_type: str) -> list[str]:
 
 
 def is_safe_media_source(
-    comp: object, allowed_dirs: list[str] | None = None
+    comp: object,
+    allowed_dirs: list[str] | None = None,
+    *,
+    restrict_local: bool = True,
 ) -> tuple[bool, str]:
     """判断媒体来源是否允许发送。
 
     规则：
-    - http/https/data/base64 一律放行（base64 有长度上限）；
-    - 本地路径（含 file:// 与裸路径）只允许落在 allowed_dirs 之内，
-      避免模型或第三方插件诱导 Bot 泄漏任意本地文件。
+    - http/https 放行；
+    - data:/base64:// 一律校验载荷长度，避免超大内联数据绕过限制；
+    - 本地路径（含 file:// 与裸路径）在 restrict_local 开启时只允许落在
+      allowed_dirs 之内，避免模型或第三方插件诱导 Bot 泄漏任意本地文件；
+    - 组件的所有来源字段都必须通过校验：任一本地来源越界即整体拒绝。
 
     Returns:
         (是否安全, 不安全原因)。安全时原因为空串。
@@ -217,24 +223,26 @@ def is_safe_media_source(
         return False, "missing_source"
 
     roots = [Path(item) for item in (allowed_dirs or []) if item]
-    local_seen = False
+    checked = 0
     for source in sources:
         lowered = source.lower()
-        if lowered.startswith(_BASE64_PREFIX):
+        if lowered.startswith(_BASE64_PREFIX) or lowered.startswith(_DATA_PREFIX):
             if len(source) > MAX_BASE64_CHARS:
                 return False, "base64_too_large"
-            return True, ""
-        if lowered.startswith(_REMOTE_PREFIXES):
-            return True, ""
+            checked += 1
+            continue
+        if lowered.startswith(_HTTP_PREFIXES):
+            checked += 1
+            continue
         if lowered.startswith(_FILE_PREFIX):
             path = _file_uri_to_path(source)
         else:
             path = Path(source)
-        local_seen = True
-        if _is_under(path, roots):
-            return True, ""
+        if restrict_local and not _is_under(path, roots):
+            return False, "path_not_allowed"
+        checked += 1
 
-    return False, ("path_not_allowed" if local_seen else "missing_source")
+    return (True, "") if checked else (False, "missing_source")
 
 
 def describe_component(comp: object, reason: str = "") -> dict[str, str]:
