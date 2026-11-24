@@ -63,6 +63,8 @@ class DeliveryExecutor:
         degraded_total = 0
         # 收集真正送达的文本批次，供报告回填后只归档用户看到的内容。
         delivered_text: list[str] = []
+        # 正文是否已由文本批次送达：与 delivered_text 解耦
+        body_text_sent = [False]
 
         if text_first:
             # 图文优先：先发批次，再补语音。
@@ -75,6 +77,7 @@ class DeliveryExecutor:
                 settings=settings,
                 seg_conf=seg_conf,
                 delivered_text=delivered_text,
+                body_text_sent=body_text_sent,
             )
             any_sent = any_sent or sent
             sent_batches += batches
@@ -103,6 +106,7 @@ class DeliveryExecutor:
                         settings=settings,
                         seg_conf=seg_conf,
                         delivered_text=delivered_text,
+                        body_text_sent=body_text_sent,
                     )
                     any_sent = any_sent or sent2
                     sent_batches += batches2
@@ -135,6 +139,7 @@ class DeliveryExecutor:
                 settings=settings,
                 seg_conf=seg_conf,
                 delivered_text=delivered_text,
+                body_text_sent=body_text_sent,
             )
             any_sent = any_sent or sent
             sent_batches += batches
@@ -142,12 +147,17 @@ class DeliveryExecutor:
             self._merge_counts(media_sent, media)
 
         if report is not None:
-            # 语音承载正文且不再发文本时，送达的正文来自语音，同样可归档。
-            if voice_sent and withhold_text and not delivered_text:
-                delivered_text.append(plan.visible_text)
-            report.delivered_text = "\n\n".join(
-                item.strip() for item in delivered_text if item.strip()
-            )
+            # 语音已送达但正文从未由文本批次送达：正文由语音承载，必须入档。
+            archive_parts: list[str] = [item for item in delivered_text if item.strip()]
+            if voice_sent and not body_text_sent[0]:
+                voice_body = plan.visible_text.strip()
+                if voice_body:
+                    # 语音优先时正文在前，图文优先时正文在后，保持时间顺序。
+                    if text_first:
+                        archive_parts.append(voice_body)
+                    else:
+                        archive_parts.insert(0, voice_body)
+            report.delivered_text = "\n\n".join(archive_parts)
             report.voice_sent = bool(voice_sent)
             report.segmented = bool(plan.segmented)
             report.segment_count = sent_batches
@@ -171,11 +181,13 @@ class DeliveryExecutor:
         settings: dict[str, Any],
         seg_conf: dict,
         delivered_text: list[str],
+        body_text_sent: list[bool],
     ) -> tuple[bool, int, dict[str, int], int]:
         """逐批发送，返回 (是否送出, 批次数, 媒体计数, 降级数)。
 
         delivered_text 为外部传入的收集器：只有真正送达的文本批次才会写入，
         供 RECORD 阶段只归档用户确实看到的内容。
+        body_text_sent 为单元素列表，用于标记正文是否由文本批次送达。
         """
         any_sent = False
         sent_batches = 0
@@ -197,7 +209,10 @@ class DeliveryExecutor:
                 sent_batches += 1
                 degraded_total += degraded
                 self._collect_delivered_text(
-                    batch, delivered_text, degraded=bool(degraded)
+                    batch,
+                    delivered_text,
+                    degraded=bool(degraded),
+                    body_text_sent=body_text_sent,
                 )
                 # 降级成功只说明占位文本送达，媒体本身并未送达，
                 # 因此不计入媒体统计，避免历史里出现虚假的送达记录。
@@ -211,12 +226,17 @@ class DeliveryExecutor:
 
     @staticmethod
     def _collect_delivered_text(
-        batch: DeliveryBatch, sink: list[str], *, degraded: bool = False
+        batch: DeliveryBatch,
+        sink: list[str],
+        *,
+        degraded: bool = False,
+        body_text_sent: list[bool] | None = None,
     ) -> None:
         """收集已送达批次的文本。
 
         降级批次实际发出的是媒体占位文本，因此按占位符收集，
         不能把被替换掉的媒体记成送达，也不能让纯媒体降级后历史留空。
+        body_text_sent 只标记非降级的真实正文是否送达，供语音归档判断。
         """
         if degraded:
             items, _ = degraded_components(batch.components)
@@ -234,6 +254,8 @@ class DeliveryExecutor:
                 text = text_of(comp)
                 if text.strip():
                     sink.append(text)
+                    if body_text_sent is not None:
+                        body_text_sent[0] = True
 
     @staticmethod
     def _merge_counts(target: dict[str, int], source: dict[str, int]) -> None:
