@@ -291,11 +291,10 @@ class FlowOrchestrator:
             unanswered_index,
         )
         assistant_response = outcome.text if outcome else ""
-        # 优先用「真实送达」的内容归档：部分批次失败时不能把原文整体存档，
-        # 否则用户没收到的话也会出现在下一轮提示词里。
-        delivered = self._delivered_text_of(ctx)
-        if delivered:
-            assistant_response = delivered
+        # 有投递报告时一律以报告为准。
+        report = getattr(ctx, "delivery", None)
+        if report is not None:
+            assistant_response = str(getattr(report, "delivered_text", "") or "")
         # 纯媒体轮次不能跳过存档：跳过会让未回复计数与历史脱节，
         # 模型下一轮也完全不知道自己发过图。改为写入媒体占位文本。
         if outcome is not None:
@@ -539,13 +538,6 @@ class FlowOrchestrator:
                 last_error = retry_error
 
         raise last_error
-
-    @staticmethod
-    def _delivered_text_of(ctx: ProactiveContext) -> str:
-        """读取 DELIVER 阶段回填的真实送达文本；无报告时返回空串。"""
-        report = getattr(ctx, "delivery", None)
-        delivered = getattr(report, "delivered_text", "") if report else ""
-        return str(delivered or "").strip()
 
     @staticmethod
     def _merge_media_archive_text(
