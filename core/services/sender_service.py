@@ -248,6 +248,18 @@ class SenderService:
     # ------------------------------------------------------------------
     # 平台流水补写
     # ------------------------------------------------------------------
+    def _schedule_history_persist(self, session_id: str, chain: MessageChain) -> None:
+        """后台补写平台流水，不参与发送结果判定。"""
+        plugin = self.plugin
+        task = asyncio.create_task(
+            self.persist_proactive_message_to_platform_history(session_id, chain)
+        )
+        tracker = getattr(plugin, "_track_detached_task", None) or getattr(
+            plugin, "_track_task", None
+        )
+        if callable(tracker):
+            tracker(task)
+
     async def persist_proactive_message_to_platform_history(
         self,
         session_id: str,
@@ -460,7 +472,8 @@ class SenderService:
             logger.debug(f"[主动消息] 消息将通过平台 {p_id} 送达喵")
             # 此处走平台实例直发，不经过核心 send_message，核心不会落库，
             # 必须由插件补写，否则主动消息不会出现在平台流水中。
-            await self.persist_proactive_message_to_platform_history(session_id, chain)
+            # 补写放后台：发送已成功，不能因为落库耗时把结果改成失败。
+            self._schedule_history_persist(session_id, chain)
             return True
         except Exception as e:
             logger.error(f"[主动消息] 通过平台 {p_id} 发送失败喵: {e}")
@@ -497,9 +510,17 @@ class SenderService:
             return False
 
         # 核心 send_message 在群聊场景下会自行落库，标记来源避免同键双写。
-        await self.persist_proactive_message_to_platform_history(
-            session_id, chain, via_core_api=True
+        # 私聊仍需插件补写，同样放到后台，避免影响发送结果判定。
+        task = asyncio.create_task(
+            self.persist_proactive_message_to_platform_history(
+                session_id, chain, via_core_api=True
+            )
         )
+        tracker = getattr(plugin, "_track_detached_task", None) or getattr(
+            plugin, "_track_task", None
+        )
+        if callable(tracker):
+            tracker(task)
         return True
 
     async def send_chain(
@@ -536,9 +557,8 @@ class SenderService:
             if sent is True:
                 return True
             if sent is None:
-                await self.persist_proactive_message_to_platform_history(
-                    session_id, chain
-                )
+                # 事件已接管发送，流水同样后台补写。
+                self._schedule_history_persist(session_id, chain)
                 return True
 
             self._mark_event_send_failed(event)
