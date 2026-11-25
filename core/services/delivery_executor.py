@@ -236,17 +236,21 @@ class DeliveryExecutor:
 
         降级批次实际发出的是媒体占位文本，因此按占位符收集，
         不能把被替换掉的媒体记成送达，也不能让纯媒体降级后历史留空。
-        body_text_sent 只标记非降级的真实正文是否送达，供语音归档判断。
+        body_text_sent 只标记真实正文是否送达：降级批次里被保留下来的
+        正文同样置位；纯媒体占位符不置位。
         """
         if degraded:
             items, _ = degraded_components(batch.components)
             for item in items:
                 if isinstance(item, str) and item.strip():
+                    # 降级产生的占位符不是正文，不参与正文送达判定。
                     sink.append(item)
                 elif is_text_component(item):
                     text = text_of(item)
                     if text.strip():
                         sink.append(text)
+                        if body_text_sent is not None:
+                            body_text_sent[0] = True
             return
 
         for comp in batch.components:
