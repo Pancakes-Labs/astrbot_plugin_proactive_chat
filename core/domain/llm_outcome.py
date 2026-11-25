@@ -27,6 +27,10 @@ class LlmOutcome:
     response: Any = None
     # 消息链组件（文本 + 媒体的完整载体）。
     chain: list = field(default_factory=list)
+    # 媒体摘要与计数，由 DELIVER 阶段按投递计划回填，
+    # 供 RECORD 阶段在无文本轮次写入对话历史。
+    media_summary: str = ""
+    media_counts: dict[str, int] = field(default_factory=dict)
     # 本轮实际使用的用户提示词（钩子处理后的最终形态）。
     final_user_prompt: str = ""
     # 工具调用轨迹（默认空，链式工具调用功能接入后填充）。

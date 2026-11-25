@@ -1,7 +1,8 @@
 """发送与装饰钩子服务。
 
-由旧 core/message_sender.py 等价搬迁而来；分段、装饰、TTS 与
-平台流水补写逻辑保持不变。
+负责发送入口、装饰钩子派发与平台流水补写。消息链的清洗、分段与
+批次规划已下沉到 DeliveryPlanner，逐批发送与 TTS 顺序由 DeliveryExecutor
+执行，本服务只做编排与落库。
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
-from astrbot.core.message.components import Plain, Record
 from astrbot.core.message.message_event_result import (
     MessageChain,
     MessageEventResult,
@@ -30,9 +30,11 @@ from ..adapters.astrbot_event import (
 )
 from ..adapters.astrbot_ltm import read_group_history_settings, supports_max_messages
 from ..adapters.astrbot_platform import find_platform_by_id
+from ..domain.delivery_plan import format_media_summary
 from ..domain.delivery_report import DeliveryReport
 from ..domain.session_key import is_group_umo
 from ..domain.tool_markup_cleaner import clean_chain_components, clean_llm_text
+from .delivery_executor import build_component_chain
 
 try:  # pragma: no cover - 取决于 AstrBot 版本
     from astrbot.core.star.star_handler import EventType
@@ -163,37 +165,6 @@ class SenderService:
 
         return random.uniform(interval[0], interval[1])
 
-    def segment_decorated_chain(self, chain: list, seg_conf: dict) -> list:
-        """对装饰后的完整消息链执行分段。
-
-        仅对短于阈值的纯文本段做切分；超长或非文本成分原样保留。
-        """
-        threshold = seg_conf.get("words_count_threshold", 150)
-
-        new_chain: list = []
-        for comp in chain:
-            if not isinstance(comp, Plain):
-                new_chain.append(comp)
-                continue
-
-            text = comp.text or ""
-            if not text.strip():
-                continue
-
-            if len(text) > threshold:
-                new_chain.append(comp)
-                continue
-
-            segments = self.split_text(text, seg_conf)
-            if not segments:
-                new_chain.append(comp)
-                continue
-
-            for seg in segments:
-                new_chain.append(Plain(text=seg))
-
-        return new_chain or chain
-
     # ------------------------------------------------------------------
     # 事件构造
     # ------------------------------------------------------------------
@@ -277,6 +248,18 @@ class SenderService:
     # ------------------------------------------------------------------
     # 平台流水补写
     # ------------------------------------------------------------------
+    def _schedule_history_persist(self, session_id: str, chain: MessageChain) -> None:
+        """后台补写平台流水，不参与发送结果判定。"""
+        plugin = self.plugin
+        task = asyncio.create_task(
+            self.persist_proactive_message_to_platform_history(session_id, chain)
+        )
+        tracker = getattr(plugin, "_track_detached_task", None) or getattr(
+            plugin, "_track_task", None
+        )
+        if callable(tracker):
+            tracker(task)
+
     async def persist_proactive_message_to_platform_history(
         self,
         session_id: str,
@@ -346,10 +329,8 @@ class SenderService:
 
             attachments_dir = Path(plugin.data_dir) / "attachments"
             attachments_dir.mkdir(parents=True, exist_ok=True)
-            message_parts = await message_chain_to_storage_message_parts(
-                chain,
-                insert_attachment=insert_attachment,
-                attachments_dir=attachments_dir,
+            message_parts = await self._build_storage_parts(
+                session_id, chain, insert_attachment, attachments_dir
             )
             if not message_parts:
                 return
@@ -372,10 +353,87 @@ class SenderService:
         except Exception as e:
             logger.warning(f"[主动消息] 补写平台流水失败喵: {e}", exc_info=True)
 
+    async def _build_storage_parts(
+        self,
+        session_id: str,
+        chain: MessageChain,
+        insert_attachment: Any,
+        attachments_dir: Path,
+    ) -> list:
+        """逐组件转换落库分段，单个媒体失败只跳过该组件。
+
+        message_chain_to_storage_message_parts 内部会下载 URL、转码音频，
+        任一组件抛错都会让整条流水写入失败，因此这里按单组件隔离并加超时。
+        """
+        if message_chain_to_storage_message_parts is None:
+            return []
+
+        timeout = self._media_timeout_seconds(session_id)
+        parts: list = []
+        for comp in list(getattr(chain, "chain", None) or []):
+            single = MessageChain([comp])
+            try:
+                produced = await asyncio.wait_for(
+                    message_chain_to_storage_message_parts(
+                        single,
+                        insert_attachment=insert_attachment,
+                        attachments_dir=attachments_dir,
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"[主动消息] 媒体落库超过 {timeout:.0f} 秒已跳过该组件喵。"
+                )
+                continue
+            except Exception as e:  # noqa: BLE001 - 单个媒体失败不应影响其它组件
+                logger.warning(f"[主动消息] 媒体落库失败，已跳过该组件喵: {e}")
+                continue
+            if produced:
+                parts.extend(produced)
+        return parts
+
+    def _media_timeout_seconds(self, session_id: str) -> float:
+        """读取媒体落库超时配置，缺省 30 秒。"""
+        try:
+            session_config = (
+                self.plugin.config_service.get_session_config(session_id) or {}
+            )
+        except Exception:  # pragma: no cover - 配置服务异常时用默认值
+            session_config = {}
+        try:
+            planner = self._planner()
+            return float(planner.get_settings(session_config)["media_timeout_seconds"])
+        except Exception:  # pragma: no cover
+            return 30.0
+
+    def _planner(self) -> Any:
+        """惰性获取投递计划服务。"""
+        planner = getattr(self.plugin, "delivery_planner", None)
+        if planner is not None:
+            return planner
+        from .delivery_planner import DeliveryPlanner
+
+        return DeliveryPlanner(self.plugin)
+
+    def _executor(self) -> Any:
+        """惰性获取投递执行服务。"""
+        executor = getattr(self.plugin, "delivery_executor", None)
+        if executor is not None:
+            return executor
+        from .delivery_executor import DeliveryExecutor
+
+        return DeliveryExecutor(self.plugin)
+
     # ------------------------------------------------------------------
     # 发送
     # ------------------------------------------------------------------
-    async def send_chain_direct(self, session_id: str, components: list) -> bool:
+    async def send_chain_direct(
+        self,
+        session_id: str,
+        components: list,
+        meta: dict | None = None,
+    ) -> bool:
         """直接通过平台实例发送消息链（不经过事件）。
 
         优先定位 UMO 对应的平台实例直发；平台缺失、未运行或发送异常时
@@ -385,7 +443,7 @@ class SenderService:
         if not components:
             return False
 
-        chain = MessageChain(list(components))
+        chain = build_component_chain(components, meta or {})
         parsed = plugin.session_service.parse_session_id(session_id)
         if not parsed:
             return await self.send_chain_via_core_api(session_id, chain)
@@ -414,7 +472,8 @@ class SenderService:
             logger.debug(f"[主动消息] 消息将通过平台 {p_id} 送达喵")
             # 此处走平台实例直发，不经过核心 send_message，核心不会落库，
             # 必须由插件补写，否则主动消息不会出现在平台流水中。
-            await self.persist_proactive_message_to_platform_history(session_id, chain)
+            # 补写放后台：发送已成功，不能因为落库耗时把结果改成失败。
+            self._schedule_history_persist(session_id, chain)
             return True
         except Exception as e:
             logger.error(f"[主动消息] 通过平台 {p_id} 发送失败喵: {e}")
@@ -451,9 +510,17 @@ class SenderService:
             return False
 
         # 核心 send_message 在群聊场景下会自行落库，标记来源避免同键双写。
-        await self.persist_proactive_message_to_platform_history(
-            session_id, chain, via_core_api=True
+        # 私聊仍需插件补写，同样放到后台，避免影响发送结果判定。
+        task = asyncio.create_task(
+            self.persist_proactive_message_to_platform_history(
+                session_id, chain, via_core_api=True
+            )
         )
+        tracker = getattr(plugin, "_track_detached_task", None) or getattr(
+            plugin, "_track_task", None
+        )
+        if callable(tracker):
+            tracker(task)
         return True
 
     async def send_chain(
@@ -461,23 +528,26 @@ class SenderService:
         session_id: str,
         event: Any,
         components: list,
+        meta: dict | None = None,
     ) -> bool:
         """发送一条消息链（优先走事件，事件不可用时回退平台直发）。
 
         事件返回 None 视为“已接管发送”，此时需补写平台流水；
         返回 False 视为失败，回退直发并标记事件状态。
+
+        meta 用于携带装饰钩子设置的链级元数据（use_t2i_ 等）。
         """
         if not components:
             return False
 
-        chain = MessageChain(list(components))
+        chain = build_component_chain(components, meta or {})
 
         if event is not None:
             try:
                 sent = await event.send(chain)
             except Exception as e:
                 logger.error(f"[主动消息] 事件发送异常喵，回退平台直发: {e}")
-                sent_direct = await self.send_chain_direct(session_id, components)
+                sent_direct = await self.send_chain_direct(session_id, components, meta)
                 if sent_direct:
                     self._mark_event_sent(event)
                 else:
@@ -487,16 +557,15 @@ class SenderService:
             if sent is True:
                 return True
             if sent is None:
-                await self.persist_proactive_message_to_platform_history(
-                    session_id, chain
-                )
+                # 事件已接管发送，流水同样后台补写。
+                self._schedule_history_persist(session_id, chain)
                 return True
 
             self._mark_event_send_failed(event)
             logger.error("[主动消息] 事件发送与核心 API 兜底均未送达，不再重复尝试喵。")
             return False
 
-        return await self.send_chain_direct(session_id, components)
+        return await self.send_chain_direct(session_id, components, meta)
 
     async def send_proactive_message(
         self,
@@ -505,13 +574,15 @@ class SenderService:
         event: Any = None,
         initial_chain: list | None = None,
         report: DeliveryReport | None = None,
+        outcome: Any = None,
     ) -> bool:
-        """发送主动消息（支持 TTS 与分段）。
+        """发送主动消息（富媒体 + TTS + 分段）。
 
-        流程：可选 TTS 语音 -> 装饰钩子 -> 可选分段 -> 逐段发送 ->
-        发送后钩子。任一环节实际送出至少一条即视为成功。
+        流程：构建投递计划（装饰钩子 / 清洗 / 剥离 / 分段 / 分组 / TTS 判定）
+        -> 执行计划逐批发送 -> 失败降级 -> 发送后钩子。
 
-        report 非空时回填本次发送的真实统计（TTS / 分段 / 钩子拦截）。
+        report 非空时回填真实统计；outcome 非空时回填媒体摘要，
+        供 RECORD 阶段在无文本轮次写入对话历史。
         """
         plugin = self.plugin
         session_config = plugin.config_service.get_session_config(session_id)
@@ -528,128 +599,93 @@ class SenderService:
             f"[主动消息] 开始发送 {plugin.session_service.get_session_log_str(session_id, session_config)} 的主动消息喵。"
         )
 
-        tts_conf = session_config.get("tts_settings", {})
-        seg_conf = session_config.get("segmented_reply_settings", {})
-        # 发送前最后一道防线：装饰钩子与外部调用方都可能绕过 DELIBERATE 的清洗，
-        # 这里再清一次，保证任何路径都不会把不合规标记送到平台。
+        # 发送前最后一道防线：装饰钩子与外部调用方都可能绕过 DELIBERATE 的清洗。
         text = clean_llm_text(text or "")
         if initial_chain:
             initial_chain = clean_chain_components(initial_chain)
-        segmented = False
-        send_count = 0
 
-        # 可选语音发送：合成成功即作为一条消息链直接送出。
-        is_tts_sent = False
-        if tts_conf.get("enabled", False) and text.strip():
-            try:
-                logger.info("[主动消息] 尝试进行手动TTS喵。")
-                tts_provider = plugin.context.get_using_tts_provider(umo=session_id)
-                if tts_provider:
-                    audio_path = await tts_provider.get_audio(text)
-                    if audio_path:
-                        is_tts_sent = (
-                            await self.send_chain(
-                                session_id, event, [Record(file=audio_path)]
-                            )
-                            is True
-                        )
-                        if is_tts_sent:
-                            await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.error(f"[主动消息] 手动TTS流程发生异常喵: {e}")
-                if plugin.telemetry and plugin.telemetry.enabled:
-                    plugin._track_task(
-                        asyncio.create_task(
-                            plugin.telemetry.track_error(
-                                e,
-                                module="core.message_sender._send_proactive_message.tts",
-                            )
-                        )
-                    )
+        planner = self._planner()
+        settings = planner.get_settings(session_config)
+        plan = await planner.build_plan(
+            session_id=session_id,
+            session_config=session_config,
+            text=text,
+            initial_chain=initial_chain,
+            event=event,
+            sender_service=self,
+        )
 
-        should_send_text = not is_tts_sent or tts_conf.get("always_send_text", True)
+        if report is not None:
+            report.stopped_by_hook = plan.blocked_reason == "stopped_by_hook"
+            report.sent = False
+            if plan.warnings:
+                report.metadata.setdefault("plan_warnings", list(plan.warnings))
 
-        any_sent = is_tts_sent
+        # 装饰钩子主动清空了结果：旧行为是安静跳过，这里保持等价。
+        # 不能当成发送失败，否则会把一次成功的生成误判为失败并重调度。
+        if plan.blocked_reason == "decorated_chain_empty":
+            logger.info("[主动消息] 装饰后消息链为空，本次不发送任何内容喵。")
+            self._clear_event_result(event)
+            return True
 
-        if should_send_text:
-            base_components: list = list(initial_chain) if initial_chain else []
+        if plan.blocked_reason == "stopped_by_hook":
+            logger.info("[主动消息] 装饰钩子终止了事件传播，已放弃本次发送喵。")
 
-            # 初始链未包含文本时，在开头补入纯文本段。
-            text_value = text.strip()
-            if text_value and not any(
-                isinstance(comp, Plain) for comp in base_components
-            ):
-                base_components.insert(0, Plain(text=text_value))
-
-            decorated_chain, should_send = await self.run_decorating_hooks(
-                event, base_components
+        # 组件被策略全部剥离：没有可投递内容，按未送达处理但不重发。
+        if plan.blocked_reason == "no_sendable_component":
+            logger.warning(
+                "[主动消息] 消息链中的组件全部被策略剥离，本次无可投递内容喵。"
             )
-            # 钩子可能注入或改写含标记的文本组件，这里必须再清一次，
-            # 否则分段与普通发送路径都会把它原样转发出去。
-            if decorated_chain:
-                decorated_chain = clean_chain_components(decorated_chain)
-            if not should_send:
-                # 文本被钩子拦截：TTS 可能已送出，此处只跳过文本发送，
-                # 仍需走统一收尾，以便写入报告并重置群聊沉默计时器。
-                if report is not None:
-                    report.stopped_by_hook = True
-                decorated_chain = []
-            if not decorated_chain:
-                logger.debug("[主动消息] 装饰后消息链为空，跳过文本发送喵。")
+            if report is not None:
+                report.dropped_components = list(plan.dropped)
+            self._clear_event_result(event)
+            return False
 
-            # 可选分段：分段后逐条发送，条目数与装饰后链不同即认为生效。
-            enable_seg = seg_conf.get("enabled", False)
-            send_chain = decorated_chain
-            segmented = False
-            if enable_seg and decorated_chain:
-                send_chain = self.segment_decorated_chain(decorated_chain, seg_conf)
-                segmented = len(send_chain) != len(decorated_chain)
+        any_sent = await self._executor().execute_plan(
+            session_id=session_id,
+            plan=plan,
+            event=event,
+            report=report,
+            sender_service=self,
+            settings=settings,
+        )
 
-            if decorated_chain:
-                # 仅统计真正送达的条目，失败的尝试不计入报告。
-                sent_segments = 0
-                if segmented:
-                    logger.info(
-                        f"[主动消息] 分段回复已启用，将发送 {len(send_chain)} 条消息喵。"
+        # 只有真正送达过内容才记录媒体摘要：未送达的轮次不应污染对话历史。
+        # 计数以报告里的实际送达为准：媒体可能被降级或整批失败。
+        if report is not None and not report.sent:
+            report.sent = bool(any_sent)
+        sent_media = report.media_sent if report is not None else {}
+        if outcome is not None and any_sent and sent_media:
+            outcome.media_counts = dict(sent_media)
+            outcome.media_summary = format_media_summary(sent_media)
+
+        if plugin.telemetry and plugin.telemetry.enabled:
+            plugin._track_task(
+                asyncio.create_task(
+                    plugin.telemetry.track_feature(
+                        "message_send_result",
+                        {
+                            "session_type": session_config.get(
+                                "_session_type", "unknown"
+                            ),
+                            "tts_enabled": bool(
+                                (session_config.get("tts_settings") or {}).get(
+                                    "enabled", False
+                                )
+                            ),
+                            "tts_sent": bool(report.voice_sent) if report else False,
+                            "segmented_enabled": bool(plan.segmented),
+                            "segment_count": len(plan.batches),
+                            "text_length": len(text),
+                            "media_total": plan.media_total,
+                            "media_components": ",".join(sorted(plan.media_counts)),
+                            "media_degraded": (report.media_degraded if report else 0),
+                            "dropped_components": len(plan.dropped),
+                            "success": any_sent,
+                        },
                     )
-
-                if segmented:
-                    for idx, comp in enumerate(send_chain):
-                        if await self.send_chain(session_id, event, [comp]) is True:
-                            any_sent = True
-                            sent_segments += 1
-                        if idx < len(send_chain) - 1:
-                            interval = await self.calc_interval(
-                                getattr(comp, "text", "") or "", seg_conf
-                            )
-                            logger.debug(
-                                f"[主动消息] 分段回复等待 {interval:.2f} 秒喵。"
-                            )
-                            await asyncio.sleep(interval)
-                elif await self.send_chain(session_id, event, send_chain) is True:
-                    any_sent = True
-                    sent_segments = 1
-                send_count = sent_segments
-
-                if plugin.telemetry and plugin.telemetry.enabled:
-                    plugin._track_task(
-                        asyncio.create_task(
-                            plugin.telemetry.track_feature(
-                                "message_send_result",
-                                {
-                                    "session_type": session_config.get(
-                                        "_session_type", "unknown"
-                                    ),
-                                    "tts_enabled": bool(tts_conf.get("enabled", False)),
-                                    "tts_sent": is_tts_sent,
-                                    "segmented_enabled": segmented,
-                                    "segment_count": len(send_chain),
-                                    "text_length": len(text),
-                                    "success": any_sent,
-                                },
-                            )
-                        )
-                    )
+                )
+            )
 
         # 仅在确实送出过消息、且事件未被钩子终止时派发发送后钩子：
         # dispatch_event_hook 会先执行 handler 再检查停止状态，已停止的事件
@@ -669,9 +705,6 @@ class SenderService:
 
         if report is not None:
             report.sent = bool(any_sent)
-            report.voice_sent = bool(is_tts_sent)
-            report.segmented = bool(segmented)
-            report.segment_count = send_count
 
         if not any_sent:
             logger.error(

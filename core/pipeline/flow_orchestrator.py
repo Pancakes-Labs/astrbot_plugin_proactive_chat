@@ -291,6 +291,16 @@ class FlowOrchestrator:
             unanswered_index,
         )
         assistant_response = outcome.text if outcome else ""
+        # 有投递报告时一律以报告为准。
+        report = getattr(ctx, "delivery", None)
+        if report is not None:
+            assistant_response = str(getattr(report, "delivered_text", "") or "")
+        # 纯媒体轮次不能跳过存档：跳过会让未回复计数与历史脱节，
+        # 模型下一轮也完全不知道自己发过图。改为写入媒体占位文本。
+        if outcome is not None:
+            assistant_response = self._merge_media_archive_text(
+                ctx, assistant_response, outcome
+            )
 
         if not (assistant_response or "").strip():
             logger.debug("[主动消息] 本次结果无文本内容，跳过对话历史存档喵。")
@@ -528,6 +538,29 @@ class FlowOrchestrator:
                 last_error = retry_error
 
         raise last_error
+
+    @staticmethod
+    def _merge_media_archive_text(
+        ctx: ProactiveContext, assistant_response: str, outcome: Any
+    ) -> str:
+        """把真正送达的媒体摘要合并进归档文本。
+
+        只以 DELIVER 回填的 media_summary 为准：媒体全部发送失败、
+        被策略剥离或被钩子清空时该字段为空，此时不生成任何媒体记录，
+        避免历史里出现用户从未收到的内容。
+        """
+        report = getattr(ctx, "delivery", None)
+        if report is not None and not getattr(report, "sent", False):
+            # 本轮实际未送达任何内容（例如装饰钩子清空），保持静默跳过。
+            return assistant_response
+        summary = str(getattr(outcome, "media_summary", "") or "").strip()
+        if not summary:
+            return assistant_response
+
+        media_text = f"[主动发送媒体：{summary}]"
+        if not assistant_response.strip():
+            return media_text
+        return f"{assistant_response}\n{media_text}"
 
     @staticmethod
     def _archive_fallback_texts(user_prompt: str, fallback_prompt: str) -> list[str]:

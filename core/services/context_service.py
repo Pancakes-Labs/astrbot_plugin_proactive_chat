@@ -185,7 +185,8 @@ class ContextService:
                 )
                 continue
 
-            # 归一化 content：结构化内容走文本归约，其余强制转为字符串。
+            # 归一化 content：结构化内容走文本归约（媒体段补占位），
+            # 其余强制转为字符串。纯媒体历史不能变成空串，否则模型读不到。
             content = msg_dict.get("content")
             if isinstance(content, (list, dict)):
                 msg_dict["content"] = reduce_segment_text(content)

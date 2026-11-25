@@ -25,6 +25,8 @@ from .core.remote.telemetry_manager import TelemetryManager
 from .core.services.config_assembly_service import ConfigAssemblyService
 from .core.services.config_service import ConfigService
 from .core.services.context_service import ContextService
+from .core.services.delivery_executor import DeliveryExecutor
+from .core.services.delivery_planner import DeliveryPlanner
 from .core.services.lifecycle_service import LifecycleService
 from .core.services.llm_service import LlmService
 from .core.services.prompt_preset_service import PromptPresetService
@@ -76,6 +78,10 @@ class ProactiveChatPlugin(star.Star):
         self.prompt_preset_service = PromptPresetService(self)
         self.context_service = ContextService(self)
         self.llm_service = LlmService(self)
+        # 投递计划与执行拆成两个服务：规划（清洗/剥离/分段/分组/TTS 判定）
+        # 与发送（逐批投递/降级）解耦，后续工具产物与生图结果可复用同一计划。
+        self.delivery_planner = DeliveryPlanner(self)
+        self.delivery_executor = DeliveryExecutor(self)
         self.sender_service = SenderService(self)
         self.lifecycle_service = LifecycleService(self)
         self.event_handlers = EventHandlers(self)
